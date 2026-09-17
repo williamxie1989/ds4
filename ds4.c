@@ -62886,6 +62886,24 @@ static bool ds4_session_is_qwen4(const ds4_session *s) {
 }
 
 #ifndef DS4_NO_GPU
+/* Shared by the DSpark rollback arm and rewind-consume sites so the
+ * eligibility predicates cannot drift between them. */
+static bool ds4_session_dspark_rollback_eligible(const ds4_session *s) {
+    const ds4_engine *e = s ? s->engine : NULL;
+    return e && e->backend == DS4_BACKEND_METAL && !e->tp.active &&
+           !e->ssd_streaming && !s->distributed &&
+           !ds4_session_is_glm(s) && !ds4_session_is_qwen4(s) &&
+           !ds4_session_has_vision_state(s);
+}
+
+/* Replay from the frontier reads raw rows [start - raw_window, len); they
+ * must all still fit in the raw ring. */
+static bool dspark_rollback_replay_fits(uint32_t start, uint32_t len,
+                                        uint32_t raw_window, uint32_t raw_cap) {
+    const uint32_t oldest = start > raw_window ? start - raw_window : 0;
+    return oldest < len && len - oldest <= raw_cap;
+}
+
 static void ds4_session_glm_reset_dense_cache(ds4_session *s) {
     if (!s) return;
     s->glm_dense_cache_len = 0;
@@ -82189,11 +82207,11 @@ static int ds4_session_eval_dspark_speculative_argmax(
         /* Verification only appends KV rows and writes separate captures; it
          * leaves the saved compressor tensors and DSpark draft ring intact.
          * Require enough raw-ring slack to replay from this actual frontier. */
-        const uint32_t oldest = (uint32_t)start > s->graph.raw_window ?
-            (uint32_t)start - s->graph.raw_window : 0;
-        if (e->backend == DS4_BACKEND_METAL && !e->tp.active && !e->ssd_streaming &&
-            !s->distributed && !ds4_session_has_vision_state(s) &&
-            draft_n > 1 && (uint32_t)s->checkpoint.len - oldest <= s->graph.raw_cap) {
+        if (ds4_session_dspark_rollback_eligible(s) && draft_n > 1 &&
+            dspark_rollback_replay_fits((uint32_t)start,
+                                        (uint32_t)s->checkpoint.len,
+                                        s->graph.raw_window,
+                                        s->graph.raw_cap)) {
             s->dspark_rollback = frontier;
             s->dspark_rollback_start = start;
             s->dspark_rollback_end = s->checkpoint.len;
@@ -87054,7 +87072,7 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     if (s->checkpoint_valid && ds4_session_is_glm(s)) {
         state_ok = !s->glm_graph.glm53 || ds4_session_glm_mtp_rewind(s, pos);
     }
-    if (s->checkpoint_valid && !s->engine->tp.active &&
+    if (s->checkpoint_valid && ds4_session_dspark_rollback_eligible(s) &&
         s->dspark_rollback_end == s->checkpoint.len &&
         pos > s->dspark_rollback_start) {
         const int start = s->dspark_rollback_start;
