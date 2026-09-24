@@ -14,6 +14,7 @@
 
 enum {
     VARIANT_COUNT = 2,
+    MAX_CANDIDATE_ENVS = 8,
     DEFAULT_PREFIX_TOKENS = 2048,
     DEFAULT_CTX = 4096,
     DEFAULT_WARMUP = 16,
@@ -28,7 +29,8 @@ typedef struct {
 typedef struct {
     const char *model_path;
     const char *prompt_path;
-    const char *candidate_env;
+    const char *candidate_envs[MAX_CANDIDATE_ENVS];
+    int n_candidate_envs;
     int prefix_tokens;
     int ctx;
     int warmup;
@@ -53,7 +55,7 @@ static void usage(FILE *fp, const char *argv0) {
             "  --control-second N     control second split (default: 32)\n"
             "  --candidate-first N    candidate first split (default: 1; control with --candidate-env)\n"
             "  --candidate-second N   candidate second split (default: 32; control with --candidate-env)\n"
-            "  --candidate-env NAME   unset NAME for control, set NAME=1 for candidate\n"
+            "  --candidate-env NAME   unset NAME for control, set NAME=1 for candidate; repeatable (max 8)\n"
             "  --reverse-order        invert variant order/pairing to check token-parity bias\n"
             "  --include-selection    include one non-EOS argmax in each timed step\n",
             argv0);
@@ -88,7 +90,6 @@ static bench_config parse_options(int argc, char **argv) {
     bench_config cfg = {
         .model_path = "ds4flash.gguf",
         .prompt_path = "ds4.c",
-        .candidate_env = NULL,
         .prefix_tokens = DEFAULT_PREFIX_TOKENS,
         .ctx = DEFAULT_CTX,
         .warmup = DEFAULT_WARMUP,
@@ -110,7 +111,18 @@ static bench_config parse_options(int argc, char **argv) {
         } else if (!strcmp(arg, "--prompt-file")) {
             cfg.prompt_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--candidate-env")) {
-            cfg.candidate_env = need_arg(&i, argc, argv, arg);
+            const char *name = need_arg(&i, argc, argv, arg);
+            if (!*name || strchr(name, '=') || cfg.n_candidate_envs == MAX_CANDIDATE_ENVS) {
+                fprintf(stderr, "metal-decode-schedule-bench: invalid or excess --candidate-env: %s\n", name);
+                exit(2);
+            }
+            for (int j = 0; j < cfg.n_candidate_envs; j++) {
+                if (strcmp(name, cfg.candidate_envs[j]) == 0) {
+                    fprintf(stderr, "metal-decode-schedule-bench: duplicate --candidate-env: %s\n", name);
+                    exit(2);
+                }
+            }
+            cfg.candidate_envs[cfg.n_candidate_envs++] = name;
         } else if (!strcmp(arg, "--include-selection")) {
             cfg.include_selection = true;
         } else if (!strcmp(arg, "--reverse-order")) {
@@ -154,7 +166,7 @@ static bench_config parse_options(int argc, char **argv) {
      * Explicit candidate split arguments can still combine a feature and
      * schedule experiment when desired.
      */
-    if (cfg.candidate_env) {
+    if (cfg.n_candidate_envs) {
         if (!candidate_first_explicit) {
             cfg.candidate.first = cfg.control.first;
         }
@@ -250,17 +262,17 @@ static int select_variant(const bench_config *cfg, int variant) {
                 strerror(errno));
         return 1;
     }
-    if (cfg->candidate_env &&
-        (variant == 0
-             ? unsetenv(cfg->candidate_env)
-             : setenv(cfg->candidate_env, "1", 1)) != 0) {
-        fprintf(stderr,
-                "metal-decode-schedule-bench: failed to select candidate "
-                "environment %s for %s: %s\n",
-                cfg->candidate_env,
-                variant == 0 ? "control" : "candidate",
-                strerror(errno));
-        return 1;
+    for (int i = 0; i < cfg->n_candidate_envs; i++) {
+        const char *name = cfg->candidate_envs[i];
+        if ((variant == 0 ? unsetenv(name) : setenv(name, "1", 1)) != 0) {
+            fprintf(stderr,
+                    "metal-decode-schedule-bench: failed to select candidate "
+                    "environment %s for %s: %s\n",
+                    name,
+                    variant == 0 ? "control" : "candidate",
+                    strerror(errno));
+            return 1;
+        }
     }
     return 0;
 }
@@ -442,7 +454,7 @@ int main(int argc, char **argv) {
     fprintf(stderr,
             "metal-decode-schedule-bench: model=%s prompt=%s prefix=%d "
             "ctx=%d warmup=%d measured=%d control=%d/%d candidate=%d/%d "
-            "candidate_env=%s include_selection=%s reverse_order=%d\n",
+            "candidate_env_count=%d include_selection=%s reverse_order=%d\n",
             cfg.model_path,
             cfg.prompt_path,
             cfg.prefix_tokens,
@@ -453,9 +465,12 @@ int main(int argc, char **argv) {
             cfg.control.second,
             cfg.candidate.first,
             cfg.candidate.second,
-            cfg.candidate_env ? cfg.candidate_env : "(none)",
+            cfg.n_candidate_envs,
             cfg.include_selection ? "yes" : "no",
             cfg.reverse_order);
+    for (int i = 0; i < cfg.n_candidate_envs; i++)
+        fprintf(stderr, "metal-decode-schedule-bench: candidate_env[%d]=%s\n",
+                i, cfg.candidate_envs[i]);
 
     const int eos = ds4_token_eos(engine);
     const int total_steps = cfg.warmup + cfg.measured;

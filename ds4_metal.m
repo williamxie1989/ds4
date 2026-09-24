@@ -19355,6 +19355,27 @@ static int ds4_gpu_matmul_q8_0_legacy_tensor(
             id<MTLComputePipelineState> pipeline =
                 ds4_gpu_get_mul_mv_pipeline(mv_dispatch.function_name, mv_dispatch.nsg);
             if (!pipeline) return 0;
+            /* One-token GLM KDA Q8 output: no batch/TP offsets or row tails.
+             * Preserve the generic pipeline if any contract or lookup fails. */
+            if (getenv("DS4_METAL_DISABLE_M5_GLM53_KDA_Q8_SHAPE") == NULL &&
+                ds4_gpu_device_is_m5_apple_silicon() &&
+                !g_ssd_streaming_mode && !g_tp_thread_running && !g_quality_mode &&
+                g_tp_split_world == 1 && g_tp_split_rank == 0 &&
+                in_dim == 8192 && out_dim == 4096 && row_bytes == 8704 &&
+                mv_dispatch.nsg == 4 && mv_dispatch.nr0 == 2 && mv_dispatch.smem == 256 &&
+                mv_args.ne00 == 8192 && mv_args.ne10 == 8192 &&
+                mv_args.ne01 == 4096 && mv_args.ne0 == 4096 &&
+                mv_args.ne02 == 1 && mv_args.ne11 == 1 && mv_args.ne12 == 1 &&
+                mv_args.ne1 == 1 && mv_args.nr0 == 2 &&
+                mv_args.nb00 == 34 && mv_args.nb01 == 8704 &&
+                mv_args.nb02 == 35651584 && mv_args.nb03 == 35651584 &&
+                mv_args.nb10 == 4 && mv_args.nb11 == 32768 &&
+                mv_args.nb12 == 32768 && mv_args.nb13 == 32768 &&
+                mv_args.r2 == 1 && mv_args.r3 == 1) {
+                id<MTLComputePipelineState> tuned = ds4_gpu_get_mul_mv_pipeline(
+                    "kernel_mul_mv_q8_0_glm53_kda_output_f32", 4);
+                if (tuned) pipeline = tuned;
+            }
 
             id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
             [enc setComputePipelineState:pipeline];
