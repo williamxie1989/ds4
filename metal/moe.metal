@@ -5898,6 +5898,7 @@ kernel void kernel_mul_mv_id_iq2_xxs_sum6_f32(
     (void)tgpig;
 }
 
+template<bool FLASH>
 kernel void kernel_mul_mv_id_q2_K_sum6_f32(
         constant ds4_metal_args_mul_mv_id & args,
         device const char * src0s,
@@ -5912,9 +5913,16 @@ kernel void kernel_mul_mv_id_q2_K_sum6_f32(
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
     const short NSG = FC_mul_mv_nsg;
     const short nr0 = N_R0_Q2_K;
-    const int nb = args.ne00/QK_K;
+    // FLASH only exposes host-proven bounds/strides; keep the accumulation walk.
+    const int nb = (FLASH ? 2048 : args.ne00)/QK_K;
+    const int n_expert = FLASH ? 6 : args.nei0;
+    const int ne0 = FLASH ? 4096 : args.ne0;
+    const uint64_t nb01 = FLASH ? 672 : args.nb01;
+    const uint64_t nb02 = FLASH ? 2752512 : args.nb02;
+    const uint64_t nb11 = FLASH ? 8192 : args.nb11;
+    const int tp_expert_base = FLASH ? 0 : args.tp_expert_base;
     const int first_row = (tgpig.x * NSG + sgitg) * nr0;
-    const uint token = tgpig.y;
+    const uint token = FLASH ? 0 : tgpig.y;
     device const int32_t *token_ids = (device const int32_t *)(ids + (uint64_t)token * args.nbi1);
     device const char *token_src1 = src1 + (uint64_t)token * args.nb12;
 
@@ -5926,11 +5934,11 @@ kernel void kernel_mul_mv_id_q2_K_sum6_f32(
     const short ir = it%4;
     const short is = (8*ir)/16;
 
-    for (int expert_slot = 0; expert_slot < args.nei0; expert_slot++) {
+    for (int expert_slot = 0; expert_slot < n_expert; expert_slot++) {
         const int32_t expert = token_ids[expert_slot];
-        if (!ds4_tp_owns_expert(expert, args.ne02, args.tp_rank, args.tp_world)) continue;
-        device const block_q2_K * x = (device const block_q2_K *)(src0s + (int64_t)(expert - args.tp_expert_base)*args.nb02 + first_row*args.nb01);
-        device const float * y = (device const float *)(token_src1 + expert_slot*args.nb11);
+        if (!FLASH && !ds4_tp_owns_expert(expert, args.ne02, args.tp_rank, args.tp_world)) continue;
+        device const block_q2_K * x = (device const block_q2_K *)(src0s + (int64_t)(expert - tp_expert_base)*nb02 + first_row*nb01);
+        device const float * y = (device const float *)(token_src1 + expert_slot*nb11);
         device const float * y4 = y + ix * QK_K + 128 * iq + 8 * ir;
 
         for (int ib = ix; ib < nb; ib += 4) {
@@ -5948,7 +5956,7 @@ kernel void kernel_mul_mv_id_q2_K_sum6_f32(
             device const half     * dh = &x[ib].d;
 
             for (short row = 0; row < nr0; row++) {
-                if (first_row + row < args.ne0) {
+                if (first_row + row < ne0) {
                     float4 acc1 = {0.f, 0.f, 0.f, 0.f};
                     float4 acc2 = {0.f, 0.f, 0.f, 0.f};
                     for (int i = 0; i < 8; i += 2) {
@@ -5971,9 +5979,9 @@ kernel void kernel_mul_mv_id_q2_K_sum6_f32(
                                          sumy[2] * (sc[4] & 0xF0) + sumy[3] * (sc[6] & 0xF0));
                 }
 
-                qs += args.nb01/2;
-                sc += args.nb01;
-                dh += args.nb01/2;
+                qs += nb01/2;
+                sc += nb01;
+                dh += nb01/2;
             }
 
             y4 += 4 * QK_K;
@@ -5981,11 +5989,11 @@ kernel void kernel_mul_mv_id_q2_K_sum6_f32(
     }
 
     device float * dst_f32 = (device float *)(dst + (uint64_t)token * args.nb1);
-    for (int row = 0; row < nr0 && first_row + row < args.ne0; row++) {
+    for (int row = 0; row < nr0 && first_row + row < ne0; row++) {
         const float sum_all = simd_sum(sumf[row]);
         if (tiisg == 0) {
             float outv = sum_all;
-            if (args.tp_addend) {
+            if (!FLASH && args.tp_addend) {
                 outv += ((device const float *) add_in)[first_row + row];
             }
             dst_f32[first_row + row] = outv;
@@ -5996,6 +6004,10 @@ kernel void kernel_mul_mv_id_q2_K_sum6_f32(
     (void)tiitg;
     (void)tgpig;
 }
+
+typedef decltype(kernel_mul_mv_id_q2_K_sum6_f32<false>) mul_mv_id_q2_K_sum6_t;
+template [[host_name("kernel_mul_mv_id_q2_K_sum6_f32")]] kernel mul_mv_id_q2_K_sum6_t kernel_mul_mv_id_q2_K_sum6_f32<false>;
+template [[host_name("kernel_mul_mv_id_q2_K_sum6_static_f32")]] kernel mul_mv_id_q2_K_sum6_t kernel_mul_mv_id_q2_K_sum6_f32<true>;
 
 kernel void kernel_mul_mv_slots6_q2_K_sum6_f32(
         constant ds4_metal_args_mul_mv_id & args,
