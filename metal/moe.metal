@@ -3271,12 +3271,22 @@ void mmv_fn(
     disp_fn(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
 }
 
+// Shape identifies a projection contract, not a quantization type or a model
+// filename. Only resident one-token, non-TP routes may use the fixed cases.
+enum ds4_moe_decode_shape {
+    DS4_MOE_SHAPE_GENERIC,
+    DS4_MOE_SHAPE_V4_FLASH,
+    DS4_MOE_SHAPE_V41_FLASH,
+    DS4_MOE_SHAPE_V4_PRO,
+    DS4_MOE_SHAPE_GLM53_FLASH,
+};
+
 typedef decltype(mmv_fn<kernel_mul_mv_q2_K_f32_impl<N_R0_Q2_K>>) mul_mv_id_disp_fn_t;
 
 // Decode-time expert matvec. The ids tensor selects the routed expert for each
 // slot, then this wrapper invokes the quantized row kernel for Q8_0, Q2_K, or
 // IQ2_XXS weights without materializing per-expert dispatches on the CPU.
-template<mul_mv_id_disp_fn_t disp_fn>
+template<mul_mv_id_disp_fn_t disp_fn, ds4_moe_decode_shape SHAPE = DS4_MOE_SHAPE_GENERIC>
 kernel void kernel_mul_mv_id(
         constant ds4_metal_args_mul_mv_id & args,
         device const char * src0s,
@@ -3290,53 +3300,56 @@ kernel void kernel_mul_mv_id(
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
     (void)tiitg;
 
-    const int iid1 = tgpig.z/args.nei0;
-    const int idx  = tgpig.z%args.nei0;
+    const int iid1 = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 0 : tgpig.z/args.nei0;
+    const int idx  = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? tgpig.z : tgpig.z%args.nei0;
 
     tgpig.z = 0;
 
     const int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
 
-    const int64_t i11 = idx % args.ne11;
+    const int64_t i11 = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? idx : idx % args.ne11;
     const int64_t i12 = iid1;
 
     const int64_t i1 = idx;
     const int64_t i2 = i12;
 
-    device char * dst_cur = dst + (i1*args.ne0 + i2*args.ne1*args.ne0)*sizeof(float);
+    const int ne0 = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 4096 : args.ne0;
+    const uint64_t nb02 = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 2752512 : args.nb02;
+    device char * dst_cur = dst + (i1*ne0 + i2*args.ne1*ne0)*sizeof(float);
 
-    if (!ds4_tp_owns_expert(i02, args.ne02, args.tp_rank, args.tp_world)) {
+    if (SHAPE == DS4_MOE_SHAPE_GENERIC &&
+        !ds4_tp_owns_expert(i02, args.ne02, args.tp_rank, args.tp_world)) {
         /* Unowned expert under the TP split: zero this threadgroup's output
          * rows so the downstream expert-sum stages stay unchanged. */
         const short NSG = FC_mul_mv_nsg;
         const int row0 = (tgpig.x * NSG + sgitg) * args.nr0;
         device float *dst_f32 = (device float *)dst_cur;
-        for (int r = 0; r < args.nr0 && row0 + r < args.ne0; r++) {
+        for (int r = 0; r < args.nr0 && row0 + r < ne0; r++) {
             if (tiisg == 0) dst_f32[row0 + r] = 0.0f;
         }
         return;
     }
 
     device const char * src0_cur =
-        src0s + (int64_t)(i02 - args.tp_expert_base)*args.nb02;
-    device const char * src1_cur = src1  + i11*args.nb11 + i12*args.nb12;
+        src0s + (int64_t)(i02 - (SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 0 : args.tp_expert_base))*nb02;
+    device const char * src1_cur = src1  + i11*(SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 8192 : args.nb11) + i12*args.nb12;
 
     ds4_metal_args_mul_mv args0 = {
-        /*.ne00 =*/ args.ne00,
-        /*.ne01 =*/ args.ne01,
+        /*.ne00 =*/ SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 2048 : args.ne00,
+        /*.ne01 =*/ SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 4096 : args.ne01,
         /*.ne02 =*/ 1,
         /*.nb00 =*/ args.nb00,
-        /*.nb01 =*/ args.nb01,
-        /*.nb02 =*/ args.nb02,
-        /*.nb03 =*/ args.nb02,
-        /*.ne10 =*/ args.ne10,
+        /*.nb01 =*/ SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 672 : args.nb01,
+        /*.nb02 =*/ nb02,
+        /*.nb03 =*/ nb02,
+        /*.ne10 =*/ SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 2048 : args.ne10,
         /*.ne11 =*/ 1,
         /*.ne12 =*/ 1,
         /*.nb10 =*/ args.nb10,
-        /*.nb11 =*/ args.nb11,
+        /*.nb11 =*/ SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 8192 : args.nb11,
         /*.nb12 =*/ args.nb12,
         /*.nb13 =*/ args.nb12,
-        /*.ne0  =*/ args.ne0,
+        /*.ne0  =*/ ne0,
         /*.ne1  =*/ 1,
         /*.nr0  =*/ args.nr0,
         /*.r2   =*/ 1,
@@ -3361,6 +3374,7 @@ typedef decltype(kernel_mul_mv_id<mmv_fn<kernel_mul_mv_q8_0_f32_impl<N_R0_Q8_0>>
 // Host-visible decode MoE matvec variants for the DS4 quant formats.
 template [[host_name("kernel_mul_mv_id_q8_0_f32")]]    kernel kernel_mul_mv_id_q8_0_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_q8_0_f32_impl<N_R0_Q8_0>>>;
 template [[host_name("kernel_mul_mv_id_q2_K_f32")]]    kernel kernel_mul_mv_id_q_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_q2_K_f32_impl<N_R0_Q2_K>>>;
+template [[host_name("kernel_mul_mv_id_q2_K_glm53_flash_f32")]] kernel kernel_mul_mv_id_q_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_q2_K_f32_impl<N_R0_Q2_K>>, DS4_MOE_SHAPE_GLM53_FLASH>;
 template [[host_name("kernel_mul_mv_id_q4_K_f32")]]    kernel kernel_mul_mv_id_q_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_q4_K_f32_impl<N_R0_Q4_K>>>;
 template [[host_name("kernel_mul_mv_id_q8_K_f32")]]    kernel kernel_mul_mv_id_q_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_q8_K_f32_impl<N_R0_Q8_K>>>;
 template [[host_name("kernel_mul_mv_id_iq2_xxs_f32")]] kernel kernel_mul_mv_id_q_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_iq2_xxs_f32_impl<N_R0_IQ2_XXS>>>;
@@ -3579,6 +3593,7 @@ kernel void kernel_mul_mv_id_iq2_xxs_pair_f32(
 // routed activation dispatch and avoids rereading the gate/up rows before the
 // down projection.  The host uses this only for the normal release path where
 // diagnostics do not request clamped gate/up intermediates.
+template<ds4_moe_decode_shape SHAPE>
 kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_f32(
         constant ds4_metal_args_mul_mv_id & args,
         constant ds4_metal_dsv4_moe_swiglu_weight_args & act,
@@ -3596,25 +3611,29 @@ kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_f32(
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
     const short NSG = FC_mul_mv_nsg;
-    const int iid1 = tgpig.z / args.nei0;
-    const int idx  = tgpig.z % args.nei0;
+    const int iid1 = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 0 : tgpig.z / args.nei0;
+    const int idx  = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? tgpig.z : tgpig.z % args.nei0;
 
     tgpig.z = 0;
 
     const int32_t i02 = ((device const int32_t *) (ids + iid1 * args.nbi1))[idx];
-    if (!ds4_tp_owns_expert(i02, args.ne02, args.tp_rank, args.tp_world)) return;
-    const int i02b = i02 - args.tp_expert_base;
-    const int64_t i11 = idx % args.ne11;
+    if (SHAPE == DS4_MOE_SHAPE_GENERIC &&
+        !ds4_tp_owns_expert(i02, args.ne02, args.tp_rank, args.tp_world)) return;
+    const int i02b = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? i02 : i02 - args.tp_expert_base;
+    const int64_t i11 = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 0 : idx % args.ne11;
     const int64_t i12 = iid1;
 
-    const int nb = args.ne00 / QK_K;
+    const int nb = (SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 4096 : args.ne00) / QK_K;
     const int first_row = (tgpig.x * NSG + sgitg) * N_R0_IQ2_XXS;
     const int nb32 = nb * (QK_K / 32);
+    const uint64_t nb01 = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 1056 : args.nb01;
+    const uint64_t nb02 = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 2162688 : args.nb02;
+    const int ne0 = SHAPE == DS4_MOE_SHAPE_GLM53_FLASH ? 2048 : args.ne0;
 
     device const block_iq2_xxs *xg =
-        (device const block_iq2_xxs *)(src0_gate + (int64_t)i02b * args.nb02 + (uint64_t)first_row * args.nb01);
+        (device const block_iq2_xxs *)(src0_gate + (int64_t)i02b * nb02 + (uint64_t)first_row * nb01);
     device const block_iq2_xxs *xu =
-        (device const block_iq2_xxs *)(src0_up + (int64_t)i02b * args.nb02 + (uint64_t)first_row * args.nb01);
+        (device const block_iq2_xxs *)(src0_up + (int64_t)i02b * nb02 + (uint64_t)first_row * nb01);
     device const float *y =
         (device const float *)(src1 + i11 * args.nb11 + i12 * args.nb12);
 
@@ -3676,10 +3695,10 @@ kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_f32(
             sumg[row] += dg * sg;
             sumu[row] += du * su;
 
-            dhg += args.nb01 / 2;
-            dhu += args.nb01 / 2;
-            qg  += args.nb01 / 2;
-            qu  += args.nb01 / 2;
+            dhg += nb01 / 2;
+            dhu += nb01 / 2;
+            qg  += nb01 / 2;
+            qu  += nb01 / 2;
         }
 
         y4 += 32 * 32;
@@ -3703,7 +3722,7 @@ kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_f32(
         reduced_gate[row] = simd_sum(sumg[row]);
         reduced_up[row] = simd_sum(sumu[row]);
     }
-    if (tiisg < N_R0_IQ2_XXS && first_row + tiisg < args.ne0) {
+    if (tiisg < N_R0_IQ2_XXS && first_row + tiisg < ne0) {
         const uint out_row = first_row + tiisg;
         const float gate = reduced_gate[tiisg] * 0.25f;
         const float up = reduced_up[tiisg] * 0.25f;
@@ -3722,6 +3741,11 @@ kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_f32(
     (void)tiitg;
 }
 
+typedef decltype(kernel_mul_mv_id_iq2_xxs_pair_swiglu_f32<DS4_MOE_SHAPE_GENERIC>) iq2_pair_shape_t;
+template [[host_name("kernel_mul_mv_id_iq2_xxs_pair_swiglu_f32")]] kernel iq2_pair_shape_t kernel_mul_mv_id_iq2_xxs_pair_swiglu_f32<DS4_MOE_SHAPE_GENERIC>;
+template [[host_name("kernel_mul_mv_id_iq2_xxs_pair_swiglu_glm53_flash_f32")]] kernel iq2_pair_shape_t kernel_mul_mv_id_iq2_xxs_pair_swiglu_f32<DS4_MOE_SHAPE_GLM53_FLASH>;
+
+template<ds4_moe_decode_shape SHAPE>
 kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_f32(
         constant ds4_metal_args_mul_mv_id & args,
         constant ds4_metal_dsv4_moe_swiglu_weight_args & act,
@@ -3739,25 +3763,29 @@ kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_f32(
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
     constexpr short NSG = 4;
-    const int iid1 = tgpig.z / args.nei0;
-    const int idx  = tgpig.z % args.nei0;
+    const int iid1 = SHAPE == DS4_MOE_SHAPE_V4_FLASH ? 0 : tgpig.z / args.nei0;
+    const int idx  = SHAPE == DS4_MOE_SHAPE_V4_FLASH ? tgpig.z : tgpig.z % args.nei0;
 
     tgpig.z = 0;
 
     const int32_t i02 = ((device const int32_t *) (ids + iid1 * args.nbi1))[idx];
-    if (!ds4_tp_owns_expert(i02, args.ne02, args.tp_rank, args.tp_world)) return;
-    const int i02b = i02 - args.tp_expert_base;
-    const int64_t i11 = idx % args.ne11;
+    if (SHAPE == DS4_MOE_SHAPE_GENERIC &&
+        !ds4_tp_owns_expert(i02, args.ne02, args.tp_rank, args.tp_world)) return;
+    const int i02b = SHAPE == DS4_MOE_SHAPE_V4_FLASH ? i02 : i02 - args.tp_expert_base;
+    const int64_t i11 = SHAPE == DS4_MOE_SHAPE_V4_FLASH ? 0 : idx % args.ne11;
     const int64_t i12 = iid1;
 
-    const int nb = args.ne00 / QK_K;
+    const int nb = (SHAPE == DS4_MOE_SHAPE_V4_FLASH ? 4096 : args.ne00) / QK_K;
     const int first_row = (tgpig.x * NSG + sgitg) * N_R0_IQ2_XXS;
     const int nb32 = nb * (QK_K / 32);
+    const uint64_t nb01 = SHAPE == DS4_MOE_SHAPE_V4_FLASH ? 1056 : args.nb01;
+    const uint64_t nb02 = SHAPE == DS4_MOE_SHAPE_V4_FLASH ? 2162688 : args.nb02;
+    const int ne0 = SHAPE == DS4_MOE_SHAPE_V4_FLASH ? 2048 : args.ne0;
 
     device const block_iq2_xxs *xg =
-        (device const block_iq2_xxs *)(src0_gate + (int64_t)i02b * args.nb02 + (uint64_t)first_row * args.nb01);
+        (device const block_iq2_xxs *)(src0_gate + (int64_t)i02b * nb02 + (uint64_t)first_row * nb01);
     device const block_iq2_xxs *xu =
-        (device const block_iq2_xxs *)(src0_up + (int64_t)i02b * args.nb02 + (uint64_t)first_row * args.nb01);
+        (device const block_iq2_xxs *)(src0_up + (int64_t)i02b * nb02 + (uint64_t)first_row * nb01);
     device const float *y =
         (device const float *)(src1 + i11 * args.nb11 + i12 * args.nb12);
 
@@ -3828,10 +3856,10 @@ kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_f32(
             sumg[row] += dg * sg;
             sumu[row] += du * su;
 
-            dhg += args.nb01 / 2;
-            dhu += args.nb01 / 2;
-            qg  += args.nb01 / 2;
-            qu  += args.nb01 / 2;
+            dhg += nb01 / 2;
+            dhu += nb01 / 2;
+            qg  += nb01 / 2;
+            qu  += nb01 / 2;
         }
 
         y4 += 32 * 32;
@@ -3855,7 +3883,7 @@ kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_f32(
         reduced_gate[row] = simd_sum(sumg[row]);
         reduced_up[row] = simd_sum(sumu[row]);
     }
-    if (tiisg < N_R0_IQ2_XXS && first_row + tiisg < args.ne0) {
+    if (tiisg < N_R0_IQ2_XXS && first_row + tiisg < ne0) {
         const uint out_row = first_row + tiisg;
         const float gate = reduced_gate[tiisg] * 0.25f;
         const float up = reduced_up[tiisg] * 0.25f;
@@ -3873,6 +3901,10 @@ kernel void kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_f32(
 
     (void)tiitg;
 }
+
+typedef decltype(kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_f32<DS4_MOE_SHAPE_GENERIC>) iq2_pack2_shape_t;
+template [[host_name("kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_f32")]] kernel iq2_pack2_shape_t kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_f32<DS4_MOE_SHAPE_GENERIC>;
+template [[host_name("kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_v4_flash_f32")]] kernel iq2_pack2_shape_t kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_f32<DS4_MOE_SHAPE_V4_FLASH>;
 
 
 kernel void kernel_mul_mv_slots6_iq2_xxs_pair_swiglu_f32(
@@ -5898,7 +5930,7 @@ kernel void kernel_mul_mv_id_iq2_xxs_sum6_f32(
     (void)tgpig;
 }
 
-template<bool FLASH>
+template<ds4_moe_decode_shape SHAPE>
 kernel void kernel_mul_mv_id_q2_K_sum6_f32(
         constant ds4_metal_args_mul_mv_id & args,
         device const char * src0s,
@@ -5913,16 +5945,26 @@ kernel void kernel_mul_mv_id_q2_K_sum6_f32(
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
     const short NSG = FC_mul_mv_nsg;
     const short nr0 = N_R0_Q2_K;
-    // FLASH only exposes host-proven bounds/strides; keep the accumulation walk.
-    const int nb = (FLASH ? 2048 : args.ne00)/QK_K;
-    const int n_expert = FLASH ? 6 : args.nei0;
-    const int ne0 = FLASH ? 4096 : args.ne0;
-    const uint64_t nb01 = FLASH ? 672 : args.nb01;
-    const uint64_t nb02 = FLASH ? 2752512 : args.nb02;
-    const uint64_t nb11 = FLASH ? 8192 : args.nb11;
-    const int tp_expert_base = FLASH ? 0 : args.tp_expert_base;
+    // The host proves these bounds/strides; preserve the accumulation walk.
+    const int nb = (SHAPE == DS4_MOE_SHAPE_V4_FLASH ? 2048 :
+                    SHAPE == DS4_MOE_SHAPE_V41_FLASH ? 2304 :
+                    SHAPE == DS4_MOE_SHAPE_V4_PRO ? 3072 : args.ne00)/QK_K;
+    const int n_expert = SHAPE == DS4_MOE_SHAPE_GENERIC ? args.nei0 : 6;
+    const int ne0 = SHAPE == DS4_MOE_SHAPE_V4_FLASH ? 4096 :
+                    SHAPE == DS4_MOE_SHAPE_V41_FLASH ? 5120 :
+                    SHAPE == DS4_MOE_SHAPE_V4_PRO ? 7168 : args.ne0;
+    const uint64_t nb01 = SHAPE == DS4_MOE_SHAPE_V4_FLASH ? 672 :
+                          SHAPE == DS4_MOE_SHAPE_V41_FLASH ? 756 :
+                          SHAPE == DS4_MOE_SHAPE_V4_PRO ? 1008 : args.nb01;
+    const uint64_t nb02 = SHAPE == DS4_MOE_SHAPE_V4_FLASH ? 2752512 :
+                          SHAPE == DS4_MOE_SHAPE_V41_FLASH ? 3870720 :
+                          SHAPE == DS4_MOE_SHAPE_V4_PRO ? 7225344 : args.nb02;
+    const uint64_t nb11 = SHAPE == DS4_MOE_SHAPE_V4_FLASH ? 8192 :
+                          SHAPE == DS4_MOE_SHAPE_V41_FLASH ? 9216 :
+                          SHAPE == DS4_MOE_SHAPE_V4_PRO ? 12288 : args.nb11;
+    const int tp_expert_base = SHAPE == DS4_MOE_SHAPE_GENERIC ? args.tp_expert_base : 0;
     const int first_row = (tgpig.x * NSG + sgitg) * nr0;
-    const uint token = FLASH ? 0 : tgpig.y;
+    const uint token = SHAPE == DS4_MOE_SHAPE_GENERIC ? tgpig.y : 0;
     device const int32_t *token_ids = (device const int32_t *)(ids + (uint64_t)token * args.nbi1);
     device const char *token_src1 = src1 + (uint64_t)token * args.nb12;
 
@@ -5936,7 +5978,8 @@ kernel void kernel_mul_mv_id_q2_K_sum6_f32(
 
     for (int expert_slot = 0; expert_slot < n_expert; expert_slot++) {
         const int32_t expert = token_ids[expert_slot];
-        if (!FLASH && !ds4_tp_owns_expert(expert, args.ne02, args.tp_rank, args.tp_world)) continue;
+        if (SHAPE == DS4_MOE_SHAPE_GENERIC &&
+            !ds4_tp_owns_expert(expert, args.ne02, args.tp_rank, args.tp_world)) continue;
         device const block_q2_K * x = (device const block_q2_K *)(src0s + (int64_t)(expert - tp_expert_base)*nb02 + first_row*nb01);
         device const float * y = (device const float *)(token_src1 + expert_slot*nb11);
         device const float * y4 = y + ix * QK_K + 128 * iq + 8 * ir;
@@ -5993,7 +6036,7 @@ kernel void kernel_mul_mv_id_q2_K_sum6_f32(
         const float sum_all = simd_sum(sumf[row]);
         if (tiisg == 0) {
             float outv = sum_all;
-            if (!FLASH && args.tp_addend) {
+            if (SHAPE == DS4_MOE_SHAPE_GENERIC && args.tp_addend) {
                 outv += ((device const float *) add_in)[first_row + row];
             }
             dst_f32[first_row + row] = outv;
@@ -6005,9 +6048,11 @@ kernel void kernel_mul_mv_id_q2_K_sum6_f32(
     (void)tgpig;
 }
 
-typedef decltype(kernel_mul_mv_id_q2_K_sum6_f32<false>) mul_mv_id_q2_K_sum6_t;
-template [[host_name("kernel_mul_mv_id_q2_K_sum6_f32")]] kernel mul_mv_id_q2_K_sum6_t kernel_mul_mv_id_q2_K_sum6_f32<false>;
-template [[host_name("kernel_mul_mv_id_q2_K_sum6_static_f32")]] kernel mul_mv_id_q2_K_sum6_t kernel_mul_mv_id_q2_K_sum6_f32<true>;
+typedef decltype(kernel_mul_mv_id_q2_K_sum6_f32<DS4_MOE_SHAPE_GENERIC>) mul_mv_id_q2_K_sum6_t;
+template [[host_name("kernel_mul_mv_id_q2_K_sum6_f32")]] kernel mul_mv_id_q2_K_sum6_t kernel_mul_mv_id_q2_K_sum6_f32<DS4_MOE_SHAPE_GENERIC>;
+template [[host_name("kernel_mul_mv_id_q2_K_sum6_static_f32")]] kernel mul_mv_id_q2_K_sum6_t kernel_mul_mv_id_q2_K_sum6_f32<DS4_MOE_SHAPE_V4_FLASH>;
+template [[host_name("kernel_mul_mv_id_q2_K_sum6_v41_flash_f32")]] kernel mul_mv_id_q2_K_sum6_t kernel_mul_mv_id_q2_K_sum6_f32<DS4_MOE_SHAPE_V41_FLASH>;
+template [[host_name("kernel_mul_mv_id_q2_K_sum6_v4_pro_f32")]] kernel mul_mv_id_q2_K_sum6_t kernel_mul_mv_id_q2_K_sum6_f32<DS4_MOE_SHAPE_V4_PRO>;
 
 kernel void kernel_mul_mv_slots6_q2_K_sum6_f32(
         constant ds4_metal_args_mul_mv_id & args,

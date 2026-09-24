@@ -72,6 +72,48 @@ poisoned outputs, guards, repeated/edge expert IDs, and tail/addend fallback
 cases. Its `--reference-only` mode keeps rollback enabled and prints an output
 checksum for cross-source comparisons.
 
+The resident M5 decode shape templates now cover three six-route Q2_K down
+projections (V4 Flash, V4.1 Flash and V4 PRO), the V4 Flash IQ2_XXS pack2
+gate/up pair, and the eight-route GLM 5.3 Flash IQ2_XXS pair and per-expert
+Q2_K down projection. Shape and tensor
+quantization are checked separately. Each template retains a generic fallback;
+SSD streaming, TP, batched decode and unmatched strides do not use these fixed
+routes. Qwen's ten-route MoE has a separate implementation.
+
+```sh
+make test-metal-q2-decode
+MTL_DEBUG_LAYER=1 ./tests/test_metal_q2_decode_exact --full-experts
+MTL_DEBUG_LAYER=1 ./tests/test_metal_q2_decode_exact --profile v41
+MTL_DEBUG_LAYER=1 ./tests/test_metal_q2_decode_exact --profile pro
+MTL_DEBUG_LAYER=1 ./tests/test_metal_q2_decode_exact --profile glm53
+```
+
+The full-expert case compares the Flash IQ2 and Q2 changes independently. The
+V4.1/PRO cases use synthetic eight-expert tensors with the real projection
+dimensions; GLM uses eight selected IDs from 288 synthetic experts. Only V4
+Flash and GLM 5.3 Flash have local model-backed throughput measurements. To
+compare the new IQ2 choices with a same-engine logit-exact rollback, pass
+`--candidate-env DS4_METAL_DISABLE_M5_IQ2_PACK2_SHAPE` for V4 Flash or
+`--candidate-env DS4_METAL_DISABLE_M5_IQ2_GLM53_SHAPE` for GLM 5.3 Flash to
+`metal_decode_schedule_bench`, then repeat with `--reverse-order`. The Q2
+rollback above still applies to the three six-route Q2 shapes. The GLM
+eight-route per-expert Q2 down kernel has its own independent rollback,
+`DS4_METAL_DISABLE_M5_GLM53_Q2_DOWN_SHAPE`, because it preserves eight
+separate down rows and the following sum8, rather than using sum6.
+
+On M5 Max 128 GB in high-power mode, 768-step V4 Flash decode A/B measured
+about 0.58-0.66% higher throughput with the shaped IQ2 pair in opposite
+orders; 512-step GLM 5.3 Flash measured about 0.62-0.65%. Both comparisons
+checked full-vocabulary logits and selected tokens exactly. Isolated Q2
+dispatch timings improved for V4.1/PRO shapes, but without local model weights
+there is no V4.1/PRO end-to-end claim. A synthetic isolated Flash IQ2 test
+regressed despite its real-model improvement; cache and concurrent-shared-FFN
+conditions matter, so do not infer throughput from isolated timings alone.
+With GLM's IQ2 shape held enabled, 512-step GLM decode gained 0.39-0.47%
+from its separate per-expert Q2 down shape; all compared outputs were exact.
+An experimental GLM KDA Q8 shape was dropped: its 0.09-0.12% full-model
+effect was comparable to a no-op A/A offset despite faster isolated dispatches.
+
 To compare the default pre-M5 ratio-4 compressor pack/transpose fusion with the
 legacy decode path, including token selection, use:
 
