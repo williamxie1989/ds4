@@ -153,7 +153,10 @@ use `--help` to override them.
 
 Numeric runtime tuning controls can use `--candidate-value TEXT` (default `1`), and
 `--prefill-chunk N` selects the same chunk size for both variants (default
-4096). The control unsets the named variable. Use only controls read at
+4096). For GLM, pass `--prefill-chunk 0` to let the model choose its own chunk
+size; GLM rejects an explicit chunk size. `--interleave` requires a nonzero
+chunk size, so use the default ABBA/BAAB mode for GLM. The control unsets the
+named variable. Use only controls read at
 dispatch time: this harness keeps one engine alive and cannot compare settings
 cached during initialization.
 
