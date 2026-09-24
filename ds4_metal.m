@@ -40699,6 +40699,33 @@ int ds4_gpu_routed_moe_one_tensor(
         id<MTLComputePipelineState> down_sum6_pipeline = nil;
         if (down_type == DS4_METAL_TENSOR_Q2_K) {
             down_sum6_pipeline = g_moe_mul_mv_id_q2_k_sum6_pipeline;
+            if (ds4_gpu_device_is_m5_apple_silicon() &&
+                !g_ssd_streaming_mode && g_tp_split_world == 1 && !g_tp_thread_running &&
+                !g_quality_mode &&
+                n_tokens == 1 && n_expert == 6 &&
+                expert_mid_dim == 2048 && out_dim == 4096) {
+                /* Prove every fixed bound/stride, including the one-token
+                 * dispatch and zero-based resident expert blob. Keep the original
+                 * two-SIMDgroup launch and per-lane accumulation order. */
+                const bool use_static =
+                    getenv("DS4_METAL_DISABLE_M5_Q2_SUM6_TUNING") == NULL &&
+                    down_row_bytes == 672 && down_expert_bytes == 2752512 &&
+                    down_args.ne00 == 2048 && down_args.ne10 == 2048 &&
+                    down_args.ne01 == 4096 && down_args.ne0 == 4096 &&
+                    down_args.nb01 == 672 && down_args.nb02 == 2752512 &&
+                    down_args.nb11 == 8192 && down_args.ne11 == 6 &&
+                    down_args.nei0 == 6 && down_args.nei1 == 1 &&
+                    down_args.ne12 == 1 && down_args.nr0 == 4 &&
+                    down_args.tp_world == 1 && down_args.tp_expert_base == 0 &&
+                    down_args.tp_rank == 0 && !down_args.tp_addend &&
+                    add_in == NULL && first_expert == 0 &&
+                    n_bind_expert == n_total_expert;
+                if (use_static) {
+                    id<MTLComputePipelineState> tuned = ds4_gpu_get_mul_mv_pipeline(
+                        "kernel_mul_mv_id_q2_K_sum6_static_f32", 2);
+                    if (tuned) down_sum6_pipeline = tuned;
+                }
+            }
         } else if (down_type == DS4_METAL_TENSOR_Q4_K) {
             down_sum6_pipeline = g_moe_mul_mv_id_q4_k_sum6_pipeline;
         } else if (down_type == DS4_METAL_TENSOR_MXFP4) {

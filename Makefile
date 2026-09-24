@@ -175,6 +175,13 @@ tests/test_metal_moe_prefill: tests/test_metal_moe_prefill.o $(CORE_OBJS)
 test-metal-moe-prefill: tests/test_metal_moe_prefill
 	./tests/test_metal_moe_prefill
 
+tests/test_metal_q2_decode_exact: tests/test_metal_q2_decode_exact.c ds4_gpu.h $(CORE_OBJS)
+	$(CC) $(CFLAGS) -fno-fast-math -I. -o $@ $< $(CORE_OBJS) $(METAL_LDLIBS)
+
+.PHONY: test-metal-q2-decode
+test-metal-q2-decode: tests/test_metal_q2_decode_exact
+	MTL_DEBUG_LAYER=1 ./tests/test_metal_q2_decode_exact
+
 tests/test_qwen4_moe_mm_specialize.o: tests/test_qwen4_moe_mm_specialize.c ds4_gpu.h
 	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
 
@@ -1065,6 +1072,7 @@ ds4_cpu_test_hooks.o ds4_cuda_test_hooks.o tests/test_session_state.o \
 tests/test_session_state_gpu.o: ds4_tool_text.h
 
 clean:
+	rm -f tests/test_metal_q2_decode_exact
 	rm -f tests/test_qwen4_ngrams
 	rm -f tests/test_qwen4_ngram_state
 	rm -f tests/test_web_recovery

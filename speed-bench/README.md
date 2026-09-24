@@ -44,6 +44,34 @@ row is bit-identical and, with `--include-selection`, both variants select the
 same non-EOS token. Use `--candidate-env NAME` to measure a rollback control,
 or `--help` to compare explicit split schedules.
 
+Repeat measurements with `--reverse-order` as well. This inverts the initial
+variant order and session pairing, so periodic compressor work is not always
+measured with the same variant first.
+
+The M5 resident Q2 sum6 decode specialization fixes the Flash dimensions and
+strides while preserving the original two-SIMDgroup threadgroups and floating
+point accumulation order. Other shapes, SSD streaming, TP, quality mode and
+non-M5 devices retain the generic selection. To compare against its rollback:
+
+```
+make test-metal-q2-decode metal-decode-schedule-bench
+./speed-bench/metal_decode_schedule_bench -m ds4flash.gguf \
+  --prompt-file speed-bench/promessi_sposi.txt --prefix-tokens 2048 --ctx 4096 \
+  --warmup 32 --tokens 768 --control-first 4 --control-second 0 \
+  --candidate-env DS4_METAL_DISABLE_M5_Q2_SUM6_TUNING --include-selection
+# Repeat with --reverse-order. Control is specialized; candidate is generic.
+```
+
+On M5 Max 128 GB, macOS 26.6.2 high power mode, Flash Q2 with Q8 attention,
+shared and output weights, this comparison measured +0.17% and +0.22% decode
+throughput in opposite orders. All logits and selected tokens matched exactly;
+the gain is small, not a several-percent end-to-end improvement.
+
+The model-free test compares all consumed mid/output values bitwise, with
+poisoned outputs, guards, repeated/edge expert IDs, and tail/addend fallback
+cases. Its `--reference-only` mode keeps rollback enabled and prints an output
+checksum for cross-source comparisons.
+
 To compare the default pre-M5 ratio-4 compressor pack/transpose fusion with the
 legacy decode path, including token selection, use:
 
