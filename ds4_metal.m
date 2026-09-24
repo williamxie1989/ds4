@@ -40374,6 +40374,36 @@ static bool ds4_gpu_mxfp4_moe_decode_nsg1_enabled(uint32_t n_tokens) {
            getenv("DS4_METAL_DISABLE_PRE_M5_MXFP4_MOE_DECODE_NSG1") == NULL;
 }
 
+static inline bool ds4_gpu_m5_iq2_pair_shape_args_match(
+        const ds4_gpu_mul_mv_id_args *args,
+        uint32_t n_expert,
+        uint32_t n_total_expert) {
+    return args->ne00 == 4096 && args->ne10 == 4096 &&
+           args->ne01 == 2048 && args->ne0 == 2048 &&
+           args->ne02 == (int32_t)n_total_expert && args->nr0 == 4 &&
+           args->nei0 == (int32_t)n_expert && args->nei1 == 1 &&
+           args->ne11 == 1 && args->nbi1 == (uint64_t)n_expert * sizeof(int32_t) &&
+           args->nb00 == 66 && args->nb01 == 1056 &&
+           args->nb02 == 2162688 && args->nb11 == 16384 &&
+           args->tp_world == 1 && args->tp_rank == 0 &&
+           args->tp_expert_base == 0;
+}
+
+static inline bool ds4_gpu_m5_glm53_q2_down_shape_args_match(
+        const ds4_gpu_mul_mv_id_args *args) {
+    return args->ne00 == 2048 && args->ne10 == 2048 &&
+           args->ne01 == 4096 && args->ne0 == 4096 &&
+           args->ne02 == 288 && args->ne1 == 8 &&
+           args->nb00 == 84 && args->nb01 == 672 &&
+           args->nb02 == 2752512 && args->nb11 == 8192 &&
+           args->nb12 == 65536 && args->nb1 == 16384 &&
+           args->ne11 == 8 && args->ne12 == 1 &&
+           args->nei0 == 8 && args->nei1 == 1 &&
+           args->nbi1 == 32 && args->nr0 == 4 &&
+           args->tp_world == 1 && args->tp_rank == 0 &&
+           args->tp_expert_base == 0 && !args->tp_addend;
+}
+
 int ds4_gpu_routed_moe_one_tensor(
         ds4_gpu_tensor       *out,
         ds4_gpu_tensor       *gate,
@@ -40685,11 +40715,38 @@ int ds4_gpu_routed_moe_one_tensor(
             expert_in_dim == 4096 && expert_mid_dim == 2048 &&
             getenv("DS4_METAL_DISABLE_M5_IQ2_PAIR_PACK2") == NULL &&
             ds4_gpu_device_is_m5_apple_silicon();
+        const bool m5_resident_decode_shape =
+            gate_type == DS4_METAL_TENSOR_IQ2_XXS &&
+            ds4_gpu_device_is_m5_apple_silicon() &&
+            !g_ssd_streaming_mode && !g_tp_thread_running &&
+            !g_quality_mode && !write_clamped_moe &&
+            g_tp_split_world == 1 && g_tp_split_rank == 0 &&
+            first_expert == 0 && n_bind_expert == n_total_expert &&
+            n_tokens == 1;
         if (use_iq2_pair_pack2 &&
             g_moe_mul_mv_id_iq2_xxs_pair_swiglu_pack2_pipeline) {
             pair_swiglu_pipeline =
                 g_moe_mul_mv_id_iq2_xxs_pair_swiglu_pack2_pipeline;
             pair_swiglu_nsg = 4;
+            if (getenv("DS4_METAL_DISABLE_M5_IQ2_PACK2_SHAPE") == NULL &&
+                m5_resident_decode_shape &&
+                gate_row_bytes == 1056 && gate_expert_bytes == 2162688 &&
+                ds4_gpu_m5_iq2_pair_shape_args_match(&gate_args, 6, 256)) {
+                id<MTLComputePipelineState> tuned = ds4_gpu_get_mul_mv_pipeline(
+                    "kernel_mul_mv_id_iq2_xxs_pair_swiglu_pack2_overlap_v4_flash_f32", 2);
+                if (tuned) pair_swiglu_pipeline = tuned;
+            }
+        }
+        if (gate_type == DS4_METAL_TENSOR_IQ2_XXS &&
+            down_type == DS4_METAL_TENSOR_Q2_K &&
+            getenv("DS4_METAL_DISABLE_M5_IQ2_GLM53_SHAPE") == NULL &&
+            m5_resident_decode_shape && n_expert == 8 && n_total_expert == 288 &&
+            expert_in_dim == 4096 && expert_mid_dim == 2048 && out_dim == 4096 &&
+            gate_row_bytes == 1056 && gate_expert_bytes == 2162688 &&
+            ds4_gpu_m5_iq2_pair_shape_args_match(&gate_args, 8, 288)) {
+            id<MTLComputePipelineState> tuned = ds4_gpu_get_mul_mv_pipeline(
+                "kernel_mul_mv_id_iq2_xxs_pair_swiglu_glm53_flash_f32", 2);
+            if (tuned) pair_swiglu_pipeline = tuned;
         }
         const bool fuse_pair_swiglu =
             !g_quality_mode &&
@@ -40702,18 +40759,32 @@ int ds4_gpu_routed_moe_one_tensor(
             if (ds4_gpu_device_is_m5_apple_silicon() &&
                 !g_ssd_streaming_mode && g_tp_split_world == 1 && !g_tp_thread_running &&
                 !g_quality_mode &&
-                n_tokens == 1 && n_expert == 6 &&
-                expert_mid_dim == 2048 && out_dim == 4096) {
-                /* Prove every fixed bound/stride, including the one-token
-                 * dispatch and zero-based resident expert blob. Keep the original
-                 * two-SIMDgroup launch and per-lane accumulation order. */
+                n_tokens == 1 && n_expert == 6) {
+                const char *shape_kernel = NULL;
+                uint64_t shape_row_bytes = 0, shape_expert_bytes = 0;
+                if (expert_mid_dim == 2048 && out_dim == 4096) {
+                    shape_kernel = "kernel_mul_mv_id_q2_K_sum6_static_f32";
+                    shape_row_bytes = 672;
+                    shape_expert_bytes = 2752512;
+                } else if (expert_mid_dim == 2304 && out_dim == 5120) {
+                    shape_kernel = "kernel_mul_mv_id_q2_K_sum6_v41_flash_f32";
+                    shape_row_bytes = 756;
+                    shape_expert_bytes = 3870720;
+                } else if (expert_mid_dim == 3072 && out_dim == 7168) {
+                    shape_kernel = "kernel_mul_mv_id_q2_K_sum6_v4_pro_f32";
+                    shape_row_bytes = 1008;
+                    shape_expert_bytes = 7225344;
+                }
+                /* The shape key fixes projection bounds and strides, not the
+                 * quantization of adjacent tensors or the expert ID values. */
                 const bool use_static =
+                    shape_kernel != NULL &&
                     getenv("DS4_METAL_DISABLE_M5_Q2_SUM6_TUNING") == NULL &&
-                    down_row_bytes == 672 && down_expert_bytes == 2752512 &&
-                    down_args.ne00 == 2048 && down_args.ne10 == 2048 &&
-                    down_args.ne01 == 4096 && down_args.ne0 == 4096 &&
-                    down_args.nb01 == 672 && down_args.nb02 == 2752512 &&
-                    down_args.nb11 == 8192 && down_args.ne11 == 6 &&
+                    down_row_bytes == shape_row_bytes && down_expert_bytes == shape_expert_bytes &&
+                    down_args.ne00 == (int32_t)expert_mid_dim && down_args.ne10 == (int32_t)expert_mid_dim &&
+                    down_args.ne01 == (int32_t)out_dim && down_args.ne0 == (int32_t)out_dim &&
+                    down_args.nb01 == shape_row_bytes && down_args.nb02 == shape_expert_bytes &&
+                    down_args.nb11 == (uint64_t)expert_mid_dim * sizeof(float) && down_args.ne11 == 6 &&
                     down_args.nei0 == 6 && down_args.nei1 == 1 &&
                     down_args.ne12 == 1 && down_args.nr0 == 4 &&
                     down_args.tp_world == 1 && down_args.tp_expert_base == 0 &&
@@ -40722,7 +40793,7 @@ int ds4_gpu_routed_moe_one_tensor(
                     n_bind_expert == n_total_expert;
                 if (use_static) {
                     id<MTLComputePipelineState> tuned = ds4_gpu_get_mul_mv_pipeline(
-                        "kernel_mul_mv_id_q2_K_sum6_static_f32", 2);
+                        shape_kernel, 2);
                     if (tuned) down_sum6_pipeline = tuned;
                 }
             }
@@ -40759,6 +40830,20 @@ int ds4_gpu_routed_moe_one_tensor(
             (n_expert == 6 || (n_expert == 8 && g_tp_split_world == 2)) &&
             n_tokens == 1 &&
             down_sum6_pipeline != nil;
+        if (!direct_down_sum && gate_type == DS4_METAL_TENSOR_IQ2_XXS &&
+            down_type == DS4_METAL_TENSOR_Q2_K &&
+            getenv("DS4_METAL_DISABLE_M5_GLM53_Q2_DOWN_SHAPE") == NULL &&
+            m5_resident_decode_shape &&
+            add_in == NULL &&
+            n_expert == 8 && n_total_expert == 288 &&
+            expert_in_dim == 4096 && expert_mid_dim == 2048 && out_dim == 4096 &&
+            down_row_bytes == 672 && down_expert_bytes == 2752512 &&
+            ds4_gpu_m5_glm53_q2_down_shape_args_match(&down_args) &&
+            down_nsg == 2 && !down_rows_per_group_is_nr0) {
+            id<MTLComputePipelineState> tuned = ds4_gpu_get_mul_mv_pipeline(
+                "kernel_mul_mv_id_q2_K_glm53_flash_f32", 2);
+            if (tuned) down_mv_pipeline = tuned;
+        }
 
         if (g_parallel_q8_pending) {
             /* A concurrent encoder invalidates every implicit dependency in
