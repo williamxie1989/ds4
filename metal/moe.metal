@@ -3272,12 +3272,26 @@ void mmv_fn(
 }
 
 // Shape identifies a projection contract, not a quantization type or a model
-// filename. Only resident one-token, non-TP routes may use the fixed cases.
+// filename. Fixed cases require one token and a zero-based resident expert
+// blob, skip TP ownership, and (for sum6) omit the optional addend. Expert IDs,
+// route weights, and activation/clamp values remain dynamic.
 enum ds4_moe_decode_shape {
+    // Runtime bounds/strides, token offsets, TP ownership and optional addend.
     DS4_MOE_SHAPE_GENERIC,
+    // Six-route Q2 sum6: K2048 -> 4096, row/expert 672/2752512 bytes,
+    // F32 mid stride 8192. IQ2 pack2 gate/up: K4096 -> 2048,
+    // row/expert 1056/2162688 bytes; gate/up broadcast the F32 input.
     DS4_MOE_SHAPE_V4_FLASH,
+    // Six-route Q2 sum6: K2304 -> 5120, row/expert 756/3870720 bytes,
+    // F32 mid stride 9216.
     DS4_MOE_SHAPE_V41_FLASH,
+    // Six-route Q2 sum6: K3072 -> 7168, row/expert 1008/7225344 bytes,
+    // F32 mid stride 12288.
     DS4_MOE_SHAPE_V4_PRO,
+    // Eight-route IQ2 gate/up: K4096 -> 2048, row/expert 1056/2162688 bytes;
+    // input is broadcast. Grid z is the route slot (no token division).
+    // Per-expert Q2 down: K2048 -> 4096, row/expert 672/2752512 bytes,
+    // F32 mid stride 8192, one mid row per slot; sum8 remains separate.
     DS4_MOE_SHAPE_GLM53_FLASH,
 };
 
