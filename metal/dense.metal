@@ -112,7 +112,7 @@ static inline void helper_mv_reduce_and_write(
     }
 }
 
-template<short NR0, typename args_t>
+template<short NR0, typename args_t, bool GLM53_KDA_OUTPUT = false>
 void kernel_mul_mv_q8_0_f32_impl(
         args_t args,
         device const char * src0,
@@ -127,7 +127,7 @@ void kernel_mul_mv_q8_0_f32_impl(
     constexpr short NW = N_SIMDWIDTH;
     constexpr short NQ = 8;
 
-    const int nb = args.ne00/QK8_0;
+    const int nb = (GLM53_KDA_OUTPUT ? 8192 : args.ne00)/QK8_0;
 
     const int r0 = tgpig.x*NR0;
     const int r1 = tgpig.y;
@@ -136,13 +136,16 @@ void kernel_mul_mv_q8_0_f32_impl(
     const uint i12 = im%args.ne12;
     const uint i13 = im/args.ne12;
 
-    const uint64_t offset1 = r1*args.nb11 + (i12)*args.nb12 + (i13)*args.nb13;
+    const uint64_t offset1 = GLM53_KDA_OUTPUT ? 0 :
+        r1*args.nb11 + (i12)*args.nb12 + (i13)*args.nb13;
 
     device const float * y = (device const float *) (src1 + offset1);
 
     device const block_q8_0 * ax[NR0];
     FOR_UNROLL (short row = 0; row < NR0; ++row) {
-        const uint64_t offset0 = (r0 + row)*args.nb01 + (i12/args.r2)*args.nb02 + (i13/args.r3)*args.nb03;
+        const uint64_t offset0 = GLM53_KDA_OUTPUT ?
+            (uint64_t)(r0 + row)*8704 :
+            (r0 + row)*args.nb01 + (i12/args.r2)*args.nb02 + (i13/args.r3)*args.nb03;
 
         ax[row] = (device const block_q8_0 *) ((device char *) src0 + offset0);
     }
@@ -177,9 +180,12 @@ void kernel_mul_mv_q8_0_f32_impl(
         yb += NSG*NQ*QK8_0;
     }
 
-    device float * dst_f32 = (device float *) dst + (uint64_t)im*args.ne0*args.ne1 + (uint64_t)r1*args.ne0;
+    device float * dst_f32 = (device float *) dst + (GLM53_KDA_OUTPUT ? 0 :
+        (uint64_t)im*args.ne0*args.ne1 + (uint64_t)r1*args.ne0);
 
-    helper_mv_reduce_and_write<NR0>(dst_f32, sumf, r0, args.ne01, tiisg, sgitg, shmem);
+    helper_mv_reduce_and_write<NR0>(dst_f32, sumf, r0,
+                                    GLM53_KDA_OUTPUT ? 4096 : args.ne01,
+                                    tiisg, sgitg, shmem);
 }
 
 // Decode-time Q8_0 matrix-vector multiply. DS4 uses this for Q8_0 dense
@@ -195,6 +201,21 @@ kernel void kernel_mul_mv_q8_0_f32(
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
     kernel_mul_mv_q8_0_f32_impl<N_R0_Q8_0, constant ds4_metal_args_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
+}
+
+// Same Q8 dot and reduction for the guarded one-token GLM 5.3 KDA output.
+[[host_name("kernel_mul_mv_q8_0_glm53_kda_output_f32")]]
+kernel void kernel_mul_mv_q8_0_glm53_kda_output_f32(
+        constant ds4_metal_args_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    kernel_mul_mv_q8_0_f32_impl<N_R0_Q8_0, constant ds4_metal_args_mul_mv &, true>(
+        args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
 }
 
 // Q8_0 matvec whose output is this rank's TP partial in its slab slot: same

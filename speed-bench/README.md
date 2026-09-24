@@ -44,14 +44,19 @@ row is bit-identical and, with `--include-selection`, both variants select the
 same non-EOS token. Use `--candidate-env NAME` to measure a rollback control,
 or `--help` to compare explicit split schedules.
 
+Repeat `--candidate-env NAME` (up to eight distinct names) to compare several
+decode changes enabled versus all of them disabled in one paired run; the
+candidate sets every named variable to `1`. These are dispatch-time controls,
+not options cached when the engine opens. An unused name provides an A/A control.
 Repeat measurements with `--reverse-order` as well. This inverts the initial
 variant order and session pairing, so periodic compressor work is not always
 measured with the same variant first.
 
-The M5 resident Q2 sum6 decode specialization fixes the Flash dimensions and
-strides while preserving the original two-SIMDgroup threadgroups and floating
-point accumulation order. Other shapes, SSD streaming, TP, quality mode and
-non-M5 devices retain the generic selection. To compare against its rollback:
+The M5 resident Q2 sum6 decode specialization fixes selected projection
+dimensions and strides while preserving the original two-SIMDgroup
+threadgroups and floating point accumulation order. Unmatched shapes, SSD
+streaming, TP, quality mode and non-M5 devices retain the generic selection.
+To compare against its rollback:
 
 ```
 make test-metal-q2-decode metal-decode-schedule-bench
@@ -111,8 +116,34 @@ regressed despite its real-model improvement; cache and concurrent-shared-FFN
 conditions matter, so do not infer throughput from isolated timings alone.
 With GLM's IQ2 shape held enabled, 512-step GLM decode gained 0.39-0.47%
 from its separate per-expert Q2 down shape; all compared outputs were exact.
-An experimental GLM KDA Q8 shape was dropped: its 0.09-0.12% full-model
-effect was comparable to a no-op A/A offset despite faster isolated dispatches.
+
+The GLM 5.3 KDA-output dense Q8_0 shape is separate from the MoE enum: it
+fixes K8192, output4096 and the 8704-byte row stride without changing Q8 dot
+or reduction order. `DS4_METAL_DISABLE_M5_GLM53_KDA_Q8_SHAPE` restores the
+generic dense kernel; mismatched shapes, TP, SSD and quality mode also use it.
+`make test-metal-q8-decode-shape` checks bit-exact output and nearby fallbacks.
+On M5 Max, the retested direct kernel saved 2.0-2.6% of GPU span for hot
+weights and 1.2-1.3% for 16 rotating matrices. Its individually toggled GLM
+model decode benefit was about 0.04-0.08%, smaller than the A/A bias in some
+short runs. This is a reproducible isolated improvement with a small model
+contribution, not a confidently measured standalone throughput gain.
+
+Combined 512-step GLM and 768-step Flash resident Q2 decode tests on the M5
+Max (128 GiB, high-power mode) use one engine, alternating session/order and
+the same 4/0 split schedule for both variants. Control has all listed shapes
+enabled; candidate rolls back all listed shapes. Every full-vocabulary logit
+row and selected token is bit-exact. Prefill is shared and untimed.
+
+| Model / rolled-back shapes | Normal control/candidate t/s | Reversed control/candidate t/s | Combined shaped benefit |
+| --- | ---: | ---: | ---: |
+| V4 Flash: IQ2 pack2 + Q2 sum6 | 43.3406 / 42.9706 | 41.0412 / 40.6088 | 0.86% / 1.06% |
+| GLM 5.3 Flash: IQ2 pair + Q2 down + KDA Q8 | 31.3639 / 30.9077 | 31.2736 / 30.8494 | 1.48% / 1.38% |
+
+Contemporaneous A/A controls showed apparent shaped-over-generic offsets of
++0.23%/-0.05% for Flash and +0.01%/-0.15% for GLM in the same order pair.
+Results are per-model and cannot be combined across models or generalized to
+other contexts. The GLM KDA Q8 result was reconstructed and retested after its
+earlier variant was removed; these numbers refer to the current implementation.
 
 To compare the default pre-M5 ratio-4 compressor pack/transpose fusion with the
 legacy decode path, including token selection, use:
