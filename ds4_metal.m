@@ -40728,6 +40728,7 @@ int ds4_gpu_routed_moe_one_tensor(
             pair_swiglu_pipeline =
                 g_moe_mul_mv_id_iq2_xxs_pair_swiglu_pack2_pipeline;
             pair_swiglu_nsg = 4;
+            /* DS4_MOE_SHAPE_V4_FLASH: fixed IQ2 pack2 gate/up for six routes. */
             if (getenv("DS4_METAL_DISABLE_M5_IQ2_PACK2_SHAPE") == NULL &&
                 m5_resident_decode_shape &&
                 gate_row_bytes == 1056 && gate_expert_bytes == 2162688 &&
@@ -40737,6 +40738,7 @@ int ds4_gpu_routed_moe_one_tensor(
                 if (tuned) pair_swiglu_pipeline = tuned;
             }
         }
+        /* DS4_MOE_SHAPE_GLM53_FLASH: fixed IQ2 gate/up for eight routes. */
         if (gate_type == DS4_METAL_TENSOR_IQ2_XXS &&
             down_type == DS4_METAL_TENSOR_Q2_K &&
             getenv("DS4_METAL_DISABLE_M5_IQ2_GLM53_SHAPE") == NULL &&
@@ -40756,6 +40758,7 @@ int ds4_gpu_routed_moe_one_tensor(
         id<MTLComputePipelineState> down_sum6_pipeline = nil;
         if (down_type == DS4_METAL_TENSOR_Q2_K) {
             down_sum6_pipeline = g_moe_mul_mv_id_q2_k_sum6_pipeline;
+            /* Q2 sum6 selects a fixed ds4_moe_decode_shape by down projection. */
             if (ds4_gpu_device_is_m5_apple_silicon() &&
                 !g_ssd_streaming_mode && g_tp_split_world == 1 && !g_tp_thread_running &&
                 !g_quality_mode &&
@@ -40763,14 +40766,17 @@ int ds4_gpu_routed_moe_one_tensor(
                 const char *shape_kernel = NULL;
                 uint64_t shape_row_bytes = 0, shape_expert_bytes = 0;
                 if (expert_mid_dim == 2048 && out_dim == 4096) {
+                    /* DS4_MOE_SHAPE_V4_FLASH. */
                     shape_kernel = "kernel_mul_mv_id_q2_K_sum6_static_f32";
                     shape_row_bytes = 672;
                     shape_expert_bytes = 2752512;
                 } else if (expert_mid_dim == 2304 && out_dim == 5120) {
+                    /* DS4_MOE_SHAPE_V41_FLASH. */
                     shape_kernel = "kernel_mul_mv_id_q2_K_sum6_v41_flash_f32";
                     shape_row_bytes = 756;
                     shape_expert_bytes = 3870720;
                 } else if (expert_mid_dim == 3072 && out_dim == 7168) {
+                    /* DS4_MOE_SHAPE_V4_PRO. */
                     shape_kernel = "kernel_mul_mv_id_q2_K_sum6_v4_pro_f32";
                     shape_row_bytes = 1008;
                     shape_expert_bytes = 7225344;
@@ -40830,6 +40836,8 @@ int ds4_gpu_routed_moe_one_tensor(
             (n_expert == 6 || (n_expert == 8 && g_tp_split_world == 2)) &&
             n_tokens == 1 &&
             down_sum6_pipeline != nil;
+        /* DS4_MOE_SHAPE_GLM53_FLASH: fixed eight-route per-expert Q2 down;
+         * the existing sum8 reduction remains a separate dispatch. */
         if (!direct_down_sum && gate_type == DS4_METAL_TENSOR_IQ2_XXS &&
             down_type == DS4_METAL_TENSOR_Q2_K &&
             getenv("DS4_METAL_DISABLE_M5_GLM53_Q2_DOWN_SHAPE") == NULL &&
