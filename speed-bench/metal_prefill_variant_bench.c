@@ -57,7 +57,7 @@ static void usage(FILE *fp, const char *argv0) {
             "  --control-value TEXT   explicit control env value (default: unset)\n"
             "  --extra-env NAME=VALUE additional candidate-only setting; repeatable\n"
             "  --control-env NAME=VALUE control-only setting; repeatable\n"
-            "  --prefill-chunk N      tokens per chunk (default: 4096)\n"
+            "  --prefill-chunk N      tokens per chunk (default: 4096; 0 for model default)\n"
             "  --prefix-tokens N      final prefill length (default: 8192)\n"
             "  --initial-tokens N     untimed live prefix before appending to that length\n"
             "  --tolerate-drift       report max/mean |delta|, top-1 agreement instead of failing on a mismatch\n"
@@ -121,7 +121,7 @@ static bench_config parse_options(int argc, char **argv) {
         } else if (!strcmp(arg, "--candidate-value")) {
             cfg.candidate_value = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--prefill-chunk")) {
-            cfg.prefill_chunk = parse_int_arg(need_arg(&i, argc, argv, arg), arg, 1);
+            cfg.prefill_chunk = parse_int_arg(need_arg(&i, argc, argv, arg), arg, 0);
         } else if (!strcmp(arg, "--candidate-env")) {
             cfg.candidate_env = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--extra-env") || !strcmp(arg, "--control-env")) {
@@ -164,6 +164,10 @@ static bench_config parse_options(int argc, char **argv) {
     }
     if (cfg.initial_tokens >= cfg.prefix_tokens) {
         fprintf(stderr, "%s: --initial-tokens must be less than --prefix-tokens\n", BENCH_NAME);
+        exit(2);
+    }
+    if (cfg.interleave && cfg.prefill_chunk == 0) {
+        fprintf(stderr, "%s: --interleave requires a nonzero --prefill-chunk\n", BENCH_NAME);
         exit(2);
     }
     const int longest =
