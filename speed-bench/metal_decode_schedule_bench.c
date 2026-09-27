@@ -1,4 +1,5 @@
 #include "ds4.h"
+#include "variant_env.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -184,6 +185,7 @@ static bench_config parse_options(int argc, char **argv) {
                 (long long)needed);
         exit(2);
     }
+    bench_reject_cached_glm_env(cfg.candidate_env);
     return cfg;
 }
 
