@@ -130,7 +130,7 @@ tests/test_metal_tp_cancel: tests/test_metal_tp_cancel.c ds4.h ds4_tp.h $(CORE_O
 test-metal-session-batch: tests/test_metal_session_batch
 	DS4_TEST_MODEL="$(DS4_TEST_MODEL)" ./tests/test_metal_session_batch
 
-speed-bench/metal_decode_schedule_bench.o: speed-bench/metal_decode_schedule_bench.c ds4.h
+speed-bench/metal_decode_schedule_bench.o: speed-bench/metal_decode_schedule_bench.c speed-bench/variant_env.h ds4.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 speed-bench/metal_decode_schedule_bench: speed-bench/metal_decode_schedule_bench.o $(CORE_OBJS)
@@ -138,7 +138,7 @@ speed-bench/metal_decode_schedule_bench: speed-bench/metal_decode_schedule_bench
 
 metal-decode-schedule-bench: speed-bench/metal_decode_schedule_bench
 
-speed-bench/metal_prefill_variant_bench.o: speed-bench/metal_prefill_variant_bench.c ds4.h
+speed-bench/metal_prefill_variant_bench.o: speed-bench/metal_prefill_variant_bench.c speed-bench/variant_env.h ds4.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 speed-bench/metal_prefill_variant_bench: speed-bench/metal_prefill_variant_bench.o $(CORE_OBJS)
@@ -174,6 +174,20 @@ tests/test_metal_moe_prefill: tests/test_metal_moe_prefill.o $(CORE_OBJS)
 
 test-metal-moe-prefill: tests/test_metal_moe_prefill
 	./tests/test_metal_moe_prefill
+
+tests/test_metal_q2_decode_exact: tests/test_metal_q2_decode_exact.c ds4_gpu.h $(CORE_OBJS)
+	$(CC) $(CFLAGS) -fno-fast-math -I. -o $@ $< $(CORE_OBJS) $(METAL_LDLIBS)
+
+.PHONY: test-metal-q2-decode
+test-metal-q2-decode: tests/test_metal_q2_decode_exact
+	MTL_DEBUG_LAYER=1 ./tests/test_metal_q2_decode_exact
+
+tests/test_metal_q8_decode_shape: tests/test_metal_q8_decode_shape.c ds4_gpu.h $(CORE_OBJS)
+	$(CC) $(CFLAGS) -fno-fast-math -I. -o $@ $< $(CORE_OBJS) $(METAL_LDLIBS)
+
+.PHONY: test-metal-q8-decode-shape
+test-metal-q8-decode-shape: tests/test_metal_q8_decode_shape
+	MTL_DEBUG_LAYER=1 ./tests/test_metal_q8_decode_shape
 
 tests/test_qwen4_moe_mm_specialize.o: tests/test_qwen4_moe_mm_specialize.c ds4_gpu.h
 	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
@@ -238,6 +252,70 @@ tests/test_deepseek41_metal: tests/test_deepseek41_metal.o $(CORE_OBJS)
 .PHONY: test-deepseek41-metal
 test-deepseek41-metal: tests/test_deepseek41_metal
 	./tests/test_deepseek41_metal
+
+tests/test_deepseek41_topk.o: tests/test_deepseek41_topk.c ds4_gpu.h ds4_deepseek41_gpu.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -I. -c -o $@ $<
+
+tests/test_deepseek41_topk: tests/test_deepseek41_topk.o $(CORE_OBJS)
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(METAL_LDLIBS)
+
+tests/test_deepseek41_fusions.o: tests/test_deepseek41_fusions.c ds4_gpu.h ds4_deepseek41_gpu.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -I. -c -o $@ $<
+
+tests/test_deepseek41_attention: tests/test_deepseek41_attention.o $(CORE_OBJS)
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(METAL_LDLIBS)
+
+tests/test_deepseek41_attention.o: tests/test_deepseek41_attention.c ds4_gpu.h ds4_deepseek41_gpu.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -I. -c -o $@ $<
+
+.PHONY: test-deepseek41-attention
+test-deepseek41-attention: tests/test_deepseek41_attention
+	MTL_DEBUG_LAYER=1 ./tests/test_deepseek41_attention
+
+tests/test_deepseek41_fusions: tests/test_deepseek41_fusions.o $(CORE_OBJS)
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(METAL_LDLIBS)
+
+tests/test_deepseek41_engram_admission.o: tests/test_deepseek41_engram_admission.c ds4.c ds4.h ds4_gpu.h ds4_deepseek41_gpu.h ds4_engram.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
+
+tests/test_deepseek41_engram_admission: tests/test_deepseek41_engram_admission.o $(filter-out ds4.o,$(CORE_OBJS))
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(METAL_LDLIBS)
+
+.PHONY: test-deepseek41-engram-admission
+test-deepseek41-engram-admission: tests/test_deepseek41_engram_admission
+	./tests/test_deepseek41_engram_admission
+
+# Explicit, resident real-model campaign; never part of the default test suite.
+tests/test_deepseek41_live_edges.o: tests/test_deepseek41_live_edges.c ds4.c ds4.h ds4_gpu.h ds4_deepseek41_gpu.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
+
+tests/test_deepseek41_live_edges: tests/test_deepseek41_live_edges.o $(filter-out ds4.o,$(CORE_OBJS))
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(METAL_LDLIBS)
+
+# Explicit, resident real-model fixture; never part of the default test suite.
+tests/test_deepseek41_dspark.o: tests/test_deepseek41_dspark.c ds4.c ds4.h ds4_gpu.h ds4_deepseek41_gpu.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
+
+tests/test_deepseek41_dspark: tests/test_deepseek41_dspark.o $(filter-out ds4.o,$(CORE_OBJS))
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(METAL_LDLIBS)
+
+.PHONY: test-deepseek41-topk
+test-deepseek41-topk: tests/test_deepseek41_topk
+	MTL_DEBUG_LAYER=1 ./tests/test_deepseek41_topk
+
+.PHONY: test-deepseek41-fusions
+test-deepseek41-fusions: tests/test_deepseek41_fusions
+	MTL_DEBUG_LAYER=1 ./tests/test_deepseek41_fusions
+
+tests/test_deepseek41_q4_tail.o: tests/test_deepseek41_q4_tail.c ds4_gpu.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -I. -c -o $@ $<
+
+tests/test_deepseek41_q4_tail: tests/test_deepseek41_q4_tail.o $(CORE_OBJS)
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(METAL_LDLIBS)
+
+.PHONY: test-deepseek41-q4-tail
+test-deepseek41-q4-tail: tests/test_deepseek41_q4_tail
+	MTL_DEBUG_LAYER=1 ./tests/test_deepseek41_q4_tail
 
 tests/test_deepseek41_graph.o: tests/test_deepseek41_graph.c ds4.c ds4_gpu.h ds4_engram.h
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
@@ -519,7 +597,7 @@ ds4_prompt_prefix.o: ds4_prompt_prefix.c ds4_prompt_prefix.h ds4.h
 ds4_gpu_args.o: ds4_gpu_args.c ds4_gpu_args.h ds4_gpu_mgpu.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_gpu_args.c
 
-ds4_server.o: ds4_server.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
+ds4_server.o: ds4_server.c ds4_host_memory.h ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_server.c
 
 ds4_bench.o: ds4_bench.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h
@@ -540,7 +618,7 @@ ds4_web.o: ds4_web.c ds4_web.h
 ds4_kvstore.o: ds4_kvstore.c ds4_kvstore.h ds4.h ds4_ssd.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_kvstore.c
 
-ds4_test.o: tests/ds4_test.c ds4_server.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
+ds4_test.o: tests/ds4_test.c ds4_server.c ds4_host_memory.h ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ tests/ds4_test.c
 
 ds4_agent_test.o: tests/ds4_agent_test.c ds4_agent.c ds4.h ds4_ssd.h ds4_distributed.h ds4_tp.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h linenoise.h
@@ -564,7 +642,7 @@ ds4_cli_cpu.o: ds4_cli.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_prompt
 ds4_gpu_args_cpu.o: ds4_gpu_args.c ds4_gpu_args.h ds4_gpu_mgpu.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_gpu_args.c
 
-ds4_server_cpu.o: ds4_server.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
+ds4_server_cpu.o: ds4_server.c ds4_host_memory.h ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_server.c
 
 ds4_bench_cpu.o: ds4_bench.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h
@@ -614,12 +692,69 @@ tests/test_image_decode.o: tests/test_image_decode.c ds4_image.h
 tests/test_image_decode: tests/test_image_decode.o ds4_image.o
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
+# Model-free exactness screens for the isolated M3 Ultra fork experiments.
+ifeq ($(UNAME_S),Darwin)
+tests/test_metal_half_conversion: tests/test_metal_half_conversion.m tests/metal_half_conversion.metal metal/cpy.metal
+	$(CC) -O3 -fobjc-arc -Wall -Wextra -o $@ $< -framework Foundation -framework Metal
+
+.PHONY: test-metal-half-conversion
+test-metal-half-conversion: tests/test_metal_half_conversion
+	MTL_DEBUG_LAYER=1 ./tests/test_metal_half_conversion
+
+tests/test_metal_coherence: tests/test_metal_coherence.m tests/metal_coherence.metal
+	$(CC) $(OBJCFLAGS) $< -o $@ $(METAL_LDLIBS)
+
+speed-bench/kvstore_write_bench: speed-bench/kvstore_write_bench.c ds4_kvstore.o $(CORE_OBJS)
+	$(CC) $(CFLAGS) -I. $^ -o $@ $(METAL_LDLIBS)
+
+.PHONY: test-metal-coherence
+test-metal-coherence: tests/test_metal_coherence
+	MTL_DEBUG_LAYER=1 ./tests/test_metal_coherence
+
+GLM53_FORK_TESTS := tests/test_glm53_router_shared tests/test_glm53_topk_fast tests/test_glm53_q8_inputs
+$(GLM53_FORK_TESTS): %: %.c ds4_metal.o ds4_image.o ds4_gpu.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -I. $< ds4_metal.o ds4_image.o -o $@ $(METAL_LDLIBS)
+.PHONY: test-glm53-fork
+test-glm53-fork: $(GLM53_FORK_TESTS)
+	./tests/test_glm53_router_shared
+	./tests/test_glm53_topk_fast
+	./tests/test_glm53_q8_inputs
+
+tests/test_glm53_hc_pre_repeat: tests/test_glm53_hc_pre_repeat.c ds4.c ds4.h ds4_gpu.h ds4_metal.o ds4_image.o
+	$(CC) $(CFLAGS) -Wno-unused-function -I. -ffunction-sections -fdata-sections $< ds4_metal.o ds4_image.o -Wl,-dead_strip -o $@ $(METAL_LDLIBS)
+
+.PHONY: test-glm53-hc-pre-repeat
+test-glm53-hc-pre-repeat: tests/test_glm53_hc_pre_repeat
+	./tests/test_glm53_hc_pre_repeat 0 0
+	./tests/test_glm53_hc_pre_repeat 1 0
+	./tests/test_glm53_hc_pre_repeat 0 1
+	./tests/test_glm53_hc_pre_repeat 1 1
+endif
+
 ifeq ($(UNAME_S),Darwin)
 $(GLM53_KDA_TEST): tests/test_glm53_kda.o ds4_metal.o ds4_image.o
 	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
 else
 $(GLM53_KDA_TEST): tests/test_glm53_kda.o ds4_cuda.o ds4_image.o $(MMQ_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+endif
+
+# Only the Metal build of this test is exercised by `make test`; the CUDA
+# variant still builds through `make test-glm53-kda`.
+ifeq ($(UNAME_S),Darwin)
+GLM53_KDA_DEFAULT_TEST := $(GLM53_KDA_TEST)
+else
+GLM53_KDA_DEFAULT_TEST :=
+endif
+
+# The V4.1 M3 Ultra exact paths hold only while the runtime shader compiler
+# keeps producing the same arithmetic. These model-free GPU oracles compare the
+# fused and original paths bit for bit, so `make test` notices a drift.
+ifeq ($(UNAME_S),Darwin)
+DEEPSEEK41_EXACT_DEFAULT_TESTS := tests/test_deepseek41_attention tests/test_deepseek41_fusions \
+	tests/test_deepseek41_topk tests/test_deepseek41_q4_tail tests/test_deepseek41_engram_admission
+else
+DEEPSEEK41_EXACT_DEFAULT_TESTS :=
 endif
 
 .PHONY: test-glm53-kda
@@ -683,6 +818,13 @@ tests/test_linux_memory: tests/test_linux_memory.c ds4_linux_memory.h
 
 tests/test_rocm_memory: tests/test_rocm_memory.cu ds4_rocm_memory.h ds4_linux_memory.h
 	$(HIPCC) $(ROCM_CFLAGS) -I. -o $@ $<
+
+tests/test_host_memory: tests/test_host_memory.c ds4_host_memory.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -I. $< -o $@
+
+.PHONY: test-host-memory
+test-host-memory: tests/test_host_memory
+	./tests/test_host_memory
 
 .PHONY: test-linux-memory test-rocm-memory
 test-linux-memory: tests/test_linux_memory
@@ -999,9 +1141,11 @@ test-web-recovery: tests/test_web_recovery
 tests/test_web_recovery: tests/test_web_recovery.c ds4_web.c ds4_web.h
 	$(CC) $(CFLAGS) -Wno-unused-function -o $@ tests/test_web_recovery.c
 
-test: ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test test-session-state test-linux-memory test-engram test-web-recovery \
+test: ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test test-session-state test-linux-memory test-host-memory test-engram test-web-recovery \
 	tests/test_layer_pack tests/test_engine_mgpu_placement tests/test_gpu_args \
-	tests/test_deepseek4_vision_image tests/test_image_decode tests/test_prompt_prefix $(SAMPLING_TEST) ds4 ds4-server ds4-bench ds4-agent
+	tests/test_deepseek4_vision_image tests/test_image_decode tests/test_prompt_prefix $(SAMPLING_TEST) $(GLM53_KDA_DEFAULT_TEST) \
+	$(DEEPSEEK41_EXACT_DEFAULT_TESTS) \
+	ds4 ds4-server ds4-bench ds4-agent
 	./ds4-eval --validate-cases
 	./ds4-eval --self-test-extractors
 	./ds4_agent_test
@@ -1014,6 +1158,8 @@ test: ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test test-session-
 	./tests/test_sampling
 	./tests/test_deepseek4_vision_image
 	./tests/test_image_decode
+	@if [ -n "$(GLM53_KDA_DEFAULT_TEST)" ]; then ./$(GLM53_KDA_TEST); fi
+	@for t in $(DEEPSEEK41_EXACT_DEFAULT_TESTS); do ./$$t || exit 1; done
 
 dspark-acceptance: ds4
 	DS4_DSPARK_MODEL="$(DS4_DSPARK_MODEL)" \
@@ -1065,12 +1211,21 @@ ds4_cpu_test_hooks.o ds4_cuda_test_hooks.o tests/test_session_state.o \
 tests/test_session_state_gpu.o: ds4_tool_text.h
 
 clean:
+	rm -f tests/test_metal_q2_decode_exact
+	rm -f tests/test_metal_q8_decode_shape
+	rm -f tests/test_deepseek41_fusions tests/test_deepseek41_topk
+	rm -f tests/test_deepseek41_engram_admission
+	rm -f tests/test_deepseek41_live_edges
+	rm -f tests/test_deepseek41_dspark
 	rm -f tests/test_qwen4_ngrams
 	rm -f tests/test_qwen4_ngram_state
 	rm -f tests/test_web_recovery
+	rm -f tests/test_glm53_hc_pre_repeat
 	rm -f tests/test_metal_ssd_experts
 	rm -f tests/test_metal_command_memory
 	rm -f tests/test_deepseek41_metal
+	rm -f tests/test_deepseek41_q4_tail
+	rm -f tests/test_glm53_router_shared tests/test_glm53_topk_fast tests/test_glm53_q8_inputs
 	rm -f tests/test_deepseek41_cuda
 	rm -f tests/test_cuda_q8_rows
 	rm -f tests/test_cuda_reductions
@@ -1087,7 +1242,8 @@ clean:
 	rm -f tests/test_cuda_q8_scratch
 	rm -f tests/test_cuda_dspark_moe
 	rm -f tests/test_quality_api
-	rm -f tests/test_linux_memory tests/test_rocm_memory
+	rm -f tests/test_linux_memory tests/test_rocm_memory tests/test_host_memory
+	rm -f tests/test_deepseek41_attention tests/test_metal_coherence tests/test_metal_half_conversion speed-bench/kvstore_write_bench
 	rm -f tests/test_glm_attention tests/test_glm_attention_rocm
 	rm -f tests/test_ssd_cache tests/test_engram
 	rm -f tests/test_session_state tests/test_session_state_gpu tests/test_tp_commands

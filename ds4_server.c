@@ -1,3 +1,4 @@
+#include "ds4_host_memory.h"
 #include "ds4.h"
 #include "ds4_tool_text.h"
 #include "ds4_distributed.h"
@@ -6903,13 +6904,14 @@ static void append_cors_headers(buf *h) {
         "Access-Control-Allow-Headers: *\r\n");
 }
 
-static bool http_response(int fd, bool enable_cors, int code, const char *type, const char *body) {
+static bool http_response_extra(int fd, bool enable_cors, int code, const char *type, const char *body, const char *extra) {
     const char *reason = code == 200 ? "OK" :
                          code == 204 ? "No Content" :
                          code == 400 ? "Bad Request" :
                          code == 404 ? "Not Found" :
                          code == 409 ? "Conflict" :
-                         code == 500 ? "Internal Server Error" : "Error";
+                         code == 500 ? "Internal Server Error" :
+                         code == 503 ? "Service Unavailable" : "Error";
     const size_t body_len = body ? strlen(body) : 0;
     buf h = {0};
     buf_printf(&h,
@@ -6922,11 +6924,36 @@ static bool http_response(int fd, bool enable_cors, int code, const char *type, 
         buf_puts(&h, "\r\n");
     }
     if (enable_cors) append_cors_headers(&h);
+    if (extra) buf_puts(&h,extra);
     buf_puts(&h, "Connection: close\r\n\r\n");
     bool ok = send_all(fd, h.ptr, h.len);
     if (ok && body_len) ok = send_all(fd, body, body_len);
     buf_free(&h);
     return ok;
+}
+
+static bool http_response(int fd, bool cors, int code, const char *type, const char *body) {
+    return http_response_extra(fd,cors,code,type,body,NULL);
+}
+
+#ifdef DS4_SERVER_TEST
+static int server_test_memory_pressure = -1;
+#endif
+static ds4_host_pressure server_memory_pressure(void) {
+    const char *ignore = getenv("DS4_SERVER_IGNORE_MEMORY_PRESSURE");
+    if (ignore && !strcmp(ignore,"1")) return DS4_HOST_PRESSURE_UNKNOWN;
+#ifdef DS4_SERVER_TEST
+    if (server_test_memory_pressure >= 0) return (ds4_host_pressure)server_test_memory_pressure;
+#endif
+    return ds4_host_memory_pressure();
+}
+
+static bool server_reject_memory_pressure(int fd, bool cors) {
+    if (server_memory_pressure() != DS4_HOST_PRESSURE_CRITICAL) return false;
+    http_response_extra(fd,cors,503,"application/json",
+        "{\"error\":{\"message\":\"server under memory pressure\",\"type\":\"server_error\"}}\n",
+        "Retry-After: 5\r\n");
+    return true;
 }
 
 static bool http_error(int fd, bool enable_cors, int code, const char *msg) {
@@ -9975,6 +10002,7 @@ typedef struct {
     size_t max_bytes;
     uint64_t clock;
     uint64_t scan_clock;
+    uint64_t last_scan_steps;
 } tool_memory;
 
 /* Image markers have request-local nonces. Normalize only actual marker spans
@@ -10113,6 +10141,10 @@ static void server_image_cache_clear(server_image_cache *cache) {
     for (size_t i = 0; i < SERVER_IMAGE_CACHE_ENTRIES; i++)
         server_image_cache_remove(cache, &cache->entries[i]);
     cache->clock = 0;
+}
+
+static void server_memory_release_images(server_image_cache *cache) {
+    if (server_memory_pressure() >= DS4_HOST_PRESSURE_WARN) server_image_cache_clear(cache);
 }
 
 static bool server_image_cache_get(server_image_cache *cache,
@@ -10948,33 +10980,57 @@ static char *path_join(const char *dir, const char *name) {
 
 
 
-static const char *find_next_dsml_tool_block(const char *p, const char **end_out) {
-    struct block_form {
-        const char *start;
-        const char *end;
-    } forms[] = {
-        {"\n\n" DS41_TOOL_CALLS_START, DS41_TOOL_CALLS_END},
-        {DS41_TOOL_CALLS_START, DS41_TOOL_CALLS_END},
-        {"\n\n" DS4_TOOL_CALLS_START, DS4_TOOL_CALLS_END},
-        {DS4_TOOL_CALLS_START, DS4_TOOL_CALLS_END},
-        {"\n\n" DS4_TOOL_CALLS_START_SHORT, DS4_TOOL_CALLS_END_SHORT},
-        {DS4_TOOL_CALLS_START_SHORT, DS4_TOOL_CALLS_END_SHORT},
-        {"\n\n<tool_calls>", "</tool_calls>"},
-        {"<tool_calls>", "</tool_calls>"},
-    };
+static bool tool_memory_block_boundary_matches(const char *text,
+                                               const char *limit,
+                                               const char *start,
+                                               const tool_memory_block *block) {
+    const char *raw = block->dsml;
+    size_t len = block->len;
+    if (len < 2) return false;
+    if (raw[0] == '<' && start >= text + 2 &&
+        start[-2] == '\n' && start[-1] == '\n') return false;
 
-    const char *best = NULL;
-    const char *best_end = NULL;
-    for (size_t i = 0; i < sizeof(forms) / sizeof(forms[0]); i++) {
-        const char *s = strstr(p, forms[i].start);
-        if (!s || (best && s >= best)) continue;
-        const char *e = strstr(s, forms[i].end);
-        if (!e) continue;
-        best = s;
-        best_end = e + strlen(forms[i].end);
+    if (len >= 2 && raw[0] == '\n' && raw[1] == '\n') {
+        raw += 2;
+        len -= 2;
     }
-    if (end_out) *end_out = best_end;
-    return best;
+    if (len < sizeof("<tool_call>") - 1 ||
+        memcmp(raw, "<tool_call>", sizeof("<tool_call>") - 1)) return true;
+
+    const char *end = start + block->len;
+    if (end < limit && isspace((unsigned char)*end)) return false;
+    return (size_t)(limit - end) < sizeof("<tool_call>") - 1 ||
+           memcmp(end, "<tool_call>", sizeof("<tool_call>") - 1);
+}
+
+static const char *find_next_tool_memory_block(tool_memory *memory,
+                                                const char *text,
+                                                const char *p,
+                                                const char *limit,
+                                                tool_memory_block **block_out,
+                                                uint64_t *steps) {
+    if (block_out) *block_out = NULL;
+    if (!memory->by_block) return NULL;
+    for (; p < limit; p++) {
+        if (steps) (*steps)++;
+        if (*p != '<' &&
+            !(*p == '\n' && limit - p >= 3 && p[1] == '\n' && p[2] == '<')) {
+            continue;
+        }
+        size_t matched = 0;
+        size_t examined = 0;
+        void *value = raxFindLongestPrefix(
+            memory->by_block, (unsigned char *)p, (size_t)(limit - p),
+            &matched, &examined);
+        if (steps) *steps += examined;
+        if (value == raxNotFound || matched == 0) continue;
+        tool_memory_block *block = value;
+        if (matched != block->len ||
+            !tool_memory_block_boundary_matches(text, limit, p, block)) continue;
+        if (block_out) *block_out = block;
+        return p;
+    }
+    return NULL;
 }
 
 
@@ -10985,29 +11041,36 @@ static bool kv_tool_map_measure_locked(server *s, const char *text,
     uint64_t bytes = KV_TOOL_MAP_HEADER;
     uint64_t scan = ++s->tool_mem.scan_clock;
     const char *p = text;
+    const char *limit = text + strlen(text);
+    uint64_t steps = 0;
     for (;;) {
-        const char *end = NULL;
-        const char *start = find_next_dsml_tool_block(p, &end);
-        if (!start || !end) break;
-        tool_memory_block *b =
-            tool_memory_find_block_locked(&s->tool_mem, start, (size_t)(end - start));
+        tool_memory_block *b = NULL;
+        const char *start = find_next_tool_memory_block(
+            &s->tool_mem, text, p, limit, &b, &steps);
+        if (!start || !b) break;
         if (b && b->seen != scan) {
             b->seen = scan;
             for (tool_memory_entry *e = b->entries; e; e = e->block_next) {
                 size_t id_len = strlen(e->id);
                 size_t dsml_len = b->len;
                 if (id_len > UINT32_MAX || dsml_len > UINT32_MAX) continue;
-                if (count == UINT32_MAX) return false;
+                if (count == UINT32_MAX) {
+                    s->tool_mem.last_scan_steps = steps;
+                    return false;
+                }
                 if (UINT64_MAX - bytes < 8u ||
                     UINT64_MAX - bytes - 8u < (uint64_t)id_len ||
-                    UINT64_MAX - bytes - 8u - (uint64_t)id_len < (uint64_t)dsml_len)
+                    UINT64_MAX - bytes - 8u - (uint64_t)id_len < (uint64_t)dsml_len) {
+                    s->tool_mem.last_scan_steps = steps;
                     return false;
+                }
                 count++;
                 bytes += 8u + (uint64_t)id_len + (uint64_t)dsml_len;
             }
         }
-        p = end;
+        p = start + b->len;
     }
+    s->tool_mem.last_scan_steps = steps;
     if (count == 0) bytes = 0;
     if (count_out) *count_out = count;
     if (bytes_out) *bytes_out = bytes;
@@ -11053,12 +11116,13 @@ static bool kv_tool_map_write(server *s, FILE *fp, const char *text,
 
     uint64_t scan = ++s->tool_mem.scan_clock;
     const char *p = text;
+    const char *limit = text + strlen(text);
+    uint64_t steps = 0;
     for (;;) {
-        const char *end = NULL;
-        const char *start = find_next_dsml_tool_block(p, &end);
-        if (!start || !end || !ok) break;
-        tool_memory_block *b =
-            tool_memory_find_block_locked(&s->tool_mem, start, (size_t)(end - start));
+        tool_memory_block *b = NULL;
+        const char *start = find_next_tool_memory_block(
+            &s->tool_mem, text, p, limit, &b, &steps);
+        if (!start || !b || !ok) break;
         if (b && b->seen != scan) {
             b->seen = scan;
             for (tool_memory_entry *e = b->entries; ok && e; e = e->block_next) {
@@ -11073,8 +11137,9 @@ static bool kv_tool_map_write(server *s, FILE *fp, const char *text,
                      fwrite(b->dsml, 1, dsml_len, fp) == dsml_len;
             }
         }
-        p = end;
+        p = start + b->len;
     }
+    s->tool_mem.last_scan_steps = steps;
     pthread_mutex_unlock(&s->tool_mu);
 
     if (ok && written_bytes) *written_bytes = bytes;
@@ -13002,6 +13067,38 @@ static bool remember_qwen_tool_turn_visible_checkpoint(server *s, server_slot *s
     return true;
 }
 
+/* GLM counterpart of the Qwen tool-turn key.  A chat client that carries tool
+ * schemas (Hermes, OpenAI-style agents) does not send the generated tool-call
+ * text back as reasoning, so the exact sampled live KV can never be continued
+ * token-for-token: the next request is strictly shorter than the live frontier.
+ * For GLM the compressed DSA KV cannot be rolled back by truncation
+ * (ds4_session_glm_mtp_rewind only handles the 2-token MTP cycle, so
+ * ds4_session_rewind() clears checkpoint_valid and the caller rebuilds the whole
+ * prefix - measured 30k tokens / ~100 s per follow-up turn).
+ *
+ * Remember the visible key instead (prompt + closed think block + the tool-call
+ * text), exactly like the Qwen path: the next request renders that same visible
+ * surface, thinking_live_visible_prefix_prompt() matches it, and the live KV is
+ * reused.  Eligibility mirrors build_thinking_visible_text(), which only
+ * succeeds when the prompt still ends with the open "<think>" marker. */
+static bool glm_tool_turn_checkpoint_eligible(const request *r, const char *finish,
+                                              bool inside_thinking,
+                                              const char *content) {
+    if (!r || r->model_syntax != SERVER_MODEL_SYNTAX_GLM) return false;
+    if (r->kind != REQ_CHAT || r->image_count != 0) return false;
+    if (r->api == API_RESPONSES || r->api == API_ANTHROPIC) return false;
+    if (!r->prompt_text || !r->prompt_text[0]) return false;
+    /* Use the decode finish, not the parser's promoted status: repaired,
+     * truncated or unclosed output is not this frontier. */
+    if (!finish || strcmp(finish, "tool_calls") || inside_thinking) return false;
+    if (!content || !content[0]) return false;
+    const char *think_tag = "<think>";
+    const size_t tag_len = strlen(think_tag);
+    const size_t prompt_len = strlen(r->prompt_text);
+    return prompt_len >= tag_len &&
+           memcmp(r->prompt_text + prompt_len - tag_len, think_tag, tag_len) == 0;
+}
+
 /* After a successful tool-call finish, make the live checkpoint match what the
  * next request will render.  Usually that is just the exact DSML remembered by
  * tool id.  If a client sends a tool call without an id we know, the fallback
@@ -13438,6 +13535,9 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
     err[0] = '\0';
     const bool multimodal = j->req.image_count != 0;
     pthread_mutex_lock(&s->inference_mu);
+    // Drop only disposable images. Invalidation would leave KV allocations
+    // resident while discarding a useful continuation.
+    server_memory_release_images(&s->image_cache);
     const int old_pos = ds4_session_pos(slot->session);
     const int common = ds4_session_common_prefix(slot->session, &j->req.prompt);
     const bool live_vision_match =
@@ -14629,11 +14729,30 @@ decode_again:
                                      parsed_reasoning, &parsed_calls);
         thinking_live_clear(s, slot);
     } else if (parsed_calls.len) {
-        if (!remember_qwen_tool_turn_visible_checkpoint(
+        /* GLM consumes the DSML tool call out of the generated content, so
+         * parsed_content is empty on a tool turn; the exact sampled text lives
+         * in raw_tool_text and is what the client will send back. */
+        const char *tool_turn_content = parsed_content && parsed_content[0] ?
+                                        parsed_content :
+                                        (parsed_calls.raw_tool_text ?
+                                         parsed_calls.raw_tool_text : "");
+        bool checkpoint_remembered = remember_qwen_tool_turn_visible_checkpoint(
                 s, slot, j, ctx_span, finish, thinking.inside,
-                parsed_content ? parsed_content : "",
-                &parsed_calls))
+                tool_turn_content,
+                &parsed_calls);
+        if (!checkpoint_remembered &&
+            glm_tool_turn_checkpoint_eligible(&j->req, finish, thinking.inside,
+                                              tool_turn_content))
         {
+            /* GLM has no raw-DSML replay path (should_canonicalize_tool_checkpoint
+             * returns false once raw_tool_text is known) and no truncating rewind,
+             * so without this the live checkpoint is cleared and every follow-up
+             * turn rebuilds its prefix. */
+            remember_thinking_checkpoint(s, slot, j, ctx_span, trace_id,
+                                         tool_turn_content, false);
+            checkpoint_remembered = true;
+        }
+        if (!checkpoint_remembered) {
             thinking_live_clear(s, slot);
         }
     } else if (!parsed_calls.len &&
@@ -15390,6 +15509,12 @@ static void *client_main(void *arg) {
     pthread_mutex_init(&j.mu, NULL);
     pthread_cond_init(&j.cv, NULL);
 
+    if (server_reject_memory_pressure(fd,s->enable_cors)) {
+        pthread_cond_destroy(&j.cv);
+        pthread_mutex_destroy(&j.mu);
+        request_free(&j.req);
+        goto done;
+    }
     if (!enqueue(s, &j)) {
         http_error(fd, s->enable_cors, 503, "server shutting down");
         pthread_cond_destroy(&j.cv);
@@ -16020,6 +16145,10 @@ int main(int argc, char **argv) {
         }
     }
 
+    const uint64_t available_bytes = ds4_host_available_bytes();
+    if (available_bytes) server_log(DS4_LOG_DEFAULT,
+        "ds4-server: host reclaimable memory after session allocation %.2f GiB (pressure=%d)",
+        (double)available_bytes/(1024.0*1024.0*1024.0), (int)server_memory_pressure());
     if (cfg.kv_disk_dir) {
         kv_cache_open(&s.kv, cfg.kv_disk_dir, cfg.kv_disk_space_mb,
                       cfg.kv_cache_reject_different_quant, cfg.kv_cache);
@@ -21315,6 +21444,32 @@ static void test_model_metadata_clamps_completion_to_context(void) {
     buf_free(&b);
 }
 
+static void test_glm_tool_turn_checkpoint_eligible(void) {
+    request r;
+    memset(&r, 0, sizeof r);
+    r.kind = REQ_CHAT;
+    r.api = API_OPENAI;
+    r.model_syntax = SERVER_MODEL_SYNTAX_GLM;
+    r.prompt_text = "<|system|>\nhi<|user|>\nrun<|assistant|>\n<think>";
+    /* eligible: GLM chat tool turn, open think block, tool text present */
+    TEST_ASSERT(glm_tool_turn_checkpoint_eligible(&r, "tool_calls", false, "<tool_call>x</tool_call>"));
+    /* not eligible: finished turn, still inside thinking, empty tool text, no finish */
+    TEST_ASSERT(!glm_tool_turn_checkpoint_eligible(&r, "stop", false, "<tool_call>x</tool_call>"));
+    TEST_ASSERT(!glm_tool_turn_checkpoint_eligible(&r, "tool_calls", true, "<tool_call>x</tool_call>"));
+    TEST_ASSERT(!glm_tool_turn_checkpoint_eligible(&r, "tool_calls", false, ""));
+    TEST_ASSERT(!glm_tool_turn_checkpoint_eligible(&r, NULL, false, "<tool_call>x</tool_call>"));
+    /* not eligible: other syntax, other protocol, or a prompt without the open marker */
+    r.model_syntax = SERVER_MODEL_SYNTAX_QWEN;
+    TEST_ASSERT(!glm_tool_turn_checkpoint_eligible(&r, "tool_calls", false, "<tool_call>x</tool_call>"));
+    r.model_syntax = SERVER_MODEL_SYNTAX_GLM;
+    r.api = API_RESPONSES;
+    TEST_ASSERT(!glm_tool_turn_checkpoint_eligible(&r, "tool_calls", false, "<tool_call>x</tool_call>"));
+    r.api = API_OPENAI;
+    r.prompt_text = "<|assistant|>\nclosed";
+    TEST_ASSERT(!glm_tool_turn_checkpoint_eligible(&r, "tool_calls", false, "<tool_call>x</tool_call>"));
+    TEST_ASSERT(!glm_tool_turn_checkpoint_eligible(NULL, "tool_calls", false, "<tool_call>x</tool_call>"));
+}
+
 static void test_live_prefix_rewind_target(void) {
     TEST_ASSERT(live_prefix_rewind_target(true, 17, 8, 8) == 7);
     TEST_ASSERT(live_prefix_rewind_target(true, 49826, 48379, 48379) == 48378);
@@ -21888,6 +22043,128 @@ static void test_kv_text_stub_file(const char *dir, const char *text,
     test_kv_text_stub_file_model(dir, text, 0, reason, tokens, payload_bytes);
 }
 
+/* Preserve the pre-scan search as an executable oracle, including directory
+ * order and equal-length token tie-breaking. */
+static int test_kv_lookup_reference(ds4_kvstore *kc, const char *text,
+                                     int model, int quant, int ctx) {
+    const size_t bytes = strlen(text);
+    int best = -1;
+    for (int i = 0; i < kc->len; ++i) {
+        const ds4_kvstore_entry *e = &kc->entry[i];
+        if (e->text_bytes > bytes || e->text_bytes > SIZE_MAX ||
+            (int)e->tokens < kc->opt.min_tokens || e->model_id != (uint8_t)model ||
+            (uint32_t)ctx < e->ctx_size ||
+            (kc->reject_different_quant && e->quant_bits != (uint8_t)quant)) continue;
+        if (best >= 0 && (e->text_bytes < kc->entry[best].text_bytes ||
+            (e->text_bytes == kc->entry[best].text_bytes && e->tokens <= kc->entry[best].tokens))) continue;
+        char sha[41];
+        ds4_kvstore_sha1_bytes_hex(text, (size_t)e->text_bytes, sha);
+        if (!strcmp(sha, e->sha)) best = i;
+    }
+    return best;
+}
+
+static void test_kv_cache_lookup_hash_scan(void) {
+    const bool bench = getenv("DS4_TEST_KV_HASH_BENCH") != NULL;
+    const size_t bytes = bench ? 500000u : 4096u;
+    char *text = xmalloc(bytes + 1);
+    uint32_t rng = 71691;
+    for (size_t i = 0; i < bytes; ++i) text[i] = 'a' + i % 23;
+    text[bytes] = 0;
+    for (unsigned run = 0; run < (bench ? 3u : 30u); ++run) {
+        ds4_kvstore kc = {.len = bench ? (int[]){20,200,1000}[run] : 200,
+            .opt = {.min_tokens = 16}, .reject_different_quant = run % 2};
+        /* Disabled disk refresh allows the same generated directory order
+         * to reach both searches without filesystem ordering as a confound. */
+        kc.entry = xmalloc((size_t)kc.len * sizeof(*kc.entry));
+        memset(kc.entry, 0, (size_t)kc.len * sizeof(*kc.entry));
+        for (int i = 0; i < kc.len; ++i) {
+            rng = rng * 1664525u + 1013904223u;
+            ds4_kvstore_entry *e = &kc.entry[i];
+            e->text_bytes = rng % (bytes + 65u);
+            e->tokens = (rng >> 8) % 1024u;
+            e->model_id = i % 9 == 0 ? 2 : 1;
+            e->quant_bits = i % 7 == 0 ? 2 : 4;
+            e->ctx_size = i % 11 == 0 ? 65536 : 32768;
+            ds4_kvstore_sha1_bytes_hex(text, (size_t)e->text_bytes <= bytes ?
+                (size_t)e->text_bytes : bytes, e->sha);
+            if (i % 5) e->sha[0] = e->sha[0] == '0' ? '1' : '0';
+        }
+        /* Empty prefixes, duplicate lengths and equal SHA with different
+         * token counts also occur in the generated in-memory contract. */
+        if (!bench) {
+            kc.entry[1] = kc.entry[2]; kc.entry[1].tokens = kc.entry[2].tokens + 1;
+            kc.entry[3].text_bytes = 0;
+            ds4_kvstore_sha1_bytes_hex(text, 0, kc.entry[3].sha);
+        }
+        const double t0 = now_sec();
+        const int expected = test_kv_lookup_reference(&kc, text, 1, 4, 32768);
+        const double t1 = now_sec();
+        const int actual = ds4_kvstore_find_text_prefix(&kc, text, 1, 4, 32768);
+        const double t2 = now_sec();
+        TEST_ASSERT(actual == expected);
+        if (bench) fprintf(stderr, "KV hash scan entries=%d bytes=%zu old_ms=%.3f new_ms=%.3f match=%d\n",
+            kc.len, bytes, (t1-t0)*1000.0, (t2-t1)*1000.0, actual == expected);
+        ds4_kvstore_clear(&kc);
+    }
+    free(text);
+}
+
+/* Compare victim selection with the scalar-hash API, including repeated
+ * removals that shift the parallel score array. Headers use zero timestamps
+ * so this oracle is independent of crossing a wall-clock second. */
+static void test_kv_cache_eviction_hash_scan(void) {
+    char text[4097];
+    for (unsigned i=0;i<4096;i++) text[i]='a'+i%23;
+    text[4096]=0;
+    uint32_t rng=89125;
+    for (unsigned run=0;run<12;run++) {
+        char dir[]="/tmp/ds4-kv-eviction-scan.XXXXXX";
+        TEST_ASSERT(mkdtemp(dir)!=NULL);
+        ds4_kvstore kc={0};
+        TEST_ASSERT(ds4_kvstore_open(&kc,dir,1,run%2,ds4_kvstore_default_options(),"test",NULL,NULL));
+        for (unsigned i=0;i<40;i++) {
+            rng=rng*1664525u+1013904223u;
+            const size_t n=32u+i*97u;
+            char prefix[4097];memcpy(prefix,text,n);prefix[n]=0;
+            if (i%5==0) prefix[n-1]='Z';
+            test_kv_text_stub_file_model(dir,prefix,i%9==0?2:1,
+                i%3==0?DS4_KVSTORE_REASON_COLD:DS4_KVSTORE_REASON_CONTINUED,
+                64+(rng%2048),0);
+        }
+        (void)ds4_kvstore_find_text_prefix(&kc,text,1,4,32768);
+        uint64_t total=0;
+        for(int i=0;i<kc.len;i++) {
+            ds4_kvstore_entry *e=&kc.entry[i];
+            e->created_at=e->last_used=0;
+            FILE *fp=fopen(e->path,"r+b");TEST_ASSERT(fp!=NULL);
+            uint8_t zero[16]={0};TEST_ASSERT(fseek(fp,24,SEEK_SET)==0);
+            TEST_ASSERT(fwrite(zero,1,16,fp)==16);TEST_ASSERT(fclose(fp)==0);
+            total+=e->file_size;
+        }
+        ds4_kvstore_entry expected[40];int n=kc.len;
+        memcpy(expected,kc.entry,(size_t)n*sizeof(*expected));
+        ds4_kvstore_eviction_context incoming={.text=text,.text_len=strlen(text),
+            .model_id=1,.quant_bits=2,.ctx_size=32768,.reject_different_quant=run%2};
+        kc.budget_bytes=total/2;
+        while(total>kc.budget_bytes && n) {
+            int victim=0;
+            double score=ds4_kvstore_entry_eviction_score(&expected[0],NULL,1000,&incoming);
+            for(int i=1;i<n;i++) {
+                const double next=ds4_kvstore_entry_eviction_score(&expected[i],NULL,1000,&incoming);
+                if(next<score || (next==score && expected[i].last_used<expected[victim].last_used)) {victim=i;score=next;}
+            }
+            total-=expected[victim].file_size;
+            memmove(expected+victim,expected+victim+1,(size_t)(n-victim-1)*sizeof(*expected));n--;
+        }
+        ds4_kvstore_evict(&kc,NULL,0,&incoming);
+        TEST_ASSERT(kc.len==n);
+        for(int i=0;i<kc.len && i<n;i++) TEST_ASSERT(!strcmp(kc.entry[i].sha,expected[i].sha));
+        for(int i=0;i<kc.len;i++) TEST_ASSERT(unlink(kc.entry[i].path)==0);
+        ds4_kvstore_close(&kc);TEST_ASSERT(rmdir(dir)==0);
+    }
+}
+
 static void test_kv_cache_lookup_uses_longest_text_prefix(void) {
     char tmpl[] = "/tmp/ds4-kv-text-prefix-test.XXXXXX";
     char *dir = mkdtemp(tmpl);
@@ -22055,6 +22332,162 @@ static void test_kv_tool_map_filters_by_dsml_text(void) {
 
     chat_msgs_free(&msgs);
     if (fp) fclose(fp);
+    tool_memory_free(&src.tool_mem);
+    tool_memory_free(&dst.tool_mem);
+    pthread_mutex_destroy(&src.tool_mu);
+    pthread_mutex_destroy(&dst.tool_mu);
+}
+
+static void test_glm_kv_tool_map_roundtrip_exact_blocks(void) {
+    const char *leading[] = {"", "\n", "\n\n", "\n\n\n"};
+    const char *prefixes[] = {
+        "",
+        "<|user|>quote <tool_call> literally<|assistant|>",
+        "<|user|>quote <tool_call><arg_value> literally<|assistant|>",
+        "<|user|>quote <tool_call><arg_key> literally<|assistant|>",
+    };
+    const char *values[] = {
+        "printf café",
+        "printf '</tool_call>' café",
+        NULL, /* Calls with no arguments have no wrapper closing delimiter. */
+    };
+    for (int variant = 0; variant < 96; ++variant) {
+        const int leading_variant = variant % 4;
+        const bool multiple = ((variant / 4) % 2) != 0;
+        const int edge_variant = variant / 8;
+        buf generated = {0};
+        buf_puts(&generated, "<think>need shell</think>");
+        buf_puts(&generated, leading[leading_variant]);
+        const char *value = values[edge_variant % 3];
+        if (value) {
+            buf_puts(&generated, "<tool_call>Bash\n<arg_key>command</arg_key>"
+                                "<arg_value>");
+            buf_puts(&generated, value);
+            buf_puts(&generated, "</arg_value></tool_call>");
+        } else {
+            buf_puts(&generated, "<tool_call>Ping</tool_call>");
+        }
+        if (multiple) {
+            buf_puts(&generated, value
+                ? "\n \t<tool_call>Read\n<arg_key>file_path</arg_key>"
+                  "<arg_value>/tmp/a.py</arg_value></tool_call>"
+                : "\n \t<tool_call>Pong</tool_call>");
+        }
+        if (variant % 2) buf_puts(&generated, "\n \t");
+
+        char *content = NULL, *reasoning = NULL;
+        tool_calls sampled = {0};
+        TEST_ASSERT(parse_generated_message_ex_for_syntax(SERVER_MODEL_SYNTAX_GLM,
+                    generated.ptr, true, &content, &reasoning, &sampled));
+        TEST_ASSERT(sampled.len == (multiple ? 2 : 1));
+        server src = {0}, dst = {0};
+        pthread_mutex_init(&src.tool_mu, NULL);
+        pthread_mutex_init(&dst.tool_mu, NULL);
+        assign_tool_call_ids(&src, &sampled, API_ANTHROPIC);
+        tool_memory_remember(&src, &sampled);
+        tool_memory_put(&src, "toolu_absent", "<tool_call>Absent</tool_call>");
+
+        chat_msgs msgs = {0};
+        chat_msg assistant = {0};
+        assistant.role = xstrdup("assistant");
+        assistant.content = xstrdup(content ? content : "");
+        assistant.reasoning = xstrdup(reasoning ? reasoning : "");
+        for (int i = 0; i < sampled.len; ++i) {
+            tool_call tc = {.id = xstrdup(sampled.v[i].id),
+                            .name = xstrdup(sampled.v[i].name),
+                            .arguments = xstrdup(sampled.v[i].arguments)};
+            tool_calls_push(&assistant.calls, tc);
+        }
+        chat_msgs_push(&msgs, assistant);
+        tool_memory_attach_to_messages(&src, &msgs, NULL);
+        char *expected = render_glm_chat_prompt_text(&msgs, NULL, NULL, DS4_THINK_HIGH);
+        TEST_ASSERT(strstr(expected, sampled.raw_tool_text) != NULL);
+
+        /* Repetition must not serialize the same IDs twice; an unrelated block
+         * in tool memory must not leak into this checkpoint's sidecar. */
+        buf checkpoint = {0};
+        buf_puts(&checkpoint, prefixes[edge_variant / 3]);
+        buf_puts(&checkpoint, expected);
+        buf_puts(&checkpoint, "<|observation|>done");
+        buf_puts(&checkpoint, expected);
+        FILE *fp = tmpfile();
+        TEST_ASSERT(fp != NULL);
+        uint64_t estimated = 0, written = 0;
+        TEST_ASSERT(kv_tool_map_serialized_size(&src, checkpoint.ptr, &estimated));
+        TEST_ASSERT(kv_tool_map_write(&src, fp, checkpoint.ptr, &written));
+        TEST_ASSERT(written > 0 && estimated == written);
+        TEST_ASSERT((uint64_t)ftell(fp) == written);
+        rewind(fp);
+        TEST_ASSERT(kv_tool_map_load_from_pos(&dst, fp, NULL) == sampled.len);
+        TEST_ASSERT(!tool_memory_has_id(&dst, "toolu_absent"));
+
+        /* A fresh server must replay the identical bytes, not regenerate the
+         * canonical newline or split a multi-call block into separate maps. */
+        free(msgs.v[0].calls.raw_tool_text);
+        msgs.v[0].calls.raw_tool_text = NULL;
+        tool_replay_stats stats = {0};
+        tool_memory_attach_to_messages(&dst, &msgs, &stats);
+        TEST_ASSERT(stats.disk == 1 && stats.canonical == 0 && stats.missing_ids == 0);
+        TEST_ASSERT(msgs.v[0].calls.raw_tool_text &&
+                    !strcmp(msgs.v[0].calls.raw_tool_text, sampled.raw_tool_text));
+        char *actual = render_glm_chat_prompt_text(&msgs, NULL, NULL, DS4_THINK_HIGH);
+        TEST_ASSERT(!strcmp(expected, actual));
+
+        free(expected); free(actual); free(content); free(reasoning);
+        fclose(fp);
+        buf_free(&checkpoint); buf_free(&generated);
+        chat_msgs_free(&msgs); tool_calls_free(&sampled);
+        tool_memory_free(&src.tool_mem); tool_memory_free(&dst.tool_mem);
+        pthread_mutex_destroy(&src.tool_mu); pthread_mutex_destroy(&dst.tool_mu);
+    }
+}
+
+static void test_glm_kv_tool_map_adversarial_scan_is_bounded(void) {
+    const char *raw = "\n\n<tool_call>Ping</tool_call>";
+    server src = {0}, dst = {0};
+    pthread_mutex_init(&src.tool_mu, NULL);
+    pthread_mutex_init(&dst.tool_mu, NULL);
+    tool_memory_put(&src, "call_linear", raw);
+
+    buf checkpoint = {0};
+    buf_puts(&checkpoint, raw);
+    buf_puts(&checkpoint, "<tool_call>GroupedLiteral</tool_call>");
+    for (int i = 0; i < 4096; i++) {
+        if (i % 3 == 0) buf_puts(&checkpoint, "<tool_call>");
+        else if (i % 3 == 1) buf_puts(&checkpoint, "<tool_call><arg_key>");
+        else buf_puts(&checkpoint, "<tool_call><arg_value>");
+    }
+    buf_puts(&checkpoint, raw);
+
+    uint64_t estimated = 0;
+    TEST_ASSERT(kv_tool_map_serialized_size(&src, checkpoint.ptr, &estimated));
+    TEST_ASSERT(estimated > 0);
+    TEST_ASSERT(src.tool_mem.last_scan_steps > 0);
+    TEST_ASSERT(src.tool_mem.last_scan_steps <= (uint64_t)checkpoint.len * 4u);
+
+    FILE *fp = tmpfile();
+    TEST_ASSERT(fp != NULL);
+    uint64_t written = 0;
+    TEST_ASSERT(kv_tool_map_write(&src, fp, checkpoint.ptr, &written));
+    TEST_ASSERT(written == estimated);
+    rewind(fp);
+    TEST_ASSERT(kv_tool_map_load_from_pos(&dst, fp, NULL) == 1);
+
+    chat_msgs msgs = {0};
+    chat_msg assistant = {0};
+    assistant.role = xstrdup("assistant");
+    tool_call call = {.id = xstrdup("call_linear"),
+                      .name = xstrdup("Ping"),
+                      .arguments = xstrdup("{}")};
+    tool_calls_push(&assistant.calls, call);
+    chat_msgs_push(&msgs, assistant);
+    tool_memory_attach_to_messages(&dst, &msgs, NULL);
+    TEST_ASSERT(msgs.v[0].calls.raw_tool_text != NULL);
+    TEST_ASSERT(!strcmp(msgs.v[0].calls.raw_tool_text, raw));
+
+    chat_msgs_free(&msgs);
+    fclose(fp);
+    buf_free(&checkpoint);
     tool_memory_free(&src.tool_mem);
     tool_memory_free(&dst.tool_mem);
     pthread_mutex_destroy(&src.tool_mu);
@@ -23118,7 +23551,35 @@ static void test_deepseek41_live_result_order(void) {
     pthread_mutex_destroy(&s.tool_mu);
 }
 
+static void test_server_memory_pressure(void) {
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX,SOCK_STREAM,0,sv)==0);
+    server_test_memory_pressure=DS4_HOST_PRESSURE_CRITICAL;
+    TEST_ASSERT(server_reject_memory_pressure(sv[0],true));
+    char response[1024]={0};
+    const ssize_t n=recv(sv[1],response,sizeof(response)-1,0);
+    TEST_ASSERT(n>0);
+    TEST_ASSERT(strstr(response,"503 Service Unavailable")!=NULL);
+    TEST_ASSERT(strstr(response,"Retry-After: 5\r\n")!=NULL);
+    TEST_ASSERT(strstr(response,"server under memory pressure")!=NULL);
+    server_test_memory_pressure=DS4_HOST_PRESSURE_NORMAL;
+    TEST_ASSERT(!server_reject_memory_pressure(sv[0],true));
+    server_test_memory_pressure=DS4_HOST_PRESSURE_WARN;
+    TEST_ASSERT(!server_reject_memory_pressure(sv[0],true));
+    server_image_cache cache={0};
+    cache.entries[0].encoded=(uint8_t *)xstrdup("a");
+    cache.entries[0].encoded_len=1;
+    cache.entries[0].embedding.data=calloc(1,sizeof(float));
+    cache.entries[0].data_bytes=sizeof(float);
+    cache.bytes=1+sizeof(float);
+    server_memory_release_images(&cache);
+    TEST_ASSERT(cache.bytes==0 && cache.entries[0].encoded==NULL);
+    server_test_memory_pressure=-1;
+    close(sv[0]);close(sv[1]);
+}
+
 static void ds4_server_unit_tests_run(void) {
+    test_server_memory_pressure();
     test_deepseek41_server_stream();
     test_deepseek41_server_tools();
     test_deepseek41_anthropic_results();
@@ -23240,6 +23701,8 @@ static void ds4_server_unit_tests_run(void) {
     test_tool_body_escape_round_trip();
     test_tool_memory_max_ids_prunes_oldest();
     test_kv_tool_map_filters_by_dsml_text();
+    test_glm_kv_tool_map_roundtrip_exact_blocks();
+    test_glm_kv_tool_map_adversarial_scan_is_bounded();
     test_kv_tool_map_restores_before_prompt_render();
     test_thinking_checkpoint_canonical_matches_future_prompt();
     test_thinking_canonical_empty_content();
@@ -23262,6 +23725,7 @@ static void ds4_server_unit_tests_run(void) {
     test_tool_history_validation_handles_large_replays();
     test_model_metadata_clamps_completion_to_context();
     test_live_prefix_rewind_target();
+    test_glm_tool_turn_checkpoint_eligible();
     test_client_socket_nonblocking_flag();
     test_client_disconnect_probe();
     test_cancelled_progress_callback_is_inert();
@@ -23282,6 +23746,8 @@ static void ds4_server_unit_tests_run(void) {
     test_kv_cache_file_size_must_fit_budget();
     test_sha1_bytes_hex_matches_known_vector();
     test_kv_cache_lookup_uses_longest_text_prefix();
+    test_kv_cache_lookup_hash_scan();
+    test_kv_cache_eviction_hash_scan();
     test_kv_cache_lookup_rejects_wrong_model();
     test_kv_cache_lookup_rejects_stale_payload_abi();
     test_kv_cache_eviction_values_fresh_snapshots();

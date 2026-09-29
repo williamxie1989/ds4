@@ -397,9 +397,42 @@ kernel void kernel_dsv4_hc_split_weighted_sum(
 // kernel_dsv4_hc_split_weighted_sum, stores the HC-pre row for diagnostics, and
 // reuses the just-collapsed values from threadgroup memory for the RMSNorm
 // reduction.
+// Coherent publication keeps vector loads while making the handoff visible
+// across threadgroups. Older MSL uses atomic bit transfers. The M5 TP
+// expand/producer retains its existing protocol through PUBLISH=false.
+template <bool PUBLISH>
+static inline float4 ds4_hc_published_load4(device const float *p) {
+    if (PUBLISH) {
+#if __METAL_VERSION__ >= 320
+        return *((device coherent(device) const float4 *)p);
+#else
+        device const atomic_uint *a = (device const atomic_uint *)p;
+        return as_type<float4>(uint4(
+            atomic_load_explicit(a + 0, memory_order_relaxed),
+            atomic_load_explicit(a + 1, memory_order_relaxed),
+            atomic_load_explicit(a + 2, memory_order_relaxed),
+            atomic_load_explicit(a + 3, memory_order_relaxed)));
+#endif
+    }
+    return *((device volatile const float4 *)p);
+}
+
+template <bool PUBLISH>
+static inline void ds4_hc_published_store(device float *p, float v) {
+    if (PUBLISH) {
+#if __METAL_VERSION__ >= 320
+        *((device coherent(device) float *)p) = v;
+#else
+        atomic_store_explicit((device atomic_uint *)p, as_type<uint>(v), memory_order_relaxed);
+#endif
+    } else
+        *((device volatile float *)p) = v;
+}
+
+template <bool PUBLISH>
 static __attribute__((always_inline)) inline void ds4_hc_comb_weights4_exact(
         constant ds4_metal_args_dsv4_hc_split_weighted_sum_norm & args,
-        device volatile const float *mix,
+        device const float *mix,
         device const float *scale,
         device const float *base,
         device float *out) {
@@ -407,16 +440,16 @@ static __attribute__((always_inline)) inline void ds4_hc_comb_weights4_exact(
     const float comb_scale = scale[2];
 
     float4 r0 =
-        *((device volatile const float4 *)(mix + 8)) * comb_scale +
+        ds4_hc_published_load4<PUBLISH>(mix + 8) * comb_scale +
         *((device const float4 *)(base + 8));
     float4 r1 =
-        *((device volatile const float4 *)(mix + 12)) * comb_scale +
+        ds4_hc_published_load4<PUBLISH>(mix + 12) * comb_scale +
         *((device const float4 *)(base + 12));
     float4 r2 =
-        *((device volatile const float4 *)(mix + 16)) * comb_scale +
+        ds4_hc_published_load4<PUBLISH>(mix + 16) * comb_scale +
         *((device const float4 *)(base + 16));
     float4 r3 =
-        *((device volatile const float4 *)(mix + 20)) * comb_scale +
+        ds4_hc_published_load4<PUBLISH>(mix + 20) * comb_scale +
         *((device const float4 *)(base + 20));
 
     const float m0 = max(max(r0.x, r0.y), max(r0.z, r0.w));
@@ -1321,6 +1354,24 @@ kernel void kernel_dsv4_hc_rms_norm_mix_f16_cluster2(
     }
 }
 
+
+/* Self-contained on purpose.  glm53_bf16.metal has an identical helper, but
+ * depending on it would couple this file to that one across the concatenated
+ * library: pointing DS4_METAL_GLM53_BF16_SOURCE at an older revision of that
+ * file would then stop THIS file compiling, which defeats the per-file source
+ * overrides used for shader A/B runs. */
+static inline float4 ds4_hc_bf16x4_to_f32x4(ushort4 v) {
+    return float4(as_type<float>((uint)v.x << 16),
+                  as_type<float>((uint)v.y << 16),
+                  as_type<float>((uint)v.z << 16),
+                  as_type<float>((uint)v.w << 16));
+}
+
+static inline float4 ds4_hc_mix_widen(half4 v)   { return float4(v); }
+static inline float4 ds4_hc_mix_widen(ushort4 v) { return ds4_hc_bf16x4_to_f32x4(v); }
+/* Share normalization and HC finalization, but preserve each weight type's
+ * reference projection: F16 uses eight SIMDgroups per row, BF16 uses one. */
+template <typename W4, bool BF16 = false, bool PUBLISH = true>
 static inline void ds4_hc_rms_norm_mix_cluster2_pre_norm_body(
         constant ds4_metal_args_hc_norm_mix & args,
         constant ds4_metal_args_dsv4_hc_split_weighted_sum_norm & split_args,
@@ -1375,62 +1426,102 @@ static inline void ds4_hc_rms_norm_mix_cluster2_pre_norm_body(
     const float mean = total/(float)args.n;
     const float scale = 1.0f/sqrt(mean + args.eps);
 
-    // Two independent eight-simdgroup clusters reproduce two original
-    // NR0=2 matvec threadgroups inside this 512-thread threadgroup.
-    const short cluster = sgitg / NSG_CLUSTER;
-    const short local_sg = sgitg - cluster*NSG_CLUSTER;
-    const int nb = args.n/NB;
-    const int r0 = (int)tgpig.x*(NCLUSTER*NR0) + cluster*NR0;
-
-    device const half4 *ax4[NR0];
-    FOR_UNROLL (short row = 0; row < NR0; ++row) {
-        ax4[row] = (device const half4 *)
-            (weight + (uint64_t)(r0 + row)*(uint64_t)n*sizeof(half));
-    }
-
-    float sumf_mv[NR0] = { 0.f };
-    const short ix = tiisg/(NW/NF);
-    const short il = tiisg%(NW/NF);
-    const int ib0 = local_sg*NF + ix;
-    for (int ib = ib0; ib < nb; ib += NSG_CLUSTER*NF) {
-        float4 yl4[NF4];
-        FOR_UNROLL (short i = 0; i < NF4; ++i) {
-            yl4[i] = x4[(ib*NB + il*NF)/4 + i]*scale;
-        }
-        FOR_UNROLL (short row = 0; row < NR0; ++row) {
-            device const half4 *xb4 = ax4[row] + (ib*NB + il*NF)/4;
-            float sumq = 0.f;
-            FOR_UNROLL (short i = 0; i < NF4; ++i) {
-                sumq += dot(float4(xb4[i]), yl4[i]);
+    device float *mixes_f32 = (device float *)dst;
+    if (BF16) {
+        // GLM's scalar BF16 matvec owns a row in one SIMDgroup. Keep its
+        // lane-strided operands, eight ordered FMAs, and single SIMD sum.
+        if (sgitg < 4u) {
+            const uint row = tgpig.x * 4u + sgitg;
+            device const ushort *w = (device const ushort *)weight + (ulong)row * n;
+            device const float *xr = (device const float *)x;
+            float sum = 0.0f;
+            for (uint k = tiisg; k < n; k += 256u) {
+                const ushort w0 = w[k];
+                const ushort w1 = w[k + 32u];
+                const ushort w2 = w[k + 64u];
+                const ushort w3 = w[k + 96u];
+                const ushort w4 = w[k + 128u];
+                const ushort w5 = w[k + 160u];
+                const ushort w6 = w[k + 192u];
+                const ushort w7 = w[k + 224u];
+                // The unfused RMS kernel stores F32 before the projection.
+                // Volatile preserves that rounding boundary under fast math.
+                volatile float x0 = xr[k] * scale;
+                volatile float x1 = xr[k + 32u] * scale;
+                volatile float x2 = xr[k + 64u] * scale;
+                volatile float x3 = xr[k + 96u] * scale;
+                volatile float x4 = xr[k + 128u] * scale;
+                volatile float x5 = xr[k + 160u] * scale;
+                volatile float x6 = xr[k + 192u] * scale;
+                volatile float x7 = xr[k + 224u] * scale;
+                sum = fma(as_type<float>((uint)w0 << 16), x0, sum);
+                sum = fma(as_type<float>((uint)w1 << 16), x1, sum);
+                sum = fma(as_type<float>((uint)w2 << 16), x2, sum);
+                sum = fma(as_type<float>((uint)w3 << 16), x3, sum);
+                sum = fma(as_type<float>((uint)w4 << 16), x4, sum);
+                sum = fma(as_type<float>((uint)w5 << 16), x5, sum);
+                sum = fma(as_type<float>((uint)w6 << 16), x6, sum);
+                sum = fma(as_type<float>((uint)w7 << 16), x7, sum);
             }
-            sumf_mv[row] += sumq;
+            sum = simd_sum(sum);
+            if (tiisg == 0u) ds4_hc_published_store<PUBLISH>(mixes_f32 + row, sum);
         }
-    }
+    } else {
+        // Two independent eight-simdgroup clusters reproduce two original
+        // NR0=2 matvec threadgroups inside this 512-thread threadgroup.
+        const short cluster = sgitg / NSG_CLUSTER;
+        const short local_sg = sgitg - cluster*NSG_CLUSTER;
+        const int nb = args.n/NB;
+        const int r0 = (int)tgpig.x*(NCLUSTER*NR0) + cluster*NR0;
 
-    threadgroup float *cluster_shmem[NR0];
-    FOR_UNROLL (short row = 0; row < NR0; ++row) {
-        cluster_shmem[row] = mv_shmem +
-            ((uint)cluster*NR0 + row)*NW;
-        if (local_sg == 0) {
-            cluster_shmem[row][tiisg] = 0.0f;
-        }
-        sumf_mv[row] = simd_sum(sumf_mv[row]);
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    FOR_UNROLL (short row = 0; row < NR0; ++row) {
-        if (tiisg == 0) {
-            cluster_shmem[row][local_sg] = sumf_mv[row];
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    device volatile float *mixes_f32 =
-        (device volatile float *)dst;
-    if (local_sg == 0) {
+        device const W4 *ax4[NR0];
         FOR_UNROLL (short row = 0; row < NR0; ++row) {
-            const float tot = simd_sum(cluster_shmem[row][tiisg]);
-            if (tiisg == 0 && r0 + row < args.out_dim) {
-                mixes_f32[r0 + row] = tot;
+            ax4[row] = (device const W4 *)
+                (weight + (uint64_t)(r0 + row)*(uint64_t)n*(sizeof(W4)/4));
+        }
+
+        float sumf_mv[NR0] = { 0.f };
+        const short ix = tiisg/(NW/NF);
+        const short il = tiisg%(NW/NF);
+        const int ib0 = local_sg*NF + ix;
+        for (int ib = ib0; ib < nb; ib += NSG_CLUSTER*NF) {
+            float4 yl4[NF4];
+            FOR_UNROLL (short i = 0; i < NF4; ++i) {
+                yl4[i] = x4[(ib*NB + il*NF)/4 + i]*scale;
+            }
+            FOR_UNROLL (short row = 0; row < NR0; ++row) {
+                device const W4 *xb4 = ax4[row] + (ib*NB + il*NF)/4;
+                float sumq = 0.f;
+                FOR_UNROLL (short i = 0; i < NF4; ++i) {
+                    sumq += dot(ds4_hc_mix_widen(xb4[i]), yl4[i]);
+                }
+                sumf_mv[row] += sumq;
+            }
+        }
+
+        threadgroup float *cluster_shmem[NR0];
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            cluster_shmem[row] = mv_shmem +
+                ((uint)cluster*NR0 + row)*NW;
+            if (local_sg == 0) {
+                cluster_shmem[row][tiisg] = 0.0f;
+            }
+            sumf_mv[row] = simd_sum(sumf_mv[row]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            if (tiisg == 0) {
+                cluster_shmem[row][local_sg] = sumf_mv[row];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (local_sg == 0) {
+            FOR_UNROLL (short row = 0; row < NR0; ++row) {
+                const float tot = simd_sum(cluster_shmem[row][tiisg]);
+                if (tiisg == 0 && r0 + row < args.out_dim) {
+                    ds4_hc_published_store<PUBLISH>(mixes_f32 + r0 + row, tot);
+                }
             }
         }
     }
@@ -1448,7 +1539,7 @@ static inline void ds4_hc_rms_norm_mix_cluster2_pre_norm_body(
         device float *out = (device float *)split;
         if (tid == 0) {
             const float4 pre_z =
-                *((device volatile const float4 *)mixes_f32) * hc_scale[0] +
+                ds4_hc_published_load4<PUBLISH>(mixes_f32) * hc_scale[0] +
                 *((device const float4 *)hc_base);
             const float4 pre =
                 1.0f / (1.0f + exp(-pre_z)) + split_args.eps;
@@ -1510,7 +1601,7 @@ static inline void ds4_hc_rms_norm_mix_cluster2_pre_norm_body(
     } else if (tgpig.x == 1 && tid == 0) {
         device float *out = (device float *)split;
         const float4 post_z =
-            *((device volatile const float4 *)(mixes_f32 + 4)) * hc_scale[1] +
+            ds4_hc_published_load4<PUBLISH>(mixes_f32 + 4) * hc_scale[1] +
             *((device const float4 *)(hc_base + 4));
         *((device float4 *)(out + 4)) = 2.0f / (1.0f + exp(-post_z));
     }
@@ -1534,7 +1625,7 @@ static inline void ds4_hc_rms_norm_mix_cluster2_pre_norm_body(
     atomic_thread_fence(mem_flags::mem_device,
                         memory_order_seq_cst,
                         thread_scope_device);
-    ds4_hc_comb_weights4_exact(
+    ds4_hc_comb_weights4_exact<PUBLISH>(
         split_args, mixes_f32, hc_scale, hc_base,
         (device float *)split);
     atomic_thread_fence(mem_flags::mem_device,
@@ -1560,7 +1651,7 @@ kernel void kernel_dsv4_hc_rms_norm_mix_f16_cluster2_pre_norm(
         uint3  tgpig [[threadgroup_position_in_grid]],
         ushort tiisg [[thread_index_in_simdgroup]],
         ushort sgitg [[simdgroup_index_in_threadgroup]]) {
-    ds4_hc_rms_norm_mix_cluster2_pre_norm_body(args, split_args, x, weight, dst, hc_scale, hc_base, split, collapse_dst, norm_weight, norm_dst, completion, shmem, tgpig, tiisg, sgitg);
+    ds4_hc_rms_norm_mix_cluster2_pre_norm_body<half4>(args, split_args, x, weight, dst, hc_scale, hc_base, split, collapse_dst, norm_weight, norm_dst, completion, shmem, tgpig, tiisg, sgitg);
 }
 
 /* Decode-time fusion of the HC post/expand that follows a TP combine with the
@@ -1631,5 +1722,28 @@ kernel void kernel_dsv4_hc_expand4_rms_norm_mix_f16_cluster2_pre_norm(
                             thread_scope_device);
     }
     threadgroup_barrier(mem_flags::mem_device_and_threadgroup);
-    ds4_hc_rms_norm_mix_cluster2_pre_norm_body(args, split_args, x, weight, dst, hc_scale, hc_base, split, collapse_dst, norm_weight, norm_dst, completion, shmem, tgpig, tiisg, sgitg);
+    ds4_hc_rms_norm_mix_cluster2_pre_norm_body<half4, false, false>(args, split_args, x, weight, dst, hc_scale, hc_base, split, collapse_dst, norm_weight, norm_dst, completion, shmem, tgpig, tiisg, sgitg);
+}
+
+kernel void kernel_dsv4_hc_rms_norm_mix_bf16_cluster2_pre_norm(
+        constant ds4_metal_args_hc_norm_mix & args,
+        constant ds4_metal_args_dsv4_hc_split_weighted_sum_norm & split_args,
+        device const char  * x,
+        device const char  * weight,
+        device       char  * dst,
+        device const float * hc_scale,
+        device const float * hc_base,
+        device       char  * split,
+        device       char  * collapse_dst,
+        device const char  * norm_weight,
+        device       char  * norm_dst,
+        device atomic_uint * completion,
+        threadgroup  char  * shmem [[threadgroup(0)]],
+        uint3  tgpig [[threadgroup_position_in_grid]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
+    ds4_hc_rms_norm_mix_cluster2_pre_norm_body<ushort4, true>(
+        args, split_args, x, weight, dst, hc_scale, hc_base, split,
+        collapse_dst, norm_weight, norm_dst, completion, shmem,
+        tgpig, tiisg, sgitg);
 }
