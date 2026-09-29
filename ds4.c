@@ -45624,6 +45624,11 @@ static uint64_t g_glm_rocm_guard_available_baseline;
  * a model loaded in another runtime must come out of this engine's budget:
  * wiring past physical RAM starves watchdogd and panics the host. */
 static uint64_t g_glm_metal_guard_wired_baseline;
+/* Sampled once per process, before this process maps any model.  Re-sampling
+ * at a later engine open inside the same process would count this process's
+ * own still-mapped resident model as "another runtime" and refuse a load that
+ * fits (make test --all opens several engines in one process). */
+static bool g_glm_metal_guard_wired_baseline_sampled;
 
 static bool ds4_darwin_wired_bytes(uint64_t *out) {
     const mach_port_t host = mach_host_self();
@@ -46227,22 +46232,8 @@ static bool glm_graph_memory_guard_budget(
      * free memory another process has already wired. */
     const uint64_t host_bytes = glm_graph_host_memory_bytes();
     if (host_bytes != 0 && g_glm_metal_guard_wired_baseline != 0) {
-        uint64_t wired = g_glm_metal_guard_wired_baseline;
-        uint64_t live_cap = glm_graph_memory_guard_live_cap_bytes(host_bytes, wired);
-        /* A just-exited ds4 process keeps its wired model pages for a fraction
-         * of a second (measured <0.5 s for a 90 GiB resident GLM), so
-         * back-to-back runs -- make test, a restart, a bench right after a
-         * server -- would be refused over memory that is already being
-         * reclaimed.  Re-sample before refusing; a runtime that genuinely
-         * holds memory keeps the lower cap and the refusal stands. */
-        for (unsigned attempt = 0; live_cap < budget && attempt < 4u; attempt++) {
-            const struct timespec pause = { .tv_sec = 0, .tv_nsec = 500000000 };
-            nanosleep(&pause, NULL);
-            uint64_t now = 0;
-            if (!ds4_darwin_wired_bytes(&now) || now == 0 || now >= wired) continue;
-            wired = now;
-            live_cap = glm_graph_memory_guard_live_cap_bytes(host_bytes, wired);
-        }
+        const uint64_t live_cap = glm_graph_memory_guard_live_cap_bytes(
+                host_bytes, g_glm_metal_guard_wired_baseline);
         if (live_cap < budget) budget = live_cap;
     }
 #endif
@@ -72060,8 +72051,11 @@ static int ds4_engine_open_internal(ds4_engine **out,
     (void)ds4_linux_nonmovable_memory(&g_glm_rocm_guard_available_baseline);
 #endif
 #if defined(__APPLE__) && !defined(DS4_NO_GPU)
-    g_glm_metal_guard_wired_baseline = 0;
-    (void)ds4_darwin_wired_bytes(&g_glm_metal_guard_wired_baseline);
+    if (!g_glm_metal_guard_wired_baseline_sampled) {
+        g_glm_metal_guard_wired_baseline_sampled = true;
+        g_glm_metal_guard_wired_baseline = 0;
+        (void)ds4_darwin_wired_bytes(&g_glm_metal_guard_wired_baseline);
+    }
 #endif
     e->model.fd = -1;
     e->mtp_model.fd = -1;
