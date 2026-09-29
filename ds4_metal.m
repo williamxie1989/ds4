@@ -36931,7 +36931,8 @@ static bool ds4_gpu_glm53_tuning_available(void) {
      * exclusions still apply so it cannot silently turn on TP or streaming. */
     return !g_ssd_streaming_mode && g_tp_split_world == 1 &&
         ((g_test_flags & DS4_GPU_TEST_GLM53_PREFILL) != 0u ||
-         [g_device.name isEqualToString:@"Apple M3 Ultra"]);
+         [g_device.name isEqualToString:@"Apple M3 Ultra"] ||
+         getenv("DS4_METAL_FORCE_GLM53_TUNING") != NULL);
 }
 
 /* The graph-local GLM 5.3 paths share the backend-local scope: their exactness
