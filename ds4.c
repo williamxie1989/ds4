@@ -46227,8 +46227,22 @@ static bool glm_graph_memory_guard_budget(
      * free memory another process has already wired. */
     const uint64_t host_bytes = glm_graph_host_memory_bytes();
     if (host_bytes != 0 && g_glm_metal_guard_wired_baseline != 0) {
-        const uint64_t live_cap = glm_graph_memory_guard_live_cap_bytes(
-                host_bytes, g_glm_metal_guard_wired_baseline);
+        uint64_t wired = g_glm_metal_guard_wired_baseline;
+        uint64_t live_cap = glm_graph_memory_guard_live_cap_bytes(host_bytes, wired);
+        /* A just-exited ds4 process keeps its wired model pages for a fraction
+         * of a second (measured <0.5 s for a 90 GiB resident GLM), so
+         * back-to-back runs -- make test, a restart, a bench right after a
+         * server -- would be refused over memory that is already being
+         * reclaimed.  Re-sample before refusing; a runtime that genuinely
+         * holds memory keeps the lower cap and the refusal stands. */
+        for (unsigned attempt = 0; live_cap < budget && attempt < 4u; attempt++) {
+            const struct timespec pause = { .tv_sec = 0, .tv_nsec = 500000000 };
+            nanosleep(&pause, NULL);
+            uint64_t now = 0;
+            if (!ds4_darwin_wired_bytes(&now) || now == 0 || now >= wired) continue;
+            wired = now;
+            live_cap = glm_graph_memory_guard_live_cap_bytes(host_bytes, wired);
+        }
         if (live_cap < budget) budget = live_cap;
     }
 #endif
