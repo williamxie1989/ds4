@@ -4450,6 +4450,432 @@ kernel_glm_attention_indexed_batch_lora_group8_vec_impl<true, true>;
 template [[host_name("kernel_glm_attention_indexed_batch_lora_group8_vec_prefix_fullheads")]]
 kernel glm_attention_indexed_batch_lora_group8_vec_t
 kernel_glm_attention_indexed_batch_lora_group8_vec_impl<false, true, true>;
+
+#ifdef DS4_METAL_HAS_TENSOR
+/* Sparse-MLA prefill attention on the Metal 4 tensor units (the M5 neural
+ * accelerators).  Port of kernel_qwen4_attn_mm_nax (#1149, oMLX #4020) onto
+ * the GLM absorbed-MLA geometry:
+ *
+ *  - one threadgroup of 4 simdgroups covers 16 query heads of one token (the
+ *    64-head shape is 4 threadgroups per token, every tile row busy);
+ *  - the absorbed latent is BOTH the key and the value here: the score is
+ *    dot(qk_low, latent) and the output is the same latent, so the 512 dims
+ *    split 4x128 across the simdgroups for the Q K^T partials and the very
+ *    same split gives each simdgroup 128 output dims for P V.  Partial
+ *    scores are exchanged through threadgroup memory;
+ *  - the key loop walks the token's own selection list 32 keys per step, so a
+ *    step is exactly the query's own keys: only slots past the list and
+ *    padding ids (>= cache_cap) are masked, and a masked slot reads cache row
+ *    0 so that P = 0 never meets an unwritten cache row (0 * NaN = NaN);
+ *  - ops are 16x32x32 matmul2d: Q K^T over 32 latent dims per run, P V with
+ *    the step's two 16-key P fragments packed along K (P stored half);
+ *  - O lives in persistent cooperative tensors across the whole key loop, Q
+ *    is re-read from device every step, and O is rescaled only when a row max
+ *    changed;
+ *  - the scalar softmax (m and l per row, P rounded to half), scaling the
+ *    summed score by args.scale and the normalize epilogue match
+ *    kernel_glm_attention_indexed_batch_lora_group8_vec_impl.  What differs
+ *    is the accumulation tree (tensor units instead of dot(float4) +
+ *    simd_sum) and that Q, K and V meet half rounding on the way in, so this
+ *    drifts from the classic kernel by more than an ulp.
+ *
+ * The fragment slot math is the template's: slot 8c + 4r + j of a 16x16
+ * fragment c holds row (fm + 8r) x col (fn + j), and head dims are permuted
+ * per lane (cols fn..fn+3 <-> dims 2fn..2fn+3 inside each 16-wide fragment
+ * pair) so one 16-byte load feeds both fragments; Q and K share the
+ * permutation, V and the O store undo it.
+ *
+ * RoPE tails (qk_rope != 0) are out of scope: the caller keeps the classic
+ * kernel for those shapes. */
+template <bool assume_valid_rows, bool assume_valid_heads>
+static inline void glm_attention_indexed_batch_lora_group8_nax_body(
+        constant ds4_metal_args_glm_attention_indexed_batch & args,
+        device const char *qk_low,
+        device const char *kv_lora_cache,
+        device const uint32_t *selected,
+        device char *lora_out,
+        threadgroup float *xchg,
+        uint3 tgpig,
+        uint lane,
+        uint sgitg,
+        uint active_rows) {
+    constexpr uint SK = 32u;           /* keys per step */
+    constexpr uint group_heads = 16u;  /* heads per threadgroup = tile rows */
+    constexpr uint latent = 512u;      /* absorbed KV dim, gated by the caller */
+    constexpr uint quarter = latent / 4u;
+
+    const uint token = tgpig.y;
+    const uint dh = sgitg;             /* which 128-dim quarter of the latent */
+    const ushort qid = (ushort)(lane >> 2);
+    const short fm = (short)((qid & 4u) | ((lane >> 1u) & 3u));  /* tile row */
+    const short fn = (short)(((qid & 2u) | (lane & 1u)) * 4u);   /* first col */
+    const uint fcol = 2u * (uint)fn;
+
+    const uint head_first = tgpig.x * group_heads + (uint)fm + args.head_base;
+    const bool row_ok[2] = {
+        assume_valid_heads || head_first < args.n_head,
+        assume_valid_heads || (head_first + 8u) < args.n_head };
+    const uint head[2] = { head_first < args.n_head ? head_first : 0u,
+                           (head_first + 8u) < args.n_head ? head_first + 8u : 0u };
+
+    const uint64_t kv_stride = args.kv_lora_dim;
+    const uint64_t low_token_stride = (uint64_t)args.n_head * latent;
+    device const float *low = (device const float *)qk_low;
+    device const half *kv = (device const half *)kv_lora_cache;
+    device const uint32_t *token_selected =
+        selected + (uint64_t)token * args.n_selected;
+    const uint64_t low_row[2] = {
+        (uint64_t)token * low_token_stride + (uint64_t)head[0] * latent,
+        (uint64_t)token * low_token_stride + (uint64_t)head[1] * latent };
+
+    /* The cache row of a key slot, or -1 when the slot is masked (past the
+     * list, or a padding id).  Masked slots read row 0 with P = 0. */
+    auto key_row = [&](uint idx) -> int {
+        if (idx >= active_rows) return -1;
+        const uint row = token_selected[idx];
+        return (assume_valid_rows || row < args.cache_cap) ? (int)row : -1;
+    };
+    int krow[4];                        /* this lane's four K/V key rows */
+    bool kcol[2][4];                    /* this lane's eight S columns */
+    auto fetch = [&](uint t0) {
+#pragma unroll
+        for (short r = 0; r < 4; ++r) {
+            /* step keys fm, 8 + fm, 16 + fm, 24 + fm */
+            const int p = key_row(t0 + 16u * (uint)(r >> 1) + (uint)fm +
+                                  8u * (uint)(r & 1));
+            krow[r] = p >= 0 ? p : 0;
+        }
+#pragma unroll
+        for (short f = 0; f < 2; ++f) {
+#pragma unroll
+            for (short j = 0; j < 4; ++j) {
+                kcol[f][j] = key_row(t0 + 16u * (uint)f + (uint)fn + (uint)j) >= 0;
+            }
+        }
+    };
+    fetch(0);
+
+    constexpr auto qk_desc = matmul2d_descriptor(
+        16, 32, 32, false, true, false,
+        matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<qk_desc, execution_simdgroup> qk_op;
+    constexpr auto pv_desc = matmul2d_descriptor(
+        16, 32, 32, false, false, false,
+        matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<pv_desc, execution_simdgroup> pv_op;
+    auto qa_ct = qk_op.template get_left_input_cooperative_tensor<half, half, float>();
+    auto kb_ct = qk_op.template get_right_input_cooperative_tensor<half, half, float>();
+    using qa_t = metal::remove_addrspace_t<decltype(qa_ct)>;
+    using kb_t = metal::remove_addrspace_t<decltype(kb_ct)>;
+    auto pa_ct = pv_op.template get_left_input_cooperative_tensor<half, half, float>();
+    auto vb_ct = pv_op.template get_right_input_cooperative_tensor<half, half, float>();
+    using pa_t = metal::remove_addrspace_t<decltype(pa_ct)>;
+    using vb_t = metal::remove_addrspace_t<decltype(vb_ct)>;
+    /* O over this quarter of the latent: o<j> holds dims 32 j .. 32 j + 31 */
+    auto o0 = pv_op.template get_destination_cooperative_tensor<pa_t, vb_t, float>();
+    auto o1 = pv_op.template get_destination_cooperative_tensor<pa_t, vb_t, float>();
+    auto o2 = pv_op.template get_destination_cooperative_tensor<pa_t, vb_t, float>();
+    auto o3 = pv_op.template get_destination_cooperative_tensor<pa_t, vb_t, float>();
+#pragma unroll
+    for (short i = 0; i < 16; ++i) {
+        o0[i] = 0.0f;
+        o1[i] = 0.0f;
+        o2[i] = 0.0f;
+        o3[i] = 0.0f;
+    }
+    float max_s[2] = { -3.0e38f, -3.0e38f };   /* m per row (rows fm, fm + 8) */
+    float sum_s[2] = { 0.0f, 0.0f };           /* l per row */
+
+    const uint nsteps = (active_rows + SK - 1u) / SK;
+    for (uint step = 0; step < nsteps; ++step) {
+        const uint t0 = step * SK;
+
+        /* S = Q K^T over this quarter of the latent: one op per 32 dims */
+        auto s_ct = qk_op.template get_destination_cooperative_tensor<qa_t, kb_t, float>();
+#pragma unroll
+        for (short i = 0; i < 16; ++i) s_ct[i] = 0.0f;
+#pragma unroll
+        for (short jj = 0; jj < 4; ++jj) {
+            const uint d0 = dh * quarter + 32u * (uint)jj + fcol;
+            half4 q0l = half4(0.0h), q0h = half4(0.0h), q1l = half4(0.0h), q1h = half4(0.0h);
+            if (row_ok[0]) {
+                q0l = half4(*(device const float4 *)(low + low_row[0] + d0));
+                q0h = half4(*(device const float4 *)(low + low_row[0] + d0 + 4u));
+            }
+            if (row_ok[1]) {
+                q1l = half4(*(device const float4 *)(low + low_row[1] + d0));
+                q1h = half4(*(device const float4 *)(low + low_row[1] + d0 + 4u));
+            }
+            const uint64_t r0 = (uint64_t)krow[0] * kv_stride;
+            const uint64_t r1 = (uint64_t)krow[1] * kv_stride;
+            const uint64_t r2 = (uint64_t)krow[2] * kv_stride;
+            const uint64_t r3 = (uint64_t)krow[3] * kv_stride;
+            const half4 k0l = *(device const half4 *)(kv + r0 + d0);
+            const half4 k0h = *(device const half4 *)(kv + r0 + d0 + 4u);
+            const half4 k1l = *(device const half4 *)(kv + r1 + d0);
+            const half4 k1h = *(device const half4 *)(kv + r1 + d0 + 4u);
+            const half4 k2l = *(device const half4 *)(kv + r2 + d0);
+            const half4 k2h = *(device const half4 *)(kv + r2 + d0 + 4u);
+            const half4 k3l = *(device const half4 *)(kv + r3 + d0);
+            const half4 k3h = *(device const half4 *)(kv + r3 + d0 + 4u);
+#pragma unroll
+            for (short j = 0; j < 4; ++j) {
+                qa_ct[j]      = q0l[j];
+                qa_ct[4 + j]  = q1l[j];
+                qa_ct[8 + j]  = q0h[j];
+                qa_ct[12 + j] = q1h[j];
+                kb_ct[j]      = k0l[j];
+                kb_ct[4 + j]  = k1l[j];
+                kb_ct[8 + j]  = k2l[j];
+                kb_ct[12 + j] = k3l[j];
+                kb_ct[16 + j] = k0h[j];
+                kb_ct[20 + j] = k1h[j];
+                kb_ct[24 + j] = k2h[j];
+                kb_ct[28 + j] = k3h[j];
+            }
+            qk_op.run(qa_ct, kb_ct, s_ct);
+        }
+        vec<float, 8> s[2];
+#pragma unroll
+        for (short i = 0; i < 8; ++i) {
+            s[0][i] = s_ct[i];
+            s[1][i] = s_ct[8 + i];
+        }
+
+        /* add the other quarters' partial scores, 16 keys at a time */
+#pragma unroll
+        for (short f = 0; f < 2; ++f) {
+            threadgroup float *mine = xchg + dh * (8u * 32u);
+            const uint npeers = 4u;
+#pragma unroll
+            for (short i = 0; i < 8; ++i) mine[lane * 8 + i] = s[f][i];
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+#pragma unroll
+            for (uint p = 0; p < npeers; ++p) {
+                if (p == dh) continue;
+                const threadgroup float *peer = xchg + (uint)p * (8u * 32u);
+#pragma unroll
+                for (short i = 0; i < 8; ++i) s[f][i] += peer[lane * 8 + i];
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        /* scale and mask: this lane's columns fn..fn+3 of fragment f are the
+         * step's keys 16 f + fn + j */
+#pragma unroll
+        for (short f = 0; f < 2; ++f) {
+#pragma unroll
+            for (short j = 0; j < 4; ++j) {
+                const float v0 = s[f][j] * args.scale;
+                const float v1 = s[f][4 + j] * args.scale;
+                s[f][j] = kcol[f][j] ? v0 : -3.0e38f;
+                s[f][4 + j] = kcol[f][j] ? v1 : -3.0e38f;
+            }
+        }
+
+        /* online softmax per row (rows fm and fm + 8); lanes sharing a row
+         * differ in lane bits 0 and 3 (the fn bits) */
+        float factor[2];
+#pragma unroll
+        for (short r = 0; r < 2; ++r) {
+            float m = -3.0e38f;
+#pragma unroll
+            for (short f = 0; f < 2; ++f) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) m = max(m, s[f][4 * r + j]);
+            }
+            m = max(m, simd_shuffle_xor(m, 1));
+            m = max(m, simd_shuffle_xor(m, 8));
+            const float m_new = max(max_s[r], m);
+            const float corr = exp(max_s[r] - m_new);
+            float rs = 0.0f;
+#pragma unroll
+            for (short f = 0; f < 2; ++f) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) {
+                    const float pv = kcol[f][j] ? exp(s[f][4 * r + j] - m_new) : 0.0f;
+                    s[f][4 * r + j] = pv;   /* fp32 P; rounded to half for P V */
+                    rs += pv;
+                }
+            }
+            rs += simd_shuffle_xor(rs, 1);
+            rs += simd_shuffle_xor(rs, 8);
+            sum_s[r] = sum_s[r] * corr + rs;
+            max_s[r] = m_new;
+            factor[r] = corr;
+        }
+
+        /* O *= factor (exact no-op when every factor of the simdgroup is 1) */
+        if (simd_any(factor[0] != 1.0f || factor[1] != 1.0f)) {
+#pragma unroll
+            for (short h = 0; h < 2; ++h) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) {
+                    o0[8 * h + j] *= factor[0];
+                    o0[8 * h + 4 + j] *= factor[1];
+                    o1[8 * h + j] *= factor[0];
+                    o1[8 * h + 4 + j] *= factor[1];
+                    o2[8 * h + j] *= factor[0];
+                    o2[8 * h + 4 + j] *= factor[1];
+                    o3[8 * h + j] *= factor[0];
+                    o3[8 * h + 4 + j] *= factor[1];
+                }
+            }
+        }
+
+        /* O += P V over this quarter of the latent: the step's two 16-key P
+         * fragments packed along K into one op per 32 output dims */
+#pragma unroll
+        for (short cc = 0; cc < 4; ++cc) {
+            const uint d0 = dh * quarter + 32u * (uint)cc + fcol;
+            const uint64_t r0 = (uint64_t)krow[0] * kv_stride;
+            const uint64_t r1 = (uint64_t)krow[1] * kv_stride;
+            const uint64_t r2 = (uint64_t)krow[2] * kv_stride;
+            const uint64_t r3 = (uint64_t)krow[3] * kv_stride;
+            const half4 v0l = *(device const half4 *)(kv + r0 + d0);
+            const half4 v0h = *(device const half4 *)(kv + r0 + d0 + 4u);
+            const half4 v1l = *(device const half4 *)(kv + r1 + d0);
+            const half4 v1h = *(device const half4 *)(kv + r1 + d0 + 4u);
+            const half4 v2l = *(device const half4 *)(kv + r2 + d0);
+            const half4 v2h = *(device const half4 *)(kv + r2 + d0 + 4u);
+            const half4 v3l = *(device const half4 *)(kv + r3 + d0);
+            const half4 v3h = *(device const half4 *)(kv + r3 + d0 + 4u);
+#pragma unroll
+            for (short i = 0; i < 8; ++i) {
+                pa_ct[i] = (half)s[0][i];
+                pa_ct[8 + i] = (half)s[1][i];
+            }
+#pragma unroll
+            for (short j = 0; j < 4; ++j) {
+                vb_ct[j]      = v0l[j];
+                vb_ct[4 + j]  = v1l[j];
+                vb_ct[8 + j]  = v0h[j];
+                vb_ct[12 + j] = v1h[j];
+                vb_ct[16 + j] = v2l[j];
+                vb_ct[20 + j] = v3l[j];
+                vb_ct[24 + j] = v2h[j];
+                vb_ct[28 + j] = v3h[j];
+            }
+            if (cc == 0) pv_op.run(pa_ct, vb_ct, o0);
+            else if (cc == 1) pv_op.run(pa_ct, vb_ct, o1);
+            else if (cc == 2) pv_op.run(pa_ct, vb_ct, o2);
+            else pv_op.run(pa_ct, vb_ct, o3);
+            /* Second pass on what half dropped from P.  The softmax weights
+             * are the only operand this kernel creates itself (the classic
+             * SIMD dot keeps them in fp32), latent values are O(10), and the
+             * residual of a weight near 1 sits at 2^-12 - well inside half
+             * range - so this restores the fp32 mantissa for the price of a
+             * second op per 32 output dims. */
+#pragma unroll
+            for (short i = 0; i < 8; ++i) {
+                pa_ct[i] = (half)(s[0][i] - float(pa_ct[i]));
+                pa_ct[8 + i] = (half)(s[1][i] - float(pa_ct[8 + i]));
+            }
+            if (cc == 0) pv_op.run(pa_ct, vb_ct, o0);
+            else if (cc == 1) pv_op.run(pa_ct, vb_ct, o1);
+            else if (cc == 2) pv_op.run(pa_ct, vb_ct, o2);
+            else pv_op.run(pa_ct, vb_ct, o3);
+        }
+
+        if (step + 1 < nsteps) fetch(t0 + SK);
+    }
+
+    /* normalize: out = O / l, at lora_out[token][head][latent] */
+#pragma unroll
+    for (short r = 0; r < 2; ++r) {
+        if (!row_ok[r]) continue;
+        const float rr = sum_s[r] > 0.0f ? 1.0f / sum_s[r] : 0.0f;
+        device float *out = (device float *)lora_out +
+            ((uint64_t)token * args.n_head + head[r]) * latent;
+#pragma unroll
+        for (short cc = 0; cc < 4; ++cc) {
+            const uint d0 = dh * quarter + 32u * (uint)cc + fcol;
+            float4 e0, e1;
+            if (cc == 0) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) { e0[j] = o0[4 * r + j]; e1[j] = o0[8 + 4 * r + j]; }
+            } else if (cc == 1) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) { e0[j] = o1[4 * r + j]; e1[j] = o1[8 + 4 * r + j]; }
+            } else if (cc == 2) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) { e0[j] = o2[4 * r + j]; e1[j] = o2[8 + 4 * r + j]; }
+            } else {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) { e0[j] = o3[4 * r + j]; e1[j] = o3[8 + 4 * r + j]; }
+            }
+            *(device float4 *)(out + d0) = e0 * rr;
+            *(device float4 *)(out + d0 + 4u) = e1 * rr;
+        }
+    }
+}
+
+template <bool assume_valid_rows, bool assume_valid_heads, bool check_prefix = false>
+kernel void kernel_glm_attention_indexed_batch_lora_group8_nax_impl(
+        constant ds4_metal_args_glm_attention_indexed_batch & args,
+        device const char *q,
+        device const char *qk_low,
+        device const char *kv_lora_cache,
+        device const char *k_rope_cache,
+        device const uint32_t *selected,
+        device char *lora_out,
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tid_u [[thread_index_in_threadgroup]],
+        ushort lane_u [[thread_index_in_simdgroup]],
+        ushort sg_u [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float xchg[4][8 * 32];
+    uint active_rows = args.n_selected;
+    if (tgpig.y >= args.n_tokens ||
+        args.n_selected == 0u ||
+        args.cache_f16 == 0u ||
+        args.kv_lora_dim != 512u ||
+        args.qk_rope != 0u) {
+        return;
+    }
+    if (check_prefix) {
+        device const uint32_t *ids = selected + (uint64_t)tgpig.y * args.n_selected;
+        uint first_invalid = args.n_selected;
+        uint last_valid = 0u;
+        // Every simdgroup proves the same prefix, so the branch is TG-uniform.
+        for (uint i = (uint)lane_u; i < args.n_selected; i += 32u) {
+            if (ids[i] < args.cache_cap) last_valid = max(last_valid, i + 1u);
+            else first_invalid = min(first_invalid, i);
+        }
+        first_invalid = simd_min(first_invalid);
+        active_rows = simd_max(last_valid);
+        // Keep the physical stride; omit only padding from the attention loop.
+        if (first_invalid >= active_rows) {
+            glm_attention_indexed_batch_lora_group8_nax_body<true, assume_valid_heads>(
+                args, qk_low, kv_lora_cache, selected, lora_out, &xchg[0][0],
+                tgpig, (uint)lane_u, (uint)sg_u, active_rows);
+            return;
+        }
+    }
+    glm_attention_indexed_batch_lora_group8_nax_body<assume_valid_rows, assume_valid_heads>(
+        args, qk_low, kv_lora_cache, selected, lora_out, &xchg[0][0],
+        tgpig, (uint)lane_u, (uint)sg_u, active_rows);
+}
+
+typedef decltype(kernel_glm_attention_indexed_batch_lora_group8_nax_impl<false, false>)
+        glm_attention_indexed_batch_lora_group8_nax_t;
+
+template [[host_name("kernel_glm_attention_indexed_batch_lora_group8_nax")]]
+kernel glm_attention_indexed_batch_lora_group8_nax_t
+kernel_glm_attention_indexed_batch_lora_group8_nax_impl<false, false>;
+
+template [[host_name("kernel_glm_attention_indexed_batch_lora_group8_nax_valid")]]
+kernel glm_attention_indexed_batch_lora_group8_nax_t
+kernel_glm_attention_indexed_batch_lora_group8_nax_impl<true, false>;
+
+template [[host_name("kernel_glm_attention_indexed_batch_lora_group8_nax_valid_fullheads")]]
+kernel glm_attention_indexed_batch_lora_group8_nax_t
+kernel_glm_attention_indexed_batch_lora_group8_nax_impl<true, true>;
+
+template [[host_name("kernel_glm_attention_indexed_batch_lora_group8_nax_prefix_fullheads")]]
+kernel glm_attention_indexed_batch_lora_group8_nax_t
+kernel_glm_attention_indexed_batch_lora_group8_nax_impl<false, true, true>;
+#endif /* DS4_METAL_HAS_TENSOR */
+
 /* Indexed prefill attention over the compact KV cache.
  *
  * A threadgroup is 8 simdgroups; heads_per_sg is how many heads one simdgroup
