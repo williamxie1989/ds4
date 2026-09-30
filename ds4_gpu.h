@@ -293,6 +293,10 @@ enum {
 };
 /* Returns and clears GLM tuning coverage recorded only in the test mode. */
 uint32_t ds4_gpu_test_glm53_prefill_take_dispatches(void);
+/* Mirror of the runtime Metal 4 TensorOps availability gate
+ * (ds4_gpu_mpp_available), so NAX-only test assertions can be conditioned on
+ * the same predicate the dispatch actually uses. */
+int ds4_gpu_test_mpp_available(void);
 void ds4_gpu_release_zero_prefix_prefill_mask_cache(void);
 #else
 static inline int ds4_gpu_device_is_pre_m5_apple_silicon(void) { return 0; }
