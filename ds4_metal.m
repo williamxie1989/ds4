@@ -2910,6 +2910,12 @@ static int ds4_gpu_mpp_available(void) {
     return g_metal4_tensor_api_enabled && !g_quality_mode;
 }
 
+int ds4_gpu_test_mpp_available(void) {
+    /* Test hook: the same predicate the dispatch gates on, so NAX-only test
+     * assertions can be conditioned on the runtime TensorOps availability. */
+    return ds4_gpu_mpp_available();
+}
+
 /*
  * Retained Metal4 defaults live here instead of behind user-visible options.
  * The public runtime has one automatic accelerated path plus the global
@@ -38542,7 +38548,10 @@ static int ds4_gpu_glm_attention_indexed_batch_lora_layout_tensor(
          * RoPE tails, short prefill tails, split head ranges that are not
          * full 16-head groups, quality mode, pre-M5 devices and a missing
          * pipeline all keep the classic path; so does
-         * DS4_METAL_DISABLE_GLM53_MLA_NAX.
+         * DS4_METAL_DISABLE_GLM53_MLA_NAX, together with the documented
+         * indexed-attn A/B switch DS4_METAL_DISABLE_GLM53_PREFILL_INDEXED_ATTN
+         * and the branch-wide DS4_METAL_DISABLE_GLM53_FLASH_TUNING, so a
+         * classic baseline run cannot silently race the tiles.
          */
         const bool nax_head_groups =
             (attn_head_base % 16u) == 0u && (head_count % 16u) == 0u;
@@ -38550,7 +38559,9 @@ static int ds4_gpu_glm_attention_indexed_batch_lora_layout_tensor(
             use_vec_lora && qk_rope == 0u && nax_head_groups &&
             ds4_gpu_mpp_available() &&
             n_tokens >= 32u && n_head == 64u && qk_nope == 256u &&
-            getenv("DS4_METAL_DISABLE_GLM53_MLA_NAX") == NULL;
+            getenv("DS4_METAL_DISABLE_GLM53_MLA_NAX") == NULL &&
+            getenv("DS4_METAL_DISABLE_GLM53_PREFILL_INDEXED_ATTN") == NULL &&
+            getenv("DS4_METAL_DISABLE_GLM53_FLASH_TUNING") == NULL;
         const char *nax_name = NULL;
         if (getenv("DS4_METAL_DEBUG_GLM53_MLA_NAX") && use_vec_lora) {
             static int gate_debug_left = 6;
