@@ -7228,6 +7228,457 @@ kernel void kernel_dsv4_indexed_mixed_attention_heads16_dual(
     }
 }
 
+#ifdef DS4_METAL_HAS_TENSOR
+/* DSV4 sparse indexed mixed attention on the Metal 4 tensor units.  Port of
+ * the verified GLM template (glm_attention_indexed_batch_lora_group8_nax_body)
+ * onto the DSV4 geometry; the dispatch gates it on ds4_gpu_mpp_available() so
+ * the tensor primitives are guaranteed usable.
+ *
+ *  - one threadgroup of four simdgroups covers 16 query heads of one token
+ *    and splits the 512-dim cache row (key *and* value) into 4x128 quarters;
+ *    the per-quarter Q K^T partials are summed through threadgroup memory;
+ *  - the key loop runs the classic kernel's two stages back to back: the
+ *    contiguous raw/SWA tail (window bound, causal, circular raw row map)
+ *    then the token's sorted comp top-k rows.  The loop bound replicates the
+ *    classic scan semantics exactly: the comp stage stops at the first entry
+ *    that breaks the classic loop (idx >= visible) and never runs past the
+ *    entry it last consumed; idx < 0 (the sorted front padding) and
+ *    idx >= visible mask a slot, and a masked slot reads a written row (raw
+ *    clamp, comp row 0) so P = 0 never meets unwritten memory;
+ *  - the operand side takes the exact half values the classic kernel feeds
+ *    its dots: Q is cast from its fp32 row, raw rows round from fp32 exactly
+ *    as the classic staging step does, f16 comp rows load direct and f32
+ *    comp rows round at load (dsv4_load_cache_h4), and the score row and the
+ *    value row are the same load so the value side equals the classic
+ *    staged row bit for bit;
+ *  - softmax stays the classic scalar online form (per-row running max and
+ *    sum, scale after the quarter exchange); P, the one operand this kernel
+ *    creates, goes in as a half pair plus its residual (the GLM lesson: the
+ *    error source is P, not Q).  The accumulation tree still differs, so
+ *    this drifts from the classic kernels by ulps by design;
+ *  - the per-head sink folds into the online softmax after the last key row
+ *    and before the 1/S normalize, same running-max rescaling as every step.
+ *
+ * Fragment slot math is the template's: slot 8c + 4r + j of a 16x16 fragment
+ * c holds row (fm + 8r) x col (fn + j); head dims are lane-permuted inside
+ * each 32-wide op so one 16-byte load feeds both fragments, Q and K share the
+ * permutation and the O store undoes it.  TP head splits arrive as compact
+ * buffer views with relative sinks, so no head_base offset is needed. */
+kernel void kernel_dsv4_indexed_mixed_attention_heads16_nax(
+        constant ds4_metal_args_dsv4_indexed_attention &args,
+        device const char *q,
+        device const char *raw_kv,
+        device const char *comp_kv,
+        device const char *topk,
+        device const char *sinks,
+        device char *dst,
+        uint2 tgpig [[threadgroup_position_in_grid]],
+        ushort lane_u [[thread_index_in_simdgroup]],
+        ushort sg_u [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float xchg[4][8 * 32];
+    const uint token = tgpig.y;
+    if (token >= args.n_tokens) return;
+    const uint lane = lane_u;
+    const uint dh = sg_u;             /* this simdgroup's 128-dim quarter */
+    constexpr uint SK = 32u;          /* keys per step */
+    constexpr uint latent = 512u;     /* head_dim, gated by the caller */
+    constexpr uint quarter = latent / 4u;
+
+    const ushort qid = (ushort)(lane >> 2u);
+    const short fm = (short)((qid & 4u) | ((lane >> 1u) & 3u));  /* tile row */
+    const short fn = (short)(((qid & 2u) | (lane & 1u)) * 4u);   /* first col */
+    const uint fcol = 2u * (uint)fn;
+
+    const uint head_first = tgpig.x * 16u + (uint)fm;
+    const bool row_ok[2] = { head_first < args.n_head,
+                             (head_first + 8u) < args.n_head };
+    const uint head[2] = { head_first < args.n_head ? head_first : 0u,
+                           (head_first + 8u) < args.n_head ? head_first + 8u : 0u };
+    device const float *qd[2] = {
+        (device const float *)(q + (uint64_t)token*args.q_token_stride +
+                               (uint64_t)head[0]*args.q_head_stride),
+        (device const float *)(q + (uint64_t)token*args.q_token_stride +
+                               (uint64_t)head[1]*args.q_head_stride) };
+
+    /* the classic kernel's per-token key geometry */
+    const uint qpos = args.pos0 + token;
+    const uint last_pos = args.pos0 + args.n_tokens - 1u;
+    const uint first_raw_pos = last_pos + 1u - args.n_raw;
+    const uint raw_last_pos = first_raw_pos + args.n_raw - 1u;
+    const uint window_first = (args.window != 0u && qpos + 1u > args.window) ?
+        qpos + 1u - args.window : 0u;
+    const uint raw_first = max(first_raw_pos, window_first);
+    const uint raw_last = min(qpos, raw_last_pos);
+    const uint n_raw_keys = raw_first <= raw_last ? raw_last - raw_first + 1u : 0u;
+    const uint raw_slots = ((n_raw_keys + SK - 1u) / SK) * SK;
+
+    const uint visible = min((qpos + 1u)/args.ratio, args.n_comp);
+    device const int32_t *row_topk = (device const int32_t *)(topk +
+        (uint64_t)token*args.topk_token_stride);
+    uint n_scan;
+    {
+        /* the classic comp loop consumes entries until the first one whose
+         * (uint) value reaches visible and never past the entry it last
+         * took.  Every simdgroup computes the same bound, so the step count
+         * is threadgroup-uniform without an exchange. */
+        int first_break = 0x7fffffff;
+        int last_valid = -1;
+        for (uint i = lane; i < args.top_k; i += 32u) {
+            const int32_t idx = row_topk[i];
+            if (idx >= 0) {
+                if ((uint)idx < visible) {
+                    if ((int)i > last_valid) last_valid = (int)i;
+                } else if ((int)i < first_break) {
+                    first_break = (int)i;
+                }
+            }
+        }
+        first_break = simd_min(first_break);
+        last_valid = simd_max(last_valid);
+        const uint scan_bound = first_break == 0x7fffffff ?
+            args.top_k : (uint)first_break;
+        n_scan = min(scan_bound, last_valid < 0 ? 0u : (uint)last_valid + 1u);
+    }
+    const uint nsteps = raw_slots/SK + (n_scan + SK - 1u)/SK;
+
+    /* key slot -> (stage, a row that is safe to read).  The stage is decided
+     * by slot < raw_slots; masked slots still name a written row: raw slots
+     * clamp to the last live window row, comp slots read row 0, which is
+     * written whenever any slot contributes. */
+    auto key_row = [&](uint t) -> uint {
+        if (t < raw_slots) {
+            const uint pos = raw_first + min(t, n_raw_keys - 1u);
+            return (args.raw_start + (pos - first_raw_pos))%args.raw_cap;
+        }
+        const uint ci = t - raw_slots;
+        if (ci >= n_scan) return 0u;
+        const int32_t idx = row_topk[ci];
+        return (idx >= 0 && (uint)idx < visible) ? (uint)idx : 0u;
+    };
+    auto key_valid = [&](uint t) -> bool {
+        if (t < raw_slots) return t < n_raw_keys;
+        const uint ci = t - raw_slots;
+        if (ci >= n_scan) return false;
+        const int32_t idx = row_topk[ci];
+        return idx >= 0 && (uint)idx < visible;
+    };
+
+    int krow[4];                        /* this lane's four K/V key rows */
+    bool kcol[2][4];                    /* this lane's eight S columns */
+    auto fetch = [&](uint t0) {
+#pragma unroll
+        for (short r = 0; r < 4; ++r) {
+            /* step keys fm, 8 + fm, 16 + fm, 24 + fm */
+            krow[r] = (int)key_row(t0 + 16u * (uint)(r >> 1) + (uint)fm +
+                                   8u * (uint)(r & 1));
+        }
+#pragma unroll
+        for (short f = 0; f < 2; ++f) {
+#pragma unroll
+            for (short j = 0; j < 4; ++j) {
+                kcol[f][j] = key_valid(t0 + 16u * (uint)f + (uint)fn + (uint)j);
+            }
+        }
+    };
+    fetch(0);
+
+    /* the cache fragment as the classic kernel sees it: raw rows round from
+     * fp32 like the classic staging, f16 comp rows load direct, f32 comp
+     * rows round at load.  The score row and the value row are the same
+     * load, so the value side equals the classic staged row bit for bit. */
+    auto load_h4 = [&](uint row, bool raw_stage, uint d0) -> half4 {
+        if (raw_stage) {
+            return (half4)*((device const float4 *)(raw_kv +
+                (uint64_t)row*args.raw_row_stride) + (d0 >> 2u));
+        }
+        device const char *base = comp_kv + (uint64_t)row*args.comp_row_stride;
+        if (args.comp_kv_f16 != 0u) {
+            return *((device const half4 *)base + (d0 >> 2u));
+        }
+        return (half4)*((device const float4 *)base + (d0 >> 2u));
+    };
+
+    constexpr auto qk_desc = matmul2d_descriptor(
+        16, 32, 32, false, true, false,
+        matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<qk_desc, execution_simdgroup> qk_op;
+    constexpr auto pv_desc = matmul2d_descriptor(
+        16, 32, 32, false, false, false,
+        matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<pv_desc, execution_simdgroup> pv_op;
+    auto qa_ct = qk_op.template get_left_input_cooperative_tensor<half, half, float>();
+    auto kb_ct = qk_op.template get_right_input_cooperative_tensor<half, half, float>();
+    using qa_t = metal::remove_addrspace_t<decltype(qa_ct)>;
+    using kb_t = metal::remove_addrspace_t<decltype(kb_ct)>;
+    auto pa_ct = pv_op.template get_left_input_cooperative_tensor<half, half, float>();
+    auto vb_ct = pv_op.template get_right_input_cooperative_tensor<half, half, float>();
+    using pa_t = metal::remove_addrspace_t<decltype(pa_ct)>;
+    using vb_t = metal::remove_addrspace_t<decltype(vb_ct)>;
+    /* O over this quarter of the latent: o<j> holds dims 32 j .. 32 j + 31 */
+    auto o0 = pv_op.template get_destination_cooperative_tensor<pa_t, vb_t, float>();
+    auto o1 = pv_op.template get_destination_cooperative_tensor<pa_t, vb_t, float>();
+    auto o2 = pv_op.template get_destination_cooperative_tensor<pa_t, vb_t, float>();
+    auto o3 = pv_op.template get_destination_cooperative_tensor<pa_t, vb_t, float>();
+#pragma unroll
+    for (short i = 0; i < 16; ++i) {
+        o0[i] = 0.0f;
+        o1[i] = 0.0f;
+        o2[i] = 0.0f;
+        o3[i] = 0.0f;
+    }
+    float max_s[2] = { -3.0e38f, -3.0e38f };   /* m per row (rows fm, fm + 8) */
+    float sum_s[2] = { 0.0f, 0.0f };           /* l per row */
+
+    for (uint step = 0; step < nsteps; ++step) {
+        const uint t0 = step * SK;
+        const bool raw_stage = t0 < raw_slots;
+
+        /* S = Q K^T over this quarter of the latent: one op per 32 dims */
+        auto s_ct = qk_op.template get_destination_cooperative_tensor<qa_t, kb_t, float>();
+#pragma unroll
+        for (short i = 0; i < 16; ++i) s_ct[i] = 0.0f;
+#pragma unroll
+        for (short jj = 0; jj < 4; ++jj) {
+            const uint d0 = dh * quarter + 32u * (uint)jj + fcol;
+            half4 q0l = half4(0.0h), q0h = half4(0.0h), q1l = half4(0.0h), q1h = half4(0.0h);
+            if (row_ok[0]) {
+                q0l = half4(*(device const float4 *)(qd[0] + d0));
+                q0h = half4(*(device const float4 *)(qd[0] + d0 + 4u));
+            }
+            if (row_ok[1]) {
+                q1l = half4(*(device const float4 *)(qd[1] + d0));
+                q1h = half4(*(device const float4 *)(qd[1] + d0 + 4u));
+            }
+            const half4 k0l = load_h4((uint)krow[0], raw_stage, d0);
+            const half4 k0h = load_h4((uint)krow[0], raw_stage, d0 + 4u);
+            const half4 k1l = load_h4((uint)krow[1], raw_stage, d0);
+            const half4 k1h = load_h4((uint)krow[1], raw_stage, d0 + 4u);
+            const half4 k2l = load_h4((uint)krow[2], raw_stage, d0);
+            const half4 k2h = load_h4((uint)krow[2], raw_stage, d0 + 4u);
+            const half4 k3l = load_h4((uint)krow[3], raw_stage, d0);
+            const half4 k3h = load_h4((uint)krow[3], raw_stage, d0 + 4u);
+#pragma unroll
+            for (short j = 0; j < 4; ++j) {
+                qa_ct[j]      = q0l[j];
+                qa_ct[4 + j]  = q1l[j];
+                qa_ct[8 + j]  = q0h[j];
+                qa_ct[12 + j] = q1h[j];
+                kb_ct[j]      = k0l[j];
+                kb_ct[4 + j]  = k1l[j];
+                kb_ct[8 + j]  = k2l[j];
+                kb_ct[12 + j] = k3l[j];
+                kb_ct[16 + j] = k0h[j];
+                kb_ct[20 + j] = k1h[j];
+                kb_ct[24 + j] = k2h[j];
+                kb_ct[28 + j] = k3h[j];
+            }
+            qk_op.run(qa_ct, kb_ct, s_ct);
+        }
+        vec<float, 8> s[2];
+#pragma unroll
+        for (short i = 0; i < 8; ++i) {
+            s[0][i] = s_ct[i];
+            s[1][i] = s_ct[8 + i];
+        }
+
+        /* add the other quarters' partial scores, 16 keys at a time */
+#pragma unroll
+        for (short f = 0; f < 2; ++f) {
+            threadgroup float *mine = &xchg[0][0] + dh * (8u * 32u);
+            const uint npeers = 4u;
+#pragma unroll
+            for (short i = 0; i < 8; ++i) mine[lane * 8 + i] = s[f][i];
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+#pragma unroll
+            for (uint p = 0; p < npeers; ++p) {
+                if (p == dh) continue;
+                const threadgroup float *peer = &xchg[0][0] + (uint)p * (8u * 32u);
+#pragma unroll
+                for (short i = 0; i < 8; ++i) s[f][i] += peer[lane * 8 + i];
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        /* scale and mask: this lane's columns fn..fn+3 of fragment f are the
+         * step's keys 16 f + fn + j */
+#pragma unroll
+        for (short f = 0; f < 2; ++f) {
+#pragma unroll
+            for (short j = 0; j < 4; ++j) {
+                const float v0 = s[f][j] * args.scale;
+                const float v1 = s[f][4 + j] * args.scale;
+                s[f][j] = kcol[f][j] ? v0 : -3.0e38f;
+                s[f][4 + j] = kcol[f][j] ? v1 : -3.0e38f;
+            }
+        }
+
+        /* online softmax per row (rows fm and fm + 8); lanes sharing a row
+         * differ in lane bits 0 and 3 (the fn bits) */
+        float factor[2];
+#pragma unroll
+        for (short r = 0; r < 2; ++r) {
+            float m = -3.0e38f;
+#pragma unroll
+            for (short f = 0; f < 2; ++f) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) m = max(m, s[f][4 * r + j]);
+            }
+            m = max(m, simd_shuffle_xor(m, 1));
+            m = max(m, simd_shuffle_xor(m, 8));
+            const float m_new = max(max_s[r], m);
+            const float corr = exp(max_s[r] - m_new);
+            float rs = 0.0f;
+#pragma unroll
+            for (short f = 0; f < 2; ++f) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) {
+                    const float pv = kcol[f][j] ? exp(s[f][4 * r + j] - m_new) : 0.0f;
+                    s[f][4 * r + j] = pv;   /* fp32 P; rounded to half for P V */
+                    rs += pv;
+                }
+            }
+            rs += simd_shuffle_xor(rs, 1);
+            rs += simd_shuffle_xor(rs, 8);
+            sum_s[r] = sum_s[r] * corr + rs;
+            max_s[r] = m_new;
+            factor[r] = corr;
+        }
+
+        /* O *= factor (exact no-op when every factor of the simdgroup is 1) */
+        if (simd_any(factor[0] != 1.0f || factor[1] != 1.0f)) {
+#pragma unroll
+            for (short h = 0; h < 2; ++h) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) {
+                    o0[8 * h + j] *= factor[0];
+                    o0[8 * h + 4 + j] *= factor[1];
+                    o1[8 * h + j] *= factor[0];
+                    o1[8 * h + 4 + j] *= factor[1];
+                    o2[8 * h + j] *= factor[0];
+                    o2[8 * h + 4 + j] *= factor[1];
+                    o3[8 * h + j] *= factor[0];
+                    o3[8 * h + 4 + j] *= factor[1];
+                }
+            }
+        }
+
+        /* O += P V over this quarter of the latent: the step's two 16-key P
+         * fragments packed along K into one op per 32 output dims */
+#pragma unroll
+        for (short cc = 0; cc < 4; ++cc) {
+            const uint d0 = dh * quarter + 32u * (uint)cc + fcol;
+            const half4 v0l = load_h4((uint)krow[0], raw_stage, d0);
+            const half4 v0h = load_h4((uint)krow[0], raw_stage, d0 + 4u);
+            const half4 v1l = load_h4((uint)krow[1], raw_stage, d0);
+            const half4 v1h = load_h4((uint)krow[1], raw_stage, d0 + 4u);
+            const half4 v2l = load_h4((uint)krow[2], raw_stage, d0);
+            const half4 v2h = load_h4((uint)krow[2], raw_stage, d0 + 4u);
+            const half4 v3l = load_h4((uint)krow[3], raw_stage, d0);
+            const half4 v3h = load_h4((uint)krow[3], raw_stage, d0 + 4u);
+#pragma unroll
+            for (short i = 0; i < 8; ++i) {
+                pa_ct[i] = (half)s[0][i];
+                pa_ct[8 + i] = (half)s[1][i];
+            }
+#pragma unroll
+            for (short j = 0; j < 4; ++j) {
+                vb_ct[j]      = v0l[j];
+                vb_ct[4 + j]  = v1l[j];
+                vb_ct[8 + j]  = v0h[j];
+                vb_ct[12 + j] = v1h[j];
+                vb_ct[16 + j] = v2l[j];
+                vb_ct[20 + j] = v3l[j];
+                vb_ct[24 + j] = v2h[j];
+                vb_ct[28 + j] = v3h[j];
+            }
+            if (cc == 0) pv_op.run(pa_ct, vb_ct, o0);
+            else if (cc == 1) pv_op.run(pa_ct, vb_ct, o1);
+            else if (cc == 2) pv_op.run(pa_ct, vb_ct, o2);
+            else pv_op.run(pa_ct, vb_ct, o3);
+            /* Second pass on what half dropped from P.  The softmax weights
+             * are the only operand this kernel creates itself (the classic
+             * SIMD dot keeps them in fp32), values are O(10), and the
+             * residual of a weight near 1 sits at 2^-12 - well inside half
+             * range - so this restores the fp32 mantissa for the price of a
+             * second op per 32 output dims. */
+#pragma unroll
+            for (short i = 0; i < 8; ++i) {
+                pa_ct[i] = (half)(s[0][i] - float(pa_ct[i]));
+                pa_ct[8 + i] = (half)(s[1][i] - float(pa_ct[8 + i]));
+            }
+            if (cc == 0) pv_op.run(pa_ct, vb_ct, o0);
+            else if (cc == 1) pv_op.run(pa_ct, vb_ct, o1);
+            else if (cc == 2) pv_op.run(pa_ct, vb_ct, o2);
+            else pv_op.run(pa_ct, vb_ct, o3);
+        }
+
+        if (step + 1 < nsteps) fetch(t0 + SK);
+    }
+
+    /* fold the per-head sink into the running softmax (the 0-valued sink
+     * value contributes no vector, only its exp weight) and rescale O the
+     * same way a step rescales it when its row max moves */
+    device const float *sink_f = (device const float *)sinks;
+    float sink_factor[2] = { 1.0f, 1.0f };
+#pragma unroll
+    for (short r = 0; r < 2; ++r) {
+        if (!row_ok[r]) continue;
+        const float score = sink_f[head[r]];
+        const float m_new = max(max_s[r], score);
+        const float corr = exp(max_s[r] - m_new);
+        sum_s[r] = sum_s[r] * corr + exp(score - m_new);
+        max_s[r] = m_new;
+        sink_factor[r] = corr;
+    }
+    if (simd_any(sink_factor[0] != 1.0f || sink_factor[1] != 1.0f)) {
+#pragma unroll
+        for (short h = 0; h < 2; ++h) {
+#pragma unroll
+            for (short j = 0; j < 4; ++j) {
+                o0[8 * h + j] *= sink_factor[0];
+                o0[8 * h + 4 + j] *= sink_factor[1];
+                o1[8 * h + j] *= sink_factor[0];
+                o1[8 * h + 4 + j] *= sink_factor[1];
+                o2[8 * h + j] *= sink_factor[0];
+                o2[8 * h + 4 + j] *= sink_factor[1];
+                o3[8 * h + j] *= sink_factor[0];
+                o3[8 * h + 4 + j] *= sink_factor[1];
+            }
+        }
+    }
+
+    /* normalize: out = O / l, at dst[token][head][head_dim] */
+#pragma unroll
+    for (short r = 0; r < 2; ++r) {
+        if (!row_ok[r]) continue;
+        const float rr = sum_s[r] > 0.0f ? 1.0f / sum_s[r] : 0.0f;
+        device float *out = (device float *)(dst +
+            (uint64_t)token*args.dst_token_stride +
+            (uint64_t)head[r]*args.dst_head_stride);
+#pragma unroll
+        for (short cc = 0; cc < 4; ++cc) {
+            const uint d0 = dh * quarter + 32u * (uint)cc + fcol;
+            float4 e0, e1;
+            if (cc == 0) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) { e0[j] = o0[4 * r + j]; e1[j] = o0[8 + 4 * r + j]; }
+            } else if (cc == 1) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) { e0[j] = o1[4 * r + j]; e1[j] = o1[8 + 4 * r + j]; }
+            } else if (cc == 2) {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) { e0[j] = o2[4 * r + j]; e1[j] = o2[8 + 4 * r + j]; }
+            } else {
+#pragma unroll
+                for (short j = 0; j < 4; ++j) { e0[j] = o3[4 * r + j]; e1[j] = o3[8 + 4 * r + j]; }
+            }
+            *(device float4 *)(out + d0) = e0 * rr;
+            *(device float4 *)(out + d0 + 4u) = e1 * rr;
+        }
+    }
+}
+#endif /* DS4_METAL_HAS_TENSOR */
+
 // Decode specialization of kernel_dsv4_indexed_mixed_attention_heads8.
 // Generation attends one token at a time, so the ratio-4 indexed path spends a
 // visible amount of time repeatedly staging the same K/V row for the eight
