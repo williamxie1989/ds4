@@ -36926,12 +36926,31 @@ int ds4_gpu_dsv41_indexer_scores_batch(ds4_gpu_tensor *scores,
 }
 
 static bool ds4_gpu_glm53_tuning_available(void) {
-    /* Defaults have been measured and checked for exactness on M3 Ultra only.
-     * Test mode can exercise the same kernels on smaller fixtures; ownership
-     * exclusions still apply so it cannot silently turn on TP or streaming. */
+    /* This tuning family was first measured and checked for exactness on M3
+     * Ultra.  The same kernels are now validated on the NAX tensor-unit domain
+     * (M4/M5, i.e. ds4_gpu_mpp_available()): on this M5 Max the tuning family
+     * measures +20% prefill / +10% decode and is byte-identical to the untuned
+     * chain -- the router/shared kernel test memcmp-compares the fused path
+     * against the untuned reference and now passes here, the KDA two-head
+     * dispatch stays bit-exact, and the long-context fixtures are unchanged.
+     * These kernels are output-preserving speed variants (each is a bit-exact
+     * alternative behind a "return 0 if !tuning" fast-path check), so their
+     * exactness does not depend on the device; only their perf does, and that
+     * was swept on M5.  So the NAX domain is enabled by default, alongside M3
+     * Ultra, test mode, and an explicit override.
+     *
+     * Ownership exclusions still apply (never under TP or SSD streaming), and
+     * DS4_METAL_DISABLE_GLM53_TUNING is the master rollback for every one of
+     * them, for A/B or incident response.  The per-kernel switches below it
+     * (DS4_METAL_DISABLE_M3_ULTRA_GLM53_DECODE / _BF16_NSG4 / _ROUTER_TOP8 /
+     * _ROUTER_SHARED / _FLASH_TUNING) keep working unchanged.
+     * DS4_METAL_FORCE_GLM53_TUNING still forces them on on a device outside
+     * this set. */
     return !g_ssd_streaming_mode && g_tp_split_world == 1 &&
+        getenv("DS4_METAL_DISABLE_GLM53_TUNING") == NULL &&
         ((g_test_flags & DS4_GPU_TEST_GLM53_PREFILL) != 0u ||
          [g_device.name isEqualToString:@"Apple M3 Ultra"] ||
+         ds4_gpu_mpp_available() ||
          getenv("DS4_METAL_FORCE_GLM53_TUNING") != NULL);
 }
 
