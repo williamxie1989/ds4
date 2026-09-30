@@ -460,6 +460,18 @@ static void ds4_gpu_note_glm53_prefill_dispatch(uint32_t feature) {
         g_test_glm53_prefill_dispatches |= feature;
     }
 }
+
+static uint32_t g_test_v41_indexed_attn_dispatches;
+uint32_t ds4_gpu_test_v41_indexed_attn_take_dispatches(void) {
+    const uint32_t result = g_test_v41_indexed_attn_dispatches;
+    g_test_v41_indexed_attn_dispatches = 0;
+    return result;
+}
+static void ds4_gpu_note_v41_indexed_attn_dispatch(uint32_t feature) {
+    if (g_test_flags & DS4_GPU_TEST_V41_INDEXED_ATTN) {
+        g_test_v41_indexed_attn_dispatches |= feature;
+    }
+}
 static id<MTLComputePipelineState> g_hc_expand_pipeline;
 static id<MTLComputePipelineState> g_unary_sigmoid_pipeline;
 static id<MTLComputePipelineState> g_unary_silu_pipeline;
@@ -31169,6 +31181,7 @@ int ds4_gpu_attention_indexed_mixed_batch_heads_tensor(
         n_tokens == 0 || n_raw == 0 || raw_cap < n_raw || raw_start >= raw_cap ||
         n_comp == 0 || top_k == 0 || top_k > n_comp || (top_k & (top_k - 1u)) != 0 ||
         ratio == 0 || n_head == 0 || head_dim != 512) {
+
         return 0;
     }
 
@@ -31204,7 +31217,7 @@ int ds4_gpu_attention_indexed_mixed_batch_heads_tensor(
                                                              sinks_offset,
                                                              (uint64_t)n_head * sizeof(float),
                                                              &sinks_inner);
-        if (!sinks_buf) return 0;
+        if (!sinks_buf) { return 0; }
 
         id<MTLComputePipelineState> sort_pipeline =
             ds4_gpu_hot_pipeline(g_dsv4_sort_i32_rows_asc_pipeline,
@@ -31214,6 +31227,41 @@ int ds4_gpu_attention_indexed_mixed_batch_heads_tensor(
             !decode_one_token && !g_quality_mode && ds4_gpu_mpp_available() &&
             (n_head == 64u || n_head == 32u) &&
             top_k == 512u && window == 128u && head_dim == 512u;
+        /*
+         * Tensor-unit (NAX) tiles for the sparse indexed attention.  One
+         * threadgroup of four simdgroups covers 16 query heads of one token
+         * and splits the 512-wide cache row (key *and* value) 4x128 across
+         * them, so both key stages (raw window and sorted comp top-k) run as
+         * 16x32x32 matmul2d tiles; the softmax and the sink fold stay the
+         * classic scalar online form.  P, the one operand this kernel
+         * creates, goes in as a half pair plus its residual, so this drifts
+         * from the classic kernels by ulps instead of matching them bit for
+         * bit (see the kernel comment).  Short prefills, odd head counts,
+         * quality mode, pre-M5 devices, a missing pipeline and
+         * DS4_METAL_DISABLE_DSV4_MLA_NAX all keep the classic path.
+         */
+        bool prefill_nax =
+            prefill_dual_heads && n_tokens >= 32u && (n_head % 16u) == 0u &&
+            getenv("DS4_METAL_DISABLE_DSV4_MLA_NAX") == NULL;
+        /* Fail closed: a kernel this device could not compile keeps the
+         * classic simdgroup path for the rest of the process. */
+        if (prefill_nax &&
+            ds4_gpu_get_pipeline(
+                "kernel_dsv4_indexed_mixed_attention_heads16_nax") == nil) {
+            prefill_nax = false;
+        }
+        if (prefill_nax) {
+            /* One line per process: a passing quality/bench run has to prove
+             * it really ran on the tensor tiles and not on the rollback. */
+            static int dsv4_nax_engagement_logged;
+            if (!dsv4_nax_engagement_logged) {
+                dsv4_nax_engagement_logged = 1;
+                fprintf(stderr, "ds4: DSV4 prefill indexed attention engaged "
+                        "on tensor-unit tiles "
+                        "(kernel_dsv4_indexed_mixed_attention_heads16_nax)\n");
+            }
+            ds4_gpu_note_v41_indexed_attn_dispatch(DS4_GPU_V41_INDEXED_ATTN_NAX);
+        }
         const uint32_t decode_splits =
             decode_one_token && !g_quality_mode ? 12u : 1u;
         const bool split_decode = decode_splits > 1u;
@@ -31225,6 +31273,9 @@ int ds4_gpu_attention_indexed_mixed_batch_heads_tensor(
             decode_one_token ?
             ds4_gpu_hot_pipeline(g_dsv4_indexed_attention_heads8_rb16_pipeline,
                                    "kernel_dsv4_indexed_mixed_attention_heads8_rb16") :
+            prefill_nax ?
+            ds4_gpu_get_pipeline(
+                "kernel_dsv4_indexed_mixed_attention_heads16_nax") :
             prefill_dual_heads ?
             ds4_gpu_hot_pipeline(g_dsv4_indexed_attention_heads16_dual_pipeline,
                                    "kernel_dsv4_indexed_mixed_attention_heads16_dual") :
@@ -31254,6 +31305,7 @@ int ds4_gpu_attention_indexed_mixed_batch_heads_tensor(
                                              &g_indexed_topk_bytes,
                                              (NSUInteger)topk_bytes,
                                              "ds4_indexed_topk_sorted")) {
+
             return 0;
         }
 
@@ -31292,7 +31344,7 @@ int ds4_gpu_attention_indexed_mixed_batch_heads_tensor(
 
         int owned = 0;
         id<MTLCommandBuffer> cb = ds4_gpu_command_buffer(&owned);
-        if (!cb) return 0;
+        if (!cb) { return 0; }
 
         id<MTLComputeCommandEncoder> enc = nil;
         if (!skip_decode_sort) {
@@ -31362,19 +31414,29 @@ int ds4_gpu_attention_indexed_mixed_batch_heads_tensor(
                  atIndex:4];
             [enc setBuffer:sinks_buf offset:(NSUInteger)sinks_inner atIndex:5];
             [enc setBuffer:headsbuf offset:ds4_gpu_tensor_offset(heads) atIndex:6];
-            [enc setThreadgroupMemoryLength:(decode_one_token ? 16u : 1u) *
-                                            128u * 4u * sizeof(uint16_t)
-                                    atIndex:0];
-            [enc dispatchThreadgroups:
-                    MTLSizeMake((NSUInteger)n_tokens,
-                                ((NSUInteger)n_head + (prefill_dual_heads ? 15u : 7u)) /
-                                    (prefill_dual_heads ? 16u : 8u),
-                                1)
+            if (prefill_nax) {
+                /* Tensor tiles: threadgroup memory is a static array inside the kernel;
+                 * the grid is (head groups, tokens) with four simdgroups, matching the
+                 * kernel's own mapping. */
+                [enc dispatchThreadgroups:
+                        MTLSizeMake((NSUInteger)n_head / 16u,
+                                    (NSUInteger)n_tokens, 1)
+                 threadsPerThreadgroup:MTLSizeMake(32, 4, 1)];
+            } else {
+                [enc setThreadgroupMemoryLength:(decode_one_token ? 16u : 1u) *
+                                                128u * 4u * sizeof(uint16_t)
+                                        atIndex:0];
+                [enc dispatchThreadgroups:
+                        MTLSizeMake((NSUInteger)n_tokens,
+                                    ((NSUInteger)n_head + (prefill_dual_heads ? 15u : 7u)) /
+                                        (prefill_dual_heads ? 16u : 8u),
+                                    1)
                  threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+            }
             ds4_gpu_end_compute_encoder(cb, enc);
         }
 
-        if (!ds4_gpu_finish_command_buffer(cb, owned, "graph indexed mixed attention heads")) return 0;
+        if (!ds4_gpu_finish_command_buffer(cb, owned, "graph indexed mixed attention heads")) { return 0; }
     }
 
     return 1;
