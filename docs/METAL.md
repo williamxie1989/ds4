@@ -22,6 +22,12 @@ The same build supports M3 and M5 Macs. Hardware-specific fast paths are
 selected automatically; no environment variable is needed to enable them.
 Leave other GPU and memory-heavy applications idle when comparing performance.
 
+On M5-class machines the DeepSeek V4 sparse indexed attention prefill runs on
+Metal tensor-unit tiles (the encoder log says `DSV4 prefill indexed attention
+engaged on tensor-unit tiles` once per process). Set
+`DS4_METAL_DISABLE_DSV4_MLA_NAX=1` to roll that one path back to the classic
+simdgroup kernels without rebuilding.
+
 ## Choose a model
 
 | Memory | Starting point |

@@ -28,6 +28,37 @@ static float bf16(float value) {
     return value;
 }
 
+#ifdef __APPLE__
+/* Round-trip a float through binary16 the way the tensor tiles load an f16
+ * compact-cache row, so oracle inputs and kernel inputs are the same value. */
+static uint16_t f16_bits(float value) {
+    uint32_t b;
+    memcpy(&b, &value, 4);
+    const uint32_t sign = (b >> 16) & 0x8000u;
+    int32_t exp = (int32_t)((b >> 23) & 0xffu) - 127 + 15;
+    uint32_t frac = b & 0x7fffffu;
+    if (exp <= 0) {
+        if (exp < -10) return (uint16_t)sign;
+        frac |= 0x800000u;
+        uint32_t half_frac = frac >> (uint32_t)(14 - exp);
+        if ((frac >> (uint32_t)(13 - exp)) & 1u) half_frac++; /* ties up */
+        return (uint16_t)(sign | half_frac);
+    }
+    if (exp >= 31) return (uint16_t)(sign | 0x7c00u);
+    uint32_t half = frac >> 13;
+    if ((frac >> 12) & 1u) half++;                   /* ties up */
+    return (uint16_t)(sign | ((uint32_t)exp << 10) | half);
+}
+static float f16_value(uint16_t h) {
+    const uint32_t exp = (h >> 10) & 0x1fu, frac = h & 0x3ffu;
+    float v = exp == 0u ? ldexpf((float)frac, -24) :
+              exp == 31u ? INFINITY :
+              ldexpf(1.0f + (float)frac / 1024.0f, (int)exp - 15);
+    return (h & 0x8000u) ? -v : v;
+}
+static float hround(float value) { return f16_value(f16_bits(value)); }
+#endif
+
 static float nearest(float value, int fp4) {
     const float fp4_values[] = {0, .5f, 1, 1.5f, 2, 3, 4, 6};
     float best_value = 0, best_error = INFINITY;
@@ -1140,6 +1171,9 @@ static int check_tp_attention(void) {
     for (int h = 0; h < H; h++) sinks[h] = random_value();
     CHECK(ds4_gpu_set_model_map(sinks, getpagesize()));
     ds4_gpu_set_quality(false);
+#ifdef __APPLE__
+    ds4_gpu_test_set_flags(DS4_GPU_TEST_V41_INDEXED_ATTN);
+#endif
     for (unsigned s = 0; s < sizeof(sizes) / sizeof(*sizes); s++) {
         const uint32_t n = sizes[s], nr = n + 127, start = 3073;
         const uint32_t ratio = 1u + s % 2u;
@@ -1163,7 +1197,39 @@ static int check_tp_attention(void) {
         CHECK(ds4_gpu_attention_indexed_mixed_batch_heads_tensor(out, sinks, getpagesize(),
             0, qt, rt, ct, 0, it, n, start, nr, nr, 0, C, K, 128, ratio, H, D));
         CHECK(ds4_gpu_tensor_read(out, 0, actual, nq * 4));
-        double max_split = 0, max_oracle = 0;
+#ifdef __APPLE__
+        {
+            /* The engagement bits mirror the runtime tile gate exactly. */
+            const uint32_t attn_flags = ds4_gpu_test_v41_indexed_attn_take_dispatches();
+            if (n >= 32 && ds4_gpu_test_mpp_available())
+                CHECK(attn_flags & DS4_GPU_V41_INDEXED_ATTN_NAX);
+            else
+                CHECK(attn_flags == 0);
+        }
+#endif
+        double max_split = 0, max_oracle = 0, max_nax = 0;
+#ifdef __APPLE__
+        /* The classic kernels keep matching bit for bit when the tile kernel
+         * is on, and the tile output drifts from them by ulps. */
+        float *fallback = malloc(nq * 4);
+        CHECK(fallback);
+        setenv("DS4_METAL_DISABLE_DSV4_MLA_NAX", "1", 1);
+        CHECK(ds4_gpu_attention_indexed_mixed_batch_heads_tensor(out, sinks, getpagesize(),
+            0, qt, rt, ct, 0, it, n, start, nr, nr, 0, C, K, 128, ratio, H, D));
+        CHECK(ds4_gpu_tensor_read(out, 0, fallback, nq * 4));
+        unsetenv("DS4_METAL_DISABLE_DSV4_MLA_NAX");
+        if (n >= 32 && ds4_gpu_test_mpp_available()) {
+            for (size_t i = 0; i < nq; i++) {
+                CHECK(isfinite(actual[i]) && isfinite(fallback[i]));
+                const double err = fabs((double)actual[i] - fallback[i]);
+                CHECK(err < 4e-3 * (1 + fabs((double)fallback[i])));
+                max_nax = fmax(max_nax, err);
+            }
+        } else {
+            CHECK(!memcmp(actual, fallback, nq * 4));
+        }
+        free(fallback);
+#endif
         for (uint32_t rank = 0; rank < 2; rank++) {
             for (uint32_t t = 0; t < n; t++)
                 memcpy(compact + (size_t)t * H/2 * D,
@@ -1174,11 +1240,22 @@ static int check_tp_attention(void) {
             CHECK(ds4_gpu_tensor_read(op, 0, part, nq * 2));
 #ifdef __APPLE__
             if (n > 1) {
+                /* The eight-head kernel and the sixteen-head dual rollback
+                 * match bit for bit; compare them under the kill switch so
+                 * the tile kernel cannot mask a real divergence. */
+                float *classic = malloc(nq * 2);
+                CHECK(classic);
                 ds4_gpu_set_quality(true); /* Existing eight-head kernel. */
                 CHECK(ds4_gpu_attention_indexed_mixed_batch_heads_tensor(op, sinks, getpagesize(),
                     rank * H/2 * 4, qp, rt, ct, 0, it, n, start, nr, nr, 0, C, K, 128, ratio, H/2, D));
-                CHECK(!memcmp(part, ds4_gpu_tensor_contents(op), nq * 2));
+                memcpy(classic, ds4_gpu_tensor_contents(op), nq * 2);
                 ds4_gpu_set_quality(false);
+                setenv("DS4_METAL_DISABLE_DSV4_MLA_NAX", "1", 1);
+                CHECK(ds4_gpu_attention_indexed_mixed_batch_heads_tensor(op, sinks, getpagesize(),
+                    rank * H/2 * 4, qp, rt, ct, 0, it, n, start, nr, nr, 0, C, K, 128, ratio, H/2, D));
+                CHECK(!memcmp(classic, ds4_gpu_tensor_contents(op), nq * 2));
+                unsetenv("DS4_METAL_DISABLE_DSV4_MLA_NAX");
+                free(classic);
             }
 #endif
             if (n == 2048 && rank == 0) {
@@ -1232,8 +1309,8 @@ static int check_tp_attention(void) {
                 }
             }
         }
-        fprintf(stderr, "V4.1 TP attention rows=%u ratio=%u max split=%g oracle=%g: PASS\n",
-            n, ratio, max_split, max_oracle);
+        fprintf(stderr, "V4.1 TP attention rows=%u ratio=%u max split=%g oracle=%g nax=%g: PASS\n",
+            n, ratio, max_split, max_oracle, max_nax);
         ds4_gpu_tensor_free(qt); ds4_gpu_tensor_free(rt); ds4_gpu_tensor_free(ct);
         ds4_gpu_tensor_free(it); ds4_gpu_tensor_free(out); ds4_gpu_tensor_free(qp);
         ds4_gpu_tensor_free(op);
@@ -1243,6 +1320,148 @@ static int check_tp_attention(void) {
     free(sinks);
     return 1;
 }
+
+#ifdef __APPLE__
+static int cmp_i32_asc(const void *a, const void *b) {
+    const int32_t x = *(const int32_t *)a, y = *(const int32_t *)b;
+    return (x > y) - (x < y);
+}
+
+/* Geometry the tensor-tile kernel leans on: a circular raw ring that wraps
+ * mid-window, comp ids whose sorted front pads with -1 and whose tail runs
+ * past the causal visible bound (the scan has to stop there), extreme per-
+ * head sinks, and both compact-cache dtypes.  The double oracle consumes
+ * exactly what the classic loop semantics consume. */
+static int check_indexed_attention_nax(void) {
+    enum { D = 512, H = 32, K = 512, C = 1024 };
+    const uint32_t n = 96, nr = 159, raw_cap = 256, raw_start = 97;
+    const uint32_t start = 200, ratio = 2, window = 128;
+    const uint32_t last_pos = start + n - 1, first_raw_pos = last_pos + 1 - nr;
+    const size_t nq = (size_t)n * H * D;
+    float *sinks = NULL;
+    CHECK(posix_memalign((void **)&sinks, getpagesize(), getpagesize()) == 0);
+    for (int h = 0; h < H; h++) sinks[h] = random_value();
+    sinks[3] = 18.0f; sinks[11] = -18.0f; sinks[7] = 0.0f;
+    CHECK(ds4_gpu_set_model_map(sinks, getpagesize()));
+    ds4_gpu_set_quality(false);
+    ds4_gpu_test_set_flags(DS4_GPU_TEST_V41_INDEXED_ATTN);
+
+    float *q = malloc(nq * 4), *got = malloc(nq * 4), *fallback = malloc(nq * 4);
+    float *raw = malloc((size_t)raw_cap * D * 4), *comp = malloc((size_t)C * D * 4);
+    uint16_t *comp16 = malloc((size_t)C * D * 2);
+    int32_t *ids = malloc((size_t)n * K * 4);
+    CHECK(q && got && fallback && raw && comp && comp16 && ids);
+    for (size_t i = 0; i < nq; i++) q[i] = hround(bf16(random_value() / 4));
+    memset(raw, 0, (size_t)raw_cap * D * 4);
+    for (uint32_t logical = 0; logical < nr; logical++) {
+        float *row = raw + (size_t)((raw_start + logical) % raw_cap) * D;
+        for (int d = 0; d < D; d++) row[d] = hround(bf16(random_value() / 4));
+    }
+    for (size_t i = 0; i < (size_t)C * D; i++) {
+        comp[i] = hround(bf16(random_value() / 4));
+        comp16[i] = f16_bits(comp[i]);
+    }
+    for (uint32_t t = 0; t < n; t++) {
+        for (uint32_t j = 0; j < K; j++)
+            ids[t * K + j] = j % 29 ? (int32_t)((j * 127u + t * 17u) % C) : -1;
+        qsort(ids + (size_t)t * K, K, sizeof(int32_t), cmp_i32_asc);
+    }
+    ds4_gpu_tensor *qt = upload(q, nq * 4), *rt = upload(raw, (size_t)raw_cap * D * 4);
+    ds4_gpu_tensor *it = upload(ids, (size_t)n * K * 4);
+    ds4_gpu_tensor *out = upload(NULL, nq * 4);
+    CHECK(qt && rt && it && out);
+    double max_nax = 0, max_oracle = 0;
+    for (int leg = 0; leg < 2; leg++) {
+        ds4_gpu_tensor *ct = upload(leg ? (const void *)comp16 : (const void *)comp,
+                                    leg ? (size_t)C * D * 2 : (size_t)C * D * 4);
+        CHECK(ct);
+        CHECK(ds4_gpu_attention_indexed_mixed_batch_heads_tensor(out, sinks, getpagesize(),
+            0, qt, rt, ct, leg, it, n, start, nr, raw_cap, raw_start, C, K, window, ratio, H, D));
+        CHECK(ds4_gpu_tensor_read(out, 0, got, nq * 4));
+        const uint32_t attn_flags = ds4_gpu_test_v41_indexed_attn_take_dispatches();
+        if (ds4_gpu_test_mpp_available())
+            CHECK(attn_flags & DS4_GPU_V41_INDEXED_ATTN_NAX);
+        else
+            CHECK(attn_flags == 0);
+        setenv("DS4_METAL_DISABLE_DSV4_MLA_NAX", "1", 1);
+        CHECK(ds4_gpu_attention_indexed_mixed_batch_heads_tensor(out, sinks, getpagesize(),
+            0, qt, rt, ct, leg, it, n, start, nr, raw_cap, raw_start, C, K, window, ratio, H, D));
+        CHECK(ds4_gpu_tensor_read(out, 0, fallback, nq * 4));
+        unsetenv("DS4_METAL_DISABLE_DSV4_MLA_NAX");
+        for (uint32_t t = 0; t < n; t++) {
+            const uint32_t qpos = start + t;
+            const uint32_t vis = (qpos + 1u) / ratio;
+            const uint32_t visible = vis < (uint32_t)C ? vis : (uint32_t)C;
+            const uint32_t win_first =
+                window != 0u && qpos + 1u > window ? qpos + 1u - window : 0u;
+            const uint32_t raw_first = win_first > first_raw_pos ? win_first : first_raw_pos;
+            const uint32_t raw_last_bound = first_raw_pos + nr - 1u;
+            const uint32_t raw_last = qpos < raw_last_bound ? qpos : raw_last_bound;
+            for (uint32_t h = 0; h < H; h++) {
+                const float *query = q + ((size_t)t * H + h) * D;
+                double logits[128 + K + 1];
+                const float *keys[128 + K + 1];
+                unsigned count = 0;
+                if (raw_first <= raw_last) {
+                    for (uint32_t pos = raw_first; pos <= raw_last; pos++) {
+                        const float *key = raw +
+                            (size_t)((raw_start + pos - first_raw_pos) % raw_cap) * D;
+                        double dot = 0;
+                        for (int d = 0; d < D; d++) dot += (double)query[d] * key[d];
+                        logits[count] = dot / sqrt(512.0);
+                        keys[count++] = key;
+                    }
+                }
+                for (uint32_t j = 0; j < K; j++) {
+                    const int32_t id = ids[t * K + j];
+                    if (id < 0) continue;           /* front padding */
+                    if ((uint32_t)id >= visible) break; /* causal bound */
+                    const float *key = comp + (size_t)id * D;
+                    double dot = 0;
+                    for (int d = 0; d < D; d++) dot += (double)query[d] * key[d];
+                    logits[count] = dot / sqrt(512.0);
+                    keys[count++] = key;
+                }
+                logits[count] = sinks[h]; keys[count++] = NULL; /* value 0 */
+                double max = -INFINITY;
+                for (unsigned j = 0; j < count; j++) max = fmax(max, logits[j]);
+                const uint32_t col = (t * 71u + h * 19u) % D;
+                double den = 0, num = 0;
+                for (unsigned j = 0; j < count; j++) {
+                    const double p = exp(logits[j] - max);
+                    den += p;
+                    if (keys[j]) num += p * keys[j][col];
+                }
+                const double ref = num / den;
+                const float *tile_out = got + ((size_t)t * H + h) * D + col;
+                const float *classic_out = fallback + ((size_t)t * H + h) * D + col;
+                CHECK(isfinite(*tile_out) && isfinite(*classic_out));
+                const double err_tile = fabs(*tile_out - ref);
+                const double err_classic = fabs(*classic_out - ref);
+                max_oracle = fmax(max_oracle, err_tile);
+                if (!(err_tile < 3e-5 * (1 + fabs(ref)) &&
+                      err_classic < 3e-5 * (1 + fabs(ref)))) {
+                    fprintf(stderr, "NAX oracle fail f16=%d t=%u h=%u col=%u count=%u "
+                            "ref=%g tile=%g(%g) classic=%g(%g)\n",
+                            leg, t, h, col, count, ref,
+                            (double)*tile_out, err_tile, (double)*classic_out, err_classic);
+                }
+                CHECK(err_tile < 3e-5 * (1 + fabs(ref)));
+                CHECK(err_classic < 3e-5 * (1 + fabs(ref)));
+                max_nax = fmax(max_nax, fabs((double)*tile_out - *classic_out));
+            }
+        }
+        fprintf(stderr, "V4.1 NAX indexed attention f16=%u: oracle=%g tile-classic=%g PASS\n",
+                leg, max_oracle, max_nax);
+        ds4_gpu_tensor_free(ct);
+        max_oracle = 0; max_nax = 0;
+    }
+    ds4_gpu_tensor_free(qt); ds4_gpu_tensor_free(rt); ds4_gpu_tensor_free(it);
+    ds4_gpu_tensor_free(out);
+    free(q); free(got); free(fallback); free(raw); free(comp); free(comp16); free(ids);
+    return 1;
+}
+#endif
 
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--embedding")) {
@@ -1304,11 +1523,22 @@ int main(int argc, char **argv) {
         ds4_gpu_cleanup();
         return ok ? 0 : 1;
     }
+#ifdef __APPLE__
+    if (argc == 2 && !strcmp(argv[1], "--indexed-attn-nax")) {
+        const int ok = ds4_gpu_init() && check_indexed_attention_nax();
+        ds4_gpu_cleanup();
+        return ok ? 0 : 1;
+    }
+#endif
     if (argc != 1) return 2;
     int ok = ds4_gpu_init() && check_router() && check_quantization() && check_engram() && check_rope_stride() && check_pool() &&
              check_candidates() && check_sparse_gather() && check_indexer_batch() &&
              check_embedding() && check_index_projection() && check_general_topk() && check_causal_topk() && check_compact_carry() && check_attention_output(false) &&
-             check_tp_attention();
+             check_tp_attention()
+#ifdef __APPLE__
+             && check_indexed_attention_nax()
+#endif
+             ;
     ds4_gpu_cleanup();
     return ok ? 0 : 1;
 }
