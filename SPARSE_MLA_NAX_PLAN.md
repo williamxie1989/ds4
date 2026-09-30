@@ -74,7 +74,10 @@ GLM53 目前有 **strict float32 逐位** 的验收基线（`compare_frontier_lo
    `ds4_gpu_mpp_available() && n_tokens >= 32 && cache_f16 && kv_lora_dim == 512 &&
    (qk_rope == 0 || qk_rope == 64) && !quality_mode`；pipeline 解析失败或首用对拍失败即
    永久回退经典核（fail-closed）。
-3. **Kill switch**：`DS4_METAL_DISABLE_GLM53_MLA_NAX=1`。
+3. **Kill switch**：`DS4_METAL_DISABLE_GLM53_MLA_NAX=1`；NAX 门同时纳入既有的
+   `DS4_METAL_DISABLE_GLM53_PREFILL_INDEXED_ATTN`（indexed-attn A/B 基线腿）与分支级
+   `DS4_METAL_DISABLE_GLM53_FLASH_TUNING`（一次性关掉所有 GLM 5.3 Flash 调优），保证
+   请求经典基线的 A/B/回滚轮不会让 tensor tiles 抢跑。
 4. **Engage 锚定**：仿 #1149 在 `g_test_flags` 加一位（如 `DS4_GPU_TEST_GLM53_MLA_NAX`），
    测试里断言新核真被派发（否则"测试通过"可能只是回退路径在跑）。
 
