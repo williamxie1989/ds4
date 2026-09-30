@@ -288,6 +288,8 @@ enum {
     DS4_GPU_GLM53_DSA_SCORE_TILE = 1u << 8,
     DS4_GPU_GLM53_DECODE_KDA_VALUES4 = 1u << 9,
     DS4_GPU_GLM53_KDA_INPUTS = 1u << 10,
+    /* The absorbed-MLA prefill actually ran on the tensor-unit tiles. */
+    DS4_GPU_GLM53_PREFILL_INDEXED_ATTN_NAX = 1u << 11,
 };
 /* Returns and clears GLM tuning coverage recorded only in the test mode. */
 uint32_t ds4_gpu_test_glm53_prefill_take_dispatches(void);
