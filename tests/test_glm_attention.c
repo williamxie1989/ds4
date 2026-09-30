@@ -314,10 +314,22 @@ static void metal_prefill_prefix_case(uint32_t heads, uint32_t count, uint32_t r
  * in, so it drifts by ulps instead of matching bit for bit; every case where
  * its gate is closed (short prefill tail, heads that are not full 16-head
  * groups) must stay bit-exact.  The engage anchor is the dispatch record:
- * without it a passing case could just be the rollback path twice. */
+ * without it a passing case could just be the rollback path twice.  Expected
+ * engagement collapses to the classic path whenever TensorOps are unavailable
+ * (pre-M5 devices, pre-Metal-4 systems, Metal 4 disabled or quality mode) or
+ * one of the documented rollback switches is set, so the same cases keep
+ * covering the classic fallback on that hardware and under those runs. */
 static void metal_nax_indexed_case(uint32_t tokens, uint32_t heads, uint32_t count,
                                    uint32_t cap, uint32_t rope, int pattern,
                                    int variant, bool expect_nax) {
+    /* Mirror the environment part of the dispatch gate: TensorOps
+     * availability plus the rollback switches it honors, so pre-Metal-4
+     * hardware and A/B runs still pass while the classic fallback they
+     * really take is fully checked.  Shape conditions stay with the caller
+     * (expect_nax) and the kill switch stays with the legs. */
+    if (expect_nax) expect_nax = ds4_gpu_test_mpp_available() != 0 &&
+        getenv("DS4_METAL_DISABLE_GLM53_PREFILL_INDEXED_ATTN") == NULL &&
+        getenv("DS4_METAL_DISABLE_GLM53_FLASH_TUNING") == NULL;
     enum { D = 512, NOPE = 256, ID_OFFSET = 64, GUARD = 7 * D };
     const size_t n = (size_t)tokens * heads * D;
     const size_t qn = (size_t)tokens * heads * (NOPE + rope);
