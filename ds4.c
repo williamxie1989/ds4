@@ -41804,9 +41804,9 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
     if (fused && shared_here &&
         !ds4_gpu_dsv41_shared_gate_up_swiglu(g->shared_mid, g->norm, m->map, m->size,
              l->ffn_gate_shexp->abs_offset, l->ffn_up_shexp->abs_offset,
-             DS4_N_EMBD, DS4_N_FF_EXP, DS4_SWIGLU_CLAMP_EXP) ||
-         (ds41_shared_down_early() &&
-          !ds41_matmul(g->shared, m, l->ffn_down_shexp, g->shared_mid, true)))) return false;
+             DS4_N_EMBD, DS4_N_FF_EXP, DS4_SWIGLU_CLAMP_EXP)) return false;
+    if (fused && shared_here && ds41_shared_down_early() &&
+        !ds41_matmul(g->shared, m, l->ffn_down_shexp, g->shared_mid, true)) return false;
     if (fused) shared_queued = true;
 #endif
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
@@ -42578,7 +42578,11 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
          !getenv("DS4_METAL_DISABLE_V41_RESIDENT_DECODE_QUEUE")) ||
 #endif
         (g->tp_world == 2 && !g->imatrix &&
-         !getenv("DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE"));
+         !getenv("DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE")) ||
+        /* Upstream #1041: single-box decode stays queued between layers;
+         * 40 CPU<->GPU round trips per token become one. */
+        (g->tp_world == 1 && !g->imatrix &&
+         !getenv("DS4_METAL_DISABLE_V41_DECODE_QUEUE"));
     /* The queue still leaves the GPU idle while the host encodes, and drains
      * at layer 13 only because both Engram tables share one input buffer. The
      * pipeline gives the second table its own input, commits without waiting
@@ -42634,15 +42638,6 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
 #ifdef __APPLE__
     g->gather_reuse = ds4_gpu_dsv41_gather_reuse_admitted();
 #endif
-    /* The token's command buffers stay queued and drain only where the graph
-     * needs it (layer 13, the last layer).  Draining after every one of the
-     * 40 layers instead costs 40 CPU<->GPU round trips per token: measured
-     * 16.9 -> 21.7 t/s on an M3 Ultra with the Q4 model resident, greedy
-     * output byte-identical.  DS4_METAL_DISABLE_V41_DECODE_QUEUE restores
-     * the per-layer drain on a single box. */
-    const bool queue_layers = !g->imatrix &&
-        !getenv(g->tp_world == 2 ? "DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE"
-                                 : "DS4_METAL_DISABLE_V41_DECODE_QUEUE");
     for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
         const ds4_layer_weights *l = &w->layer[il];
         if (layer_resident)
