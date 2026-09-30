@@ -2910,6 +2910,12 @@ static int ds4_gpu_mpp_available(void) {
     return g_metal4_tensor_api_enabled && !g_quality_mode;
 }
 
+int ds4_gpu_test_mpp_available(void) {
+    /* Test hook: the same predicate the dispatch gates on, so NAX-only test
+     * assertions can be conditioned on the runtime TensorOps availability. */
+    return ds4_gpu_mpp_available();
+}
+
 /*
  * Retained Metal4 defaults live here instead of behind user-visible options.
  * The public runtime has one automatic accelerated path plus the global
@@ -38527,8 +38533,76 @@ static int ds4_gpu_glm_attention_indexed_batch_lora_layout_tensor(
             n_head == 64u && qk_nope == 256u &&
             (head_count % (8u * heads_per_sg)) == 0u &&
             ds4_gpu_glm53_tuning_available();
+        /*
+         * Tensor-unit (NAX) tiles for the absorbed MLA.  One threadgroup of
+         * four simdgroups covers 16 query heads of one token and splits the
+         * 512 latent dims (key *and* value) 4x128 across them, so the whole
+         * key loop runs as 16x32x32 matmul2d over the token's own selection
+         * list.  Masked slots keep the classic contract (padding ids read
+         * cache row 0 with P = 0) and the softmax stays the same scalar
+         * online form.  P, the one operand this kernel creates, goes in as a
+         * half pair plus its residual so the weighted sum keeps the fp32
+         * mantissa the classic dot has; the accumulation tree still differs,
+         * which is why this path drifts from the classic kernels by ulps
+         * instead of matching them bit for bit.
+         * RoPE tails, short prefill tails, split head ranges that are not
+         * full 16-head groups, quality mode, pre-M5 devices and a missing
+         * pipeline all keep the classic path; so does
+         * DS4_METAL_DISABLE_GLM53_MLA_NAX, together with the documented
+         * indexed-attn A/B switch DS4_METAL_DISABLE_GLM53_PREFILL_INDEXED_ATTN
+         * and the branch-wide DS4_METAL_DISABLE_GLM53_FLASH_TUNING, so a
+         * classic baseline run cannot silently race the tiles.
+         */
+        const bool nax_head_groups =
+            (attn_head_base % 16u) == 0u && (head_count % 16u) == 0u;
+        bool use_nax =
+            use_vec_lora && qk_rope == 0u && nax_head_groups &&
+            ds4_gpu_mpp_available() &&
+            n_tokens >= 32u && n_head == 64u && qk_nope == 256u &&
+            getenv("DS4_METAL_DISABLE_GLM53_MLA_NAX") == NULL &&
+            getenv("DS4_METAL_DISABLE_GLM53_PREFILL_INDEXED_ATTN") == NULL &&
+            getenv("DS4_METAL_DISABLE_GLM53_FLASH_TUNING") == NULL;
+        const char *nax_name = NULL;
+        if (getenv("DS4_METAL_DEBUG_GLM53_MLA_NAX") && use_vec_lora) {
+            static int gate_debug_left = 6;
+            if (gate_debug_left > 0) {
+                gate_debug_left--;
+                fprintf(stderr, "ds4: glm53 mla nax gate: n_tokens=%u n_selected=%u "
+                        "n_head=%u qk_nope=%u qk_rope=%u kv_lora=%u f16=%u "
+                        "heads=%u+%u mpp=%d wide=%d nax=%d\n",
+                        n_tokens, n_selected, n_head, qk_nope, qk_rope, kv_lora_dim,
+                        cache_f16, attn_head_base, head_count,
+                        ds4_gpu_mpp_available(), (int)use_wide_head_groups, (int)use_nax);
+            }
+        }
+        if (use_nax) {
+            if (selected_rows_valid && full_head_groups) {
+                nax_name = "kernel_glm_attention_indexed_batch_lora_group8_nax_valid_fullheads";
+            } else if (selected_rows_valid) {
+                nax_name = "kernel_glm_attention_indexed_batch_lora_group8_nax_valid";
+            } else if (full_head_groups && !g_tp_attn_head_split &&
+                       !getenv("DS4_METAL_DISABLE_GLM_PREFILL_PREFIX")) {
+                nax_name = "kernel_glm_attention_indexed_batch_lora_group8_nax_prefix_fullheads";
+            } else {
+                nax_name = "kernel_glm_attention_indexed_batch_lora_group8_nax";
+            }
+            /* Fail closed: a kernel this device could not compile keeps the
+             * classic simdgroup path for the rest of the process. */
+            if (ds4_gpu_get_pipeline(nax_name) == nil) use_nax = false;
+        }
         id<MTLComputePipelineState> pipeline = nil;
-        if (use_wide_head_groups) {
+        if (use_nax) {
+            /* One line per process: a passing quality/bench run has to prove
+             * it really ran on the tensor tiles and not on the rollback. */
+            static int nax_engagement_logged;
+            if (!nax_engagement_logged) {
+                nax_engagement_logged = 1;
+                fprintf(stderr, "ds4: GLM53 prefill MLA engaged on tensor-unit tiles (%s)\n",
+                        nax_name);
+            }
+            ds4_gpu_note_glm53_prefill_dispatch(DS4_GPU_GLM53_PREFILL_INDEXED_ATTN_NAX);
+            pipeline = ds4_gpu_get_pipeline(nax_name);
+        } else if (use_wide_head_groups) {
             ds4_gpu_note_glm53_prefill_dispatch(DS4_GPU_GLM53_PREFILL_INDEXED_ATTN);
             pipeline = selected_rows_valid ?
                 ds4_gpu_hot_pipeline(
@@ -38587,11 +38661,11 @@ static int ds4_gpu_glm_attention_indexed_batch_lora_layout_tensor(
             .head_base = 0,
         };
         args.head_base = attn_head_base;
-        const NSUInteger scratch_bytes = use_vec_lora ?
+        const NSUInteger scratch_bytes = use_nax ? 0u : (use_vec_lora ?
             (16u * ((NSUInteger)kv_lora_dim / 4u) * sizeof(uint16_t) * 4u +
              16u * ((NSUInteger)qk_rope / 4u) * sizeof(float) * 4u) :
             (8u * ((NSUInteger)kv_lora_dim + (NSUInteger)qk_rope) * sizeof(uint16_t) +
-             8u * (NSUInteger)kv_lora_dim * sizeof(float));
+             8u * (NSUInteger)kv_lora_dim * sizeof(float)));
 
         id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
         [enc setComputePipelineState:pipeline];
@@ -38608,14 +38682,14 @@ static int ds4_gpu_glm_attention_indexed_batch_lora_layout_tensor(
             [enc setBuffer:selectedbuf offset:ds4_gpu_tensor_offset(selected) atIndex:6];
             [enc setBuffer:lorabuf offset:ds4_gpu_tensor_offset(lora_out) atIndex:7];
         }
-        [enc setThreadgroupMemoryLength:scratch_bytes atIndex:0];
-        const NSUInteger heads_per_group =
-            8u * (NSUInteger)(use_wide_head_groups ? heads_per_sg : 1u);
+        if (!use_nax) [enc setThreadgroupMemoryLength:scratch_bytes atIndex:0];
+        const NSUInteger heads_per_group = use_nax ?
+            16u : 8u * (NSUInteger)(use_wide_head_groups ? heads_per_sg : 1u);
         [enc dispatchThreadgroups:MTLSizeMake(((NSUInteger)head_count + heads_per_group - 1u) /
                                                   heads_per_group,
                                               (NSUInteger)n_tokens,
                                               1)
-             threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+             threadsPerThreadgroup:MTLSizeMake(32, use_nax ? 4u : 8u, 1)];
         ds4_gpu_end_compute_encoder(cb, enc);
 
         if (!ds4_gpu_finish_command_buffer(cb, owned, "GLM indexed batch attention-lora")) return 0;

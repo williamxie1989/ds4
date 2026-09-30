@@ -307,6 +307,152 @@ static void metal_prefill_prefix_case(uint32_t heads, uint32_t count, uint32_t r
     free(poison); free(result); free(oracle); free(ref); free(storage);
     free(kr); free(kv); free(low); free(q);
 }
+
+/* Tensor-unit (NAX) absorbed-MLA tiles against the classic simdgroup kernels.
+ *
+ * The tensor path changes the accumulation tree and rounds Q/K/V on the way
+ * in, so it drifts by ulps instead of matching bit for bit; every case where
+ * its gate is closed (short prefill tail, heads that are not full 16-head
+ * groups) must stay bit-exact.  The engage anchor is the dispatch record:
+ * without it a passing case could just be the rollback path twice.  Expected
+ * engagement collapses to the classic path whenever TensorOps are unavailable
+ * (pre-M5 devices, pre-Metal-4 systems, Metal 4 disabled or quality mode) or
+ * one of the documented rollback switches is set, so the same cases keep
+ * covering the classic fallback on that hardware and under those runs. */
+static void metal_nax_indexed_case(uint32_t tokens, uint32_t heads, uint32_t count,
+                                   uint32_t cap, uint32_t rope, int pattern,
+                                   int variant, bool expect_nax) {
+    /* Mirror the environment part of the dispatch gate: TensorOps
+     * availability plus the rollback switches it honors, so pre-Metal-4
+     * hardware and A/B runs still pass while the classic fallback they
+     * really take is fully checked.  Shape conditions stay with the caller
+     * (expect_nax) and the kill switch stays with the legs. */
+    if (expect_nax) expect_nax = ds4_gpu_test_mpp_available() != 0 &&
+        getenv("DS4_METAL_DISABLE_GLM53_PREFILL_INDEXED_ATTN") == NULL &&
+        getenv("DS4_METAL_DISABLE_GLM53_FLASH_TUNING") == NULL;
+    enum { D = 512, NOPE = 256, ID_OFFSET = 64, GUARD = 7 * D };
+    const size_t n = (size_t)tokens * heads * D;
+    const size_t qn = (size_t)tokens * heads * (NOPE + rope);
+    const size_t kn = (size_t)cap * D;
+    const size_t rn = rope ? (size_t)cap * rope : 1;
+    const size_t idn = (size_t)tokens * count;
+    const size_t bytes = n * sizeof(float);
+    const size_t guarded_bytes = (n + GUARD) * sizeof(float);
+    float *q = malloc(qn * sizeof(float)), *low = malloc(bytes);
+    float *kv = malloc(kn * sizeof(float)), *kr = malloc(rn * sizeof(float));
+    uint32_t *storage = malloc((ID_OFFSET + idn) * sizeof(uint32_t));
+    float *oracle = malloc(bytes), *cls = malloc(guarded_bytes), *got = malloc(guarded_bytes);
+    float *poison = malloc(guarded_bytes);
+    check(q && low && kv && kr && storage && oracle && cls && got && poison,
+          "nax host allocation");
+    /* Exactly f16-valued inputs keep the CPU reference independent of rounding. */
+    for (size_t i = 0; i < kn; i++)
+        kv[i] = ((int)((i * 17 + i / D * 13) % 257) - 128) * 0.00390625f;
+    for (size_t i = 0; i < n; i++)
+        low[i] = ((int)((i * 13 + i / D * 7) % 127) - 63) * 0.00390625f;
+    for (size_t i = 0; i < qn; i++)
+        q[i] = ((int)((i * 7 + i / (NOPE + rope) * 3) % 67) - 33) * 0.015625f;
+    for (size_t i = 0; i < rn; i++)
+        kr[i] = rope ? ((int)((i * 11 + i / rope) % 53) - 26) * 0.015625f : 0.0f;
+    for (size_t i = 0; i < ID_OFFSET; i++) storage[i] = UINT32_MAX;
+    uint32_t *ids = storage + ID_OFFSET;
+    for (uint32_t t = 0; t < tokens; t++) {
+        for (uint32_t i = 0; i < count; i++) {
+            uint32_t row = (i * 131u + t * 17u) % (cap - 1u);
+            switch (pattern) {
+                case 1: /* padded tail, with raw out-of-range ids mixed in */
+                    if (i >= count - (t % 4u) - 1u) row = UINT32_MAX;
+                    else if (i % 5u == 4u) row = cap;
+                    break;
+                case 2: /* holes inside the list with valid rows after them */
+                    if (i % 7u == 3u) row = UINT32_MAX;
+                    break;
+                case 3: /* nothing selected at all */
+                    row = UINT32_MAX;
+                    break;
+                default: break;
+            }
+            ids[(size_t)t * count + i] = row;
+        }
+    }
+    attention_reference(oracle, q, low, kv, kr, (const int32_t *)ids, tokens,
+                        heads, D, 0, cap, count, NOPE, rope, true);
+    ds4_gpu_tensor *qg = upload(q, qn * sizeof(float));
+    ds4_gpu_tensor *lg = upload(low, bytes);
+    ds4_gpu_tensor *kg = upload_cache(kv, kn, true);
+    ds4_gpu_tensor *rg = upload_cache(kr, rn, true);
+    ds4_gpu_tensor *ib = upload(storage, (ID_OFFSET + idn) * sizeof(uint32_t));
+    ds4_gpu_tensor *ig = ds4_gpu_tensor_view(ib, ID_OFFSET * sizeof(uint32_t),
+                                             idn * sizeof(uint32_t));
+    ds4_gpu_tensor *out = ds4_gpu_tensor_alloc(guarded_bytes);
+    check(ig && out, "nax view/output allocation");
+    ds4_gpu_test_set_flags(DS4_GPU_TEST_GLM53_PREFILL);
+    for (int leg = 0; leg < 2; leg++) {
+        /* Leg 0 pins the classic kernels with the kill switch, leg 1 runs the
+         * default gate and must engage the tensor tiles when expected. */
+        check(leg == 0 ? setenv("DS4_METAL_DISABLE_GLM53_MLA_NAX", "1", 1) == 0 :
+                         unsetenv("DS4_METAL_DISABLE_GLM53_MLA_NAX") == 0,
+              "nax selector");
+        check(variant == 1 ? setenv("DS4_METAL_DISABLE_GLM_PREFILL_PREFIX", "1", 1) == 0 :
+                             unsetenv("DS4_METAL_DISABLE_GLM_PREFILL_PREFIX") == 0,
+              "nax prefix selector");
+        (void)ds4_gpu_test_glm53_prefill_take_dispatches();
+        for (size_t i = 0; i < n + GUARD; i++)
+            poison[i] = leg % 2 ? -12345.0f : 12345.0f;
+        check(ds4_gpu_tensor_write(out, 0, poison, guarded_bytes), "nax output poison");
+        check(ds4_gpu_synchronize(), "nax pre-sync");
+        const int launched = variant == 2 ?
+            ds4_gpu_glm_attention_indexed_batch_lora_valid_tensor(
+                out, qg, lg, kg, rg, ig, tokens, count, cap, true,
+                heads, D, NOPE, rope, 4096, 10000, 1, 0, 1, 32, 1) :
+            ds4_gpu_glm_attention_indexed_batch_lora_tensor(
+                out, qg, lg, kg, rg, ig, tokens, count, cap, true,
+                heads, D, NOPE, rope, 4096, 10000, 1, 0, 1, 32, 1);
+        check(launched && ds4_gpu_synchronize(), "nax launch");
+        float *result = leg == 0 ? cls : got;
+        check(ds4_gpu_tensor_read(out, 0, result, guarded_bytes), "nax read");
+        const uint32_t seen = ds4_gpu_test_glm53_prefill_take_dispatches();
+        if (leg == 1) {
+            check(((seen & DS4_GPU_GLM53_PREFILL_INDEXED_ATTN_NAX) != 0u) == expect_nax,
+                  "nax engage anchor");
+        }
+        check(memcmp(result + n, poison + n, GUARD * sizeof(float)) == 0,
+              "nax output guard");
+    }
+    ds4_gpu_test_set_flags(0);
+    unsetenv("DS4_METAL_DISABLE_GLM53_MLA_NAX");
+    unsetenv("DS4_METAL_DISABLE_GLM_PREFILL_PREFIX");
+    double scale = 0.0, worst_ref = 0.0, worst_cls = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        if (fabsf(oracle[i]) > scale) scale = fabsf(oracle[i]);
+    }
+    const double bound = 4e-3 * fmax(scale, 1e-3);
+    for (size_t i = 0; i < n; i++) {
+        const double d_ref = fabs((double)got[i] - oracle[i]);
+        const double d_cls = fabs((double)got[i] - cls[i]);
+        if (d_ref > worst_ref) worst_ref = d_ref;
+        if (d_cls > worst_cls) worst_cls = d_cls;
+        if (!isfinite(got[i]) || !isfinite(cls[i]) ||
+            (pattern == 3 && (got[i] != 0.0f || cls[i] != 0.0f)) ||
+            d_ref > bound || (!expect_nax && d_cls != 0.0)) {
+            fprintf(stderr, "nax tokens=%u heads=%u count=%u cap=%u rope=%u "
+                    "pattern=%d variant=%d index=%zu: got %g classic %g oracle %g "
+                    "(worst ref %g, worst classic %g, bound %g)\n",
+                    tokens, heads, count, cap, rope, pattern, variant, i,
+                    got[i], cls[i], oracle[i], worst_ref, worst_cls, bound);
+            exit(1);
+        }
+    }
+    printf("nax tokens=%u heads=%u count=%u cap=%u rope=%u pattern=%d variant=%d engaged=%d: "
+           "max|d| oracle %.3e classic %.3e (bound %.3e) PASS\n",
+           tokens, heads, count, cap, rope, pattern, variant, expect_nax, worst_ref,
+           worst_cls, bound);
+    ds4_gpu_tensor_free(out); ds4_gpu_tensor_free(ig); ds4_gpu_tensor_free(ib);
+    ds4_gpu_tensor_free(rg); ds4_gpu_tensor_free(kg);
+    ds4_gpu_tensor_free(lg); ds4_gpu_tensor_free(qg);
+    free(poison); free(got); free(cls); free(oracle); free(storage);
+    free(kr); free(kv); free(low); free(q);
+}
 #endif
 
 static void pooled_decode_cases(void) {
@@ -530,6 +676,21 @@ int main(int argc, char **argv) {
                 metal_prefill_prefix_case(prefill_heads[h], 17, rope);
                 metal_prefill_prefix_case(prefill_heads[h], 2051, rope);
             }
+        /* Tensor-unit (NAX) absorbed-MLA tiles: the same selection list with
+         * padding, holes and empty rows must land within ulps of the classic
+         * kernels, and every closed gate must stay bit-exact. */
+        metal_nax_indexed_case(32, 64, 2051, 4096, 0, 0, 0, true);
+        metal_nax_indexed_case(32, 64, 2051, 4096, 0, 1, 0, true);
+        metal_nax_indexed_case(33, 64, 512, 2048, 0, 2, 1, true);
+        metal_nax_indexed_case(40, 64, 512, 2048, 0, 0, 2, true);
+        metal_nax_indexed_case(32, 64, 33, 2048, 0, 1, 0, true);
+        metal_nax_indexed_case(32, 64, 32, 2048, 0, 0, 0, true);
+        metal_nax_indexed_case(32, 64, 512, 2048, 0, 3, 1, true);
+        /* Closed gates: the short prefill tail, a head count that is not a
+         * full 16-head group and a RoPE tail keep the classic arithmetic. */
+        metal_nax_indexed_case(8, 64, 512, 2048, 0, 1, 0, false);
+        metal_nax_indexed_case(32, 48, 512, 2048, 0, 0, 0, false);
+        metal_nax_indexed_case(32, 64, 512, 2048, 64, 1, 0, false);
 #endif
 #ifdef DS4_ROCM_BUILD
         for (int f16 = 0; f16 < 2; f16++) {

@@ -6326,11 +6326,155 @@ static void trim_const_span(const char **start, const char **end) {
     while (*end > *start && isspace((unsigned char)(*end)[-1])) (*end)--;
 }
 
+/* GLM's <arg_value> carries no type marker, unlike DSML's string="true|false".
+ * Recover the declared type from the request's property schema so numbers,
+ * booleans, arrays and objects are not stringified.  This is type recovery,
+ * not schema validation: anything the schema does not explicitly declare as a
+ * non-string type keeps the historical string behaviour. */
+#define GLM_TYPE_INTEGER 1u
+#define GLM_TYPE_NUMBER  2u
+#define GLM_TYPE_BOOLEAN 4u
+#define GLM_TYPE_NULL    8u
+#define GLM_TYPE_ARRAY   16u
+#define GLM_TYPE_OBJECT  32u
+#define GLM_TYPE_TEXT    64u
+
+static unsigned glm_type_mask(const char *type) {
+    if (!strcmp(type, "integer")) return GLM_TYPE_INTEGER;
+    if (!strcmp(type, "number")) return GLM_TYPE_INTEGER | GLM_TYPE_NUMBER;
+    if (!strcmp(type, "boolean")) return GLM_TYPE_BOOLEAN;
+    if (!strcmp(type, "null")) return GLM_TYPE_NULL;
+    if (!strcmp(type, "array")) return GLM_TYPE_ARRAY;
+    if (!strcmp(type, "object")) return GLM_TYPE_OBJECT;
+    return GLM_TYPE_TEXT; /* Strings and unknown types must not be coerced. */
+}
+
+/* Declared types of one property schema.  A union such as ["integer","null"]
+ * contributes every member; GLM_TYPE_TEXT anywhere in the union disables
+ * coercion, so ["string","integer"] stays text. */
+static unsigned glm_property_types(const char *schema) {
+    json_args fields = {0};
+    unsigned types = 0;
+    if (!schema || !json_args_parse(schema, &fields)) return GLM_TYPE_TEXT;
+    int i = json_args_find_unused(&fields, "type");
+    if (i >= 0) {
+        const json_arg *arg = &fields.v[i];
+        if (arg->is_string) {
+            types = glm_type_mask(arg->value);
+        } else {
+            const char *p = arg->value;
+            json_ws(&p);
+            if (*p == '[') {
+                p++;
+                for (;;) {
+                    char *type = NULL;
+                    json_ws(&p);
+                    if (*p == ']') break;
+                    if (!json_string(&p, &type)) {
+                        types = GLM_TYPE_TEXT;
+                        break;
+                    }
+                    types |= glm_type_mask(type);
+                    free(type);
+                    json_ws(&p);
+                    if (*p != ',') break;
+                    p++;
+                }
+                if (*p != ']') types = GLM_TYPE_TEXT;
+            }
+        }
+    }
+    json_args_free(&fields);
+    return types ? types : GLM_TYPE_TEXT;
+}
+
+/* The request reader intentionally accepts strtod extensions.  Generated
+ * literals must additionally obey JSON's lexical rules before being copied
+ * verbatim into API arguments, including numbers nested in arrays/objects. */
+static bool glm_json_literal_valid(const char *value) {
+    const char *end = value;
+    if (!json_skip_value(&end)) return false;
+    json_ws(&end);
+    if (*end) return false;
+    const char *p = value;
+    while (*p) {
+        json_ws(&p);
+        if (!*p) break;
+        if (*p == '"') {
+            const char *start = p;
+            char *text = NULL;
+            if (!json_string(&p, &text)) return false;
+            free(text);
+            for (; start < p; start++)
+                if ((unsigned char)*start < 0x20) return false;
+        } else if (strchr("{}[],:", *p)) {
+            p++;
+        } else if (!strncmp(p, "true", 4)) {
+            p += 4;
+        } else if (!strncmp(p, "false", 5)) {
+            p += 5;
+        } else if (!strncmp(p, "null", 4)) {
+            p += 4;
+        } else {
+            if (*p == '-') p++;
+            if (*p == '0') {
+                p++;
+            } else {
+                if (*p < '1' || *p > '9') return false;
+                while (*p >= '0' && *p <= '9') p++;
+            }
+            if (*p == '.') {
+                p++;
+                if (*p < '0' || *p > '9') return false;
+                while (*p >= '0' && *p <= '9') p++;
+            }
+            if (*p == 'e' || *p == 'E') {
+                p++;
+                if (*p == '+' || *p == '-') p++;
+                if (*p < '0' || *p > '9') return false;
+                while (*p >= '0' && *p <= '9') p++;
+            }
+            if (*p && !strchr(" \t\r\n,]}", *p)) return false;
+        }
+    }
+    return true;
+}
+
+/* True when <arg_value> holds a JSON literal whose kind the schema declares.
+ * Text stays text: "001", "true" and "[1,2]" survive when the property is a
+ * string, and malformed literals never become structured arguments. */
+static bool glm_arg_is_json(const tool_schema_orders *orders, const char *tool,
+                            const char *key, const char *value) {
+    const tool_schema_order *order = tool_schema_orders_find(orders, tool);
+    if (!order || !key || !value) return false;
+    const char *schema = NULL;
+    for (int i = 0; i < order->len; i++) {
+        if (order->prop[i] && !strcmp(order->prop[i], key)) {
+            schema = order->prop_schema[i];
+            break;
+        }
+    }
+    if (!schema) return false;
+    const unsigned types = glm_property_types(schema);
+    if (types & GLM_TYPE_TEXT || !glm_json_literal_valid(value)) return false;
+    const char *p = value;
+    json_ws(&p);
+    unsigned kind = 0;
+    if (*p == '[') kind = GLM_TYPE_ARRAY;
+    else if (*p == '{') kind = GLM_TYPE_OBJECT;
+    else if (*p == 't' || *p == 'f') kind = GLM_TYPE_BOOLEAN;
+    else if (*p == 'n') kind = GLM_TYPE_NULL;
+    else if (*p == '-' || (*p >= '0' && *p <= '9'))
+        kind = strpbrk(p, ".eE") ? GLM_TYPE_NUMBER : GLM_TYPE_INTEGER;
+    return (types & kind) != 0;
+}
+
 static bool parse_glm_generated_message_ex(const char *text,
                                            bool require_thinking_closed,
                                            char **content_out,
                                            char **reasoning_out,
-                                           tool_calls *calls) {
+                                           tool_calls *calls,
+                                           const tool_schema_orders *orders) {
     static const char tool_start[] = "<tool_call>";
     static const char tool_end[] = "</tool_call>";
     static const char arg_key_start[] = "<arg_key>";
@@ -6433,7 +6577,12 @@ static bool parse_glm_generated_message_ex(const char *text,
             char *raw_value = xstrndup(p, (size_t)(value_end - p));
             char *value = xstrdup(raw_value);
             ds4_tool_text_unescape(value, arg_value_end);
-            tool_call_json_args_add(&args, key, value, "true");
+            /* <arg_value> carries no type marker, unlike DSML's
+             * string="true|false".  Recover the declared type from the tool
+             * schema so numbers, booleans, arrays and objects are not
+             * stringified; without a matching schema this stays text. */
+            tool_call_json_args_add(&args, key, value,
+                glm_arg_is_json(orders, name, key, value) ? "false" : "true");
             free(key);
             free(raw_value);
             free(value);
@@ -6671,16 +6820,20 @@ static bool parse_qwen_generated_message_ex(const char *text,
     return true;
 }
 
-static bool parse_generated_message_ex_for_syntax(server_model_syntax syntax,
-                                                  const char *text,
-                                                  bool require_thinking_closed,
-                                                  char **content_out,
-                                                  char **reasoning_out,
-                                                  tool_calls *calls) {
+/* Schemas let the GLM parser restore declared argument types.  The plain name
+ * keeps the historical signature for callers that only probe parseability, so
+ * only the production response path has to carry the request's tool orders. */
+static bool parse_generated_message_ex_for_syntax_orders(server_model_syntax syntax,
+                                                         const char *text,
+                                                         bool require_thinking_closed,
+                                                         char **content_out,
+                                                         char **reasoning_out,
+                                                         tool_calls *calls,
+                                                         const tool_schema_orders *orders) {
     if (syntax == SERVER_MODEL_SYNTAX_GLM) {
         return parse_glm_generated_message_ex(text, require_thinking_closed,
                                               content_out, reasoning_out,
-                                              calls);
+                                              calls, orders);
     }
     if (syntax == SERVER_MODEL_SYNTAX_QWEN) {
         return parse_qwen_generated_message_ex(text, require_thinking_closed,
@@ -6689,6 +6842,18 @@ static bool parse_generated_message_ex_for_syntax(server_model_syntax syntax,
     return parse_deepseek_generated_message_ex(text, require_thinking_closed,
                                                content_out, reasoning_out,
                                                calls);
+}
+
+static bool parse_generated_message_ex_for_syntax(server_model_syntax syntax,
+                                                  const char *text,
+                                                  bool require_thinking_closed,
+                                                  char **content_out,
+                                                  char **reasoning_out,
+                                                  tool_calls *calls) {
+    return parse_generated_message_ex_for_syntax_orders(syntax, text,
+                                                        require_thinking_closed,
+                                                        content_out, reasoning_out,
+                                                        calls, NULL);
 }
 
 static DS4_SERVER_MAYBE_UNUSED bool parse_generated_message_ex(
@@ -6802,12 +6967,13 @@ static bool parse_generated_message_for_response_for_syntax(server_model_syntax 
     bool parsed_ok = syntax == SERVER_MODEL_SYNTAX_QWEN ?
         parse_qwen_generated_message_ex(text, require_thinking_closed,
                                          content_out, reasoning_out, calls, orders) :
-        parse_generated_message_ex_for_syntax(syntax,
+        parse_generated_message_ex_for_syntax_orders(syntax,
                                                            text ? text : "",
                                                            require_thinking_closed,
                                                            content_out,
                                                            reasoning_out,
-                                                           calls);
+                                                           calls,
+                                                           orders);
     if (parsed_ok) return true;
 
     free(*content_out);
@@ -19578,6 +19744,135 @@ static void test_parse_short_dsml_and_canonical_suffix(void) {
     request_free(&r);
 }
 
+/* <arg_value> carries no type marker, so the declared property type is the only
+ * safe input for restoring argument types.  Coercion must stay conservative:
+ * a string property keeps "40", "true" and "[1,2]" as text, and a malformed
+ * literal never becomes a structured argument. */
+static void test_glm_tool_argument_types(void) {
+    struct { const char *schema, *value, *expected; } cases[] = {
+        {"{\"type\":\"integer\"}", "40", "40"},
+        {"{\"type\":\"integer\"}", "-40", "-40"},
+        {"{\"type\":\"integer\"}", "9007199254740993", "9007199254740993"},
+        {"{\"type\":\"number\"}", " -1.25e+3 ", "-1.25e+3"},
+        {"{\"type\":\"boolean\"}", "true", "true"},
+        {"{\"type\":\"boolean\"}", "false", "false"},
+        {"{\"type\":\"null\"}", "null", "null"},
+        {"{\"type\":[\"integer\",\"null\"]}", "40", "40"},
+        {"{\"type\":[\"integer\",\"null\"]}", "null", "null"},
+        {"{\"type\":\"array\"}", "[1, true, {\"x\": null}]", "[1,true,{\"x\":null}]"},
+        {"{\"type\":\"object\"}", "{\"x\": [2, false]}", "{\"x\":[2,false]}"},
+        {"{\"type\":\"string\"}", "001", "\"001\""},
+        {"{\"type\":\"string\"}", "40", "\"40\""},
+        {"{\"type\":\"string\"}", "true", "\"true\""},
+        {"{\"type\":\"string\"}", "null", "\"null\""},
+        {"{\"type\":\"string\"}", "[1,2]", "\"[1,2]\""},
+        {"{\"type\":\"string\"}", " x\ny ", "\" x\\ny \""},
+        {"{\"type\":[\"string\",\"integer\"]}", "40", "\"40\""},
+        {"{}", "40", "\"40\""},
+        {"{\"$ref\":\"#/$defs/value\"}", "40", "\"40\""},
+        {"{\"type\":\"integer\"}", "001", "\"001\""},
+        {"{\"type\":\"integer\"}", "1.5", "\"1.5\""},
+        {"{\"type\":\"number\"}", "+1", "\"+1\""},
+        {"{\"type\":\"number\"}", "0x10", "\"0x10\""},
+        {"{\"type\":\"number\"}", "NaN", "\"NaN\""},
+        {"{\"type\":\"number\"}", "Infinity", "\"Infinity\""},
+        {"{\"type\":\"number\"}", "1.", "\"1.\""},
+        {"{\"type\":\"number\"}", "1e", "\"1e\""},
+        {"{\"type\":\"boolean\"}", "True", "\"True\""},
+        {"{\"type\":\"boolean\"}", "1", "\"1\""},
+        {"{\"type\":\"array\"}", "[1,]", "\"[1,]\""},
+        {"{\"type\":\"array\"}", "[NaN]", "\"[NaN]\""},
+        {"{\"type\":\"array\"}", "[01]", "\"[01]\""},
+        {"{\"type\":\"array\"}", "[] trailing", "\"[] trailing\""},
+        {"{\"type\":\"object\"}", "{\"x\":Infinity}", "\"{\\\"x\\\":Infinity}\""},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        tool_schema_orders orders = {0};
+        buf schema = {0}, raw = {0}, expected = {0};
+        buf_printf(&schema, "{\"name\":\"report\",\"parameters\":{\"type\":\"object\","
+                   "\"properties\":{\"value\":%s}}}", cases[i].schema);
+        tool_schema_orders_add_json(&orders, schema.ptr);
+        buf_printf(&raw, "<tool_call>report<arg_key>value</arg_key>"
+                   "<arg_value>%s</arg_value></tool_call>", cases[i].value);
+        buf_printf(&expected, "{\"value\": %s}", cases[i].expected);
+        char *content = NULL, *reasoning = NULL;
+        tool_calls calls = {0};
+        const char *finish = "tool_calls";
+        bool recovered = false;
+        TEST_ASSERT(parse_generated_message_for_response_for_syntax(
+            SERVER_MODEL_SYNTAX_GLM, raw.ptr, true, true, false, &finish,
+            NULL, 0, &content, &reasoning, &calls, &recovered, &orders));
+        TEST_ASSERT(calls.len == 1);
+        if (calls.len == 1) {
+            TEST_ASSERT(!strcmp(calls.v[0].arguments, expected.ptr));
+            TEST_ASSERT(!strcmp(calls.raw_tool_text, raw.ptr));
+        }
+        free(content);
+        free(reasoning);
+        tool_calls_free(&calls);
+        tool_schema_orders_free(&orders);
+        buf_free(&schema);
+        buf_free(&raw);
+        buf_free(&expected);
+    }
+}
+
+/* The bytes GLM 5.3 actually samples for a mixed-type call, captured from
+ * /v1/completions with the GGUF's own chat template.  Every value here is a
+ * bare JSON literal, so quoting them is what broke schema-validating clients. */
+static void test_glm_tool_argument_types_live_shape(void) {
+    static const char raw[] =
+        "<tool_call>search"
+        "<arg_key>exact</arg_key><arg_value>true</arg_value>"
+        "<arg_key>limit</arg_key><arg_value>25</arg_value>"
+        "<arg_key>query</arg_key><arg_value>glm</arg_value>"
+        "<arg_key>tags</arg_key><arg_value>[\"a\", \"b\"]</arg_value>"
+        "</tool_call>";
+    tool_schema_orders orders = {0};
+    tool_schema_orders_add_json(&orders,
+        "{\"name\":\"search\",\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"query\":{\"type\":\"string\"},"
+        "\"limit\":{\"type\":\"integer\"},"
+        "\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
+        "\"exact\":{\"type\":\"boolean\"}}}}");
+
+    char *content = NULL, *reasoning = NULL;
+    tool_calls calls = {0};
+    TEST_ASSERT(parse_generated_message_ex_for_syntax_orders(
+        SERVER_MODEL_SYNTAX_GLM, raw, false, &content, &reasoning, &calls, &orders));
+    TEST_ASSERT(calls.len == 1);
+    if (calls.len == 1) {
+        const char *a = calls.v[0].arguments;
+        TEST_ASSERT(strstr(a, "\"exact\": true") != NULL);
+        TEST_ASSERT(strstr(a, "\"limit\": 25") != NULL);
+        TEST_ASSERT(strstr(a, "\"query\": \"glm\"") != NULL);
+        TEST_ASSERT(strstr(a, "\"tags\": [\"a\",\"b\"]") != NULL);
+        TEST_ASSERT(strstr(a, "\"exact\": \"true\"") == NULL);
+        TEST_ASSERT(strstr(a, "\"limit\": \"25\"") == NULL);
+        TEST_ASSERT(strstr(a, "\"tags\": \"[") == NULL);
+    }
+    free(content);
+    free(reasoning);
+    tool_calls_free(&calls);
+    tool_schema_orders_free(&orders);
+
+    /* Without the request's schemas nothing changes: the historical
+     * string-only behaviour is what callers without orders still get. */
+    char *c2 = NULL, *r2 = NULL;
+    tool_calls calls2 = {0};
+    TEST_ASSERT(parse_generated_message_ex_for_syntax(
+        SERVER_MODEL_SYNTAX_GLM, raw, false, &c2, &r2, &calls2));
+    TEST_ASSERT(calls2.len == 1);
+    if (calls2.len == 1) {
+        TEST_ASSERT(strstr(calls2.v[0].arguments, "\"exact\": \"true\"") != NULL);
+        TEST_ASSERT(strstr(calls2.v[0].arguments, "\"limit\": \"25\"") != NULL);
+        TEST_ASSERT(strstr(calls2.v[0].arguments, "\"tags\": \"[\\\"a\\\", \\\"b\\\"]\"") != NULL);
+    }
+    free(c2);
+    free(r2);
+    tool_calls_free(&calls2);
+}
+
 static void test_parse_glm_tool_call_message(void) {
     const char *generated =
         "<think>need bash</think>OK\n\n"
@@ -23668,6 +23963,8 @@ static void ds4_server_unit_tests_run(void) {
     test_openai_tool_stream_handles_multiple_calls();
     test_streaming_holds_partial_utf8();
     test_parse_short_dsml_and_canonical_suffix();
+    test_glm_tool_argument_types();
+    test_glm_tool_argument_types_live_shape();
     test_parse_glm_tool_call_message();
     test_dsml_parser_recovers_loose_nested_parameters();
     test_dsml_repair_produces_parseable_calls();
