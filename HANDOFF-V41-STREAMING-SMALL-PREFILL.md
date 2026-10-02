@@ -8,6 +8,8 @@
 > **2026-10-02 P0a 已执行：parity 不通过，按纪律停在 P0a。** 全部证据与归因状态见 **§12**。
 > **§12.5 单层判别已执行（见 §12.7）：gather 地址表 bind 逐位清白，ULP 源在 MoE 上游的 batch 共享算子——P0b 放行。**
 > **2026-10-02 P0b 已实现并实测：速度门达标（831-token 续写 17.5 s → 9.6 s，sweep I/O 151→42 GiB），但逐位对拍 DRIFT——sweep 行数下 gather 走 `mul_mv_addr` pair（f32 mid），整层臂走 `mm_id` tile（f16 mid），不同内核族不可能逐位。按 §7.2 DRIFT 即否决；机制以 opt-in（`DS4_METAL_ENABLE_V41_STREAMING_SWEEP_GATHER`）保留，默认行为与开工前逐位一致。全过程与后续坐标见 §13。**
+> **§14 已记录 P0c+P0d+P0f：gather 默认生效、窗口扩到 2048、minimum 降到 32；1002 live 验证见 §14.6/14.7。**
+> **2026-10-02 P0G 已执行（见 §17）：环逐位安全但速度为负——gather 域 prepare 只预读 decode span（0.17 GiB/层），expert miss 受 router 数据依赖锁死，环深度结构上吃不到；§16.1 的 820 ms/层证据属整层臂，路径串线。环保留为 opt-in（`DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_AHEAD`），默认 1 = P0G 前行为逐位一致。**
 
 ---
 
@@ -868,6 +870,8 @@ E0.1/E0.2 微测只在 E1 真要动时再跑。
 
 ## 16. P0G 任务书（交接专用：lookahead 深度 1→N，治"短 chunk GPU 等盘"）
 
+> **2026-10-02 已执行，结果 §17。V0 判据：被忽略（本节 16.2 的单槽硬编码属实）；V1 已实现并全数过逐位门；速度门未达标，默认维持 1，环为 opt-in。16.1 的机制假设已被 17.3 证伪——动手前请先读 §17。**
+
 **给新 session 的一句话**：按本节做，前置背景全在本手册（必读 §0、§14 全节、§15.5 改判）。
 
 ### 16.1 问题与量化证据
@@ -931,3 +935,44 @@ layer-major prefill sweep 每层的 GPU 计算只被"提前 1 层"的 expert 页
 - 机器 128 GB M5 Max；bench 一次全量加载 ~1 min，ctx-alloc 393216；
   `--ssd-streaming-cache-experts` 只用于压力场景，生产已裁定用 auto（§14.7）。
 - 契约红线：任何 logits 变化都要先停下向用户报备裁定（P0d 先例 §14.5）。
+
+---
+
+## 17. P0G 执行记录（2026-10-02）：环逐位安全、速度为负——假设证伪，环以 opt-in 保留
+
+结论先行：**V0 判据"env 被忽略"属实，V1 环已接进 gather sweep 且全数过逐位门；但速度门未达标，默认维持 1（=P0G 前行为逐位一致），D>1 纯 env opt-in。** 任务书假设的"短 chunk GPU 等盘"在 gather 路径上不存在——证据与机制见 17.3。
+
+### 17.1 V0：env 确实被 gather sweep 忽略
+`git show HEAD:ds4.c` 内 `ds41_graph_prefill_sweep` 全文 `prepare_ahead`/`il + depth` 命中 0，仅 `il + 1u` 单槽预取——16.2 坐标属实。既有环（layer-major `ds4.c:37638`、GLM `ds4.c:54211`）消费 `DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_AHEAD` 但都不在 V4.1 gather sweep 上，所以开 env=2/3 对 V4.1 短 append 无效果的裁定为 **ignored**。V4/GLM 路径未动，其 decode/verify 不受本改动影响（sweep 局部 getter 与它们零交集）。
+
+### 17.2 V1 实现（默认 1；改动全部在 `ds4.c` 的 sweep 域）
+- 单槽 → `metal_graph_stream_prepare_slot prepare[DS4_STREAM_PREFILL_MAX_PREPARE_AHEAD]`（4 槽，与既有环同容量惯例）；lookahead 单发 `il+1` → `for depth 1..prepare_ahead`（保留 `encoder_resident`/`prepare_last` 谓词）；join/join_all 全改传数组+深度。槽原语（`slot_find`/`start_if_needed` 幂等/join 无槽回退同步）**零改动**——多深都在数组内，`start_if_needed` 可证不溢出（join 掉当前层后在飞 ≤D，≤n_slots）。
+- **gather 域局部 getter** `ds41_streaming_sweep_prepare_ahead()` + `#define DS41_SWEEP_PREPARE_AHEAD_DEFAULT`（当前 1）：读同一对 env（`DS4_{METAL,ROCM}_STREAMING_PREFILL_LAYER_PREPARE_AHEAD`），**不改共享 getter**——将来翻默认不重定时 V4/GLM 环。非 gather（整层）臂 `prepare_ahead` 恒为 1（其 page-in 已背整层 working set，加深只会恶化 §14.1 slab 角）。
+- 线程安全：worker 读向各自 `worker->sink`（`metal_graph_stream_pagein_worker_main`），深读并发无共享写面。
+
+### 17.3 机制判据：假设的路径串线（比"没测出收益"更值钱的结论）
+- **gather 下 prepare 只预读 decode span（0.17 GiB/层）**：真·静态半段 0 GiB + unique expert miss（~2.9 GiB/层 @100 行）由 metal 侧 `g_stream_expert_pending_load` **数据依赖**加载——il+1 的 ids 要等 il 的 router 输出 readback，环深度结构上吃不到它。PREAD_PROFILE（100 行档，D1 起）`wait≈0.03 ms/层` vs `thread≈320 ms/层`：join 等待 ≈0，D1 已把 prepare 侧等待盖完，**没有留给深度的东西**。
+- §16.1 的"820 ms/层 pread vs 50 ms/层 gate"证据来自**整层臂**（>2048 行或 gather off）——恰是 P0f2 已证平手的段。gather 的慢账早在 §14.6 生日数学里结清："gather 省不了 I/O，瓶颈是 miss 换入"。
+- 固定内容 bench 稳态自热（种子 wide-sweep + 相邻 frontier expert 重叠 ~97%）→ miss 变 DRAM 命中，深度无收益空间、额外 pread 线程反抢带宽（A/D 档 −3~4% 倾向）。任务书达标线（100→≥40 / 500→≥110）锚的是生产冷缓存值（25–31 / 83–87），本 bench 体制不可复现——这本身就说明 P0G 的靶子在别处。
+
+### 17.4 门闸（最终 build；产物 `/tmp/p0g/`）
+- 门 1 `--moe-bind-parity`：**27/27 bit-exact，exit 0**（最终 build 复跑）。
+- 门 2 逐位 dump（链 223×{2048,2271,2494,2717}、1524×{2048,3572,5096}，臂 KILL/D1/D2/D3，`--ctx-alloc 393216`）：深度间 **6/6 IDENTICAL**（D2≡D1、D3≡D1、D2≡D3，strict=True）；1524 KILL≡gather **IDENTICAL**；223 KILL vs D1 的 drift 与 §14.5 已裁定族逐项吻合（锚点 2048 strict=True changed=0；2271/2494/2717 全词表 max|Δ|=1.77/1.78/1.79、argmax 三处相同）——非新增偏差，按既有裁定处理。
+- 门 3 slab 压力（`--ssd-streaming-cache-experts 2048` × {643,1524} 行 × D2/D3）：5/5 **IDENTICAL**（含与门 2 同深度臂的跨预算对拍）——"只慢不错"逐位成立，thrash 有界、无红线日志。
+- 收尾：最终 build（getter+DEFAULT=1）默认 env-unset vs `=1`、vs 旧二进制 D1 两重对拍 **identical**——默认路径与 P0G 前逐位一致；`make` 零警告；`--dispatch` 全新 build PASS。
+- **随车修复（P0d 遗留，另行说明）**：`tests/test_deepseek41_prefill.c` 17 处 `ds41_prefill_count(g, remaining)` 补 `w` 参（§14.5 改签名后测试从未更新，clean HEAD 上编译 14 错——§14.6 那次"PASS"是旧二进制假象）。测试假 weights 带 gather 配方但无 Metal 运行时，parity 门恒 false，期望表未动。教训入 §8：**跑门禁前必须重链测试二进制**。
+
+### 17.5 速度 A/B（24 runs = 4 配置 × D1/D2/D3 × 正反双向；`--ctx-alloc 393216`，同 build 同内容）
+| 档 | D1（默认） | D2 | D3 | 备注 |
+|---|---|---|---|---|
+| 100 行 @36k | **100.7** | 96.0 | 97.3 | 任务书达标线"≥40"在 warm 体制无意义（D1 已 100） |
+| 500 行 @40k | 158.7 | 159.6 | 158.4 | 深度无差 |
+| 1524 行 @40k+ | **198.4** | 196.0 | 197.1 | 与 P0f 历史 194–212 同段 → 口径可信 |
+| 2605 行 @40k+ | **139.9** | 134.6 | 135.7 | 与 P0f2 历史 129–137 同段；无回归 |
+（每格 = 正反两 run 的中位数取中。C/D 档与历史锚点吻合，说明本表可信；A/B 档 D1 不低于任何深度臂。）
+
+### 17.6 遗留与后续坐标
+- 代码状态：环 + sweep 局部 getter 已随本提交入 main；`DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_AHEAD=2/3` 可即时 opt-in，`=1` 恢复 P0G 前行为。将来若生产冷域 A/B 翻身，把 `DS41_SWEEP_PREPARE_AHEAD_DEFAULT` 翻 2 即可（**先按 §7.2 补一轮生产冷域 dump**）。
+- 生产侧冷域 A/B 模板（待 server 停窗）：同 build 两段流量对比 32–2048 行 "prefill chunk" 行，env unset vs `=3`；expert miss 数据依赖决定了预期——**低预期，做之前想清楚值不值一个重启窗口**。
+- `/tmp/p0g/`：dump 目录、cmp_*.json（status 字段）、g4 CSV、bench 日志，重启即失。
+- 真正的 100 行档靶子回到 §15：**E1**（低行数批量省，保 scalar 数值）与 §14.6 已点名的场域修复（page cache 保温/LRU 老化/条带读）——环不是它们的替代品。
