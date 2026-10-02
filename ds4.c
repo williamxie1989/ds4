@@ -44177,6 +44177,11 @@ static bool ds41_graph_short_prefill(ds41_gpu_graph *g, const ds4_model *m,
 #undef DS41_CARRY_ROWS
 #endif
 
+typedef struct {
+    const char *text;
+    int id;
+} ds4_special_token;
+
 struct ds4_vocab {
     ds4_str *token;
     int n_vocab;
@@ -44201,6 +44206,13 @@ struct ds4_vocab {
     int im_start_id;
     int im_end_id;
     int endoftext_id;
+    /* Replay whitelist: every CONTROL token the vocab declares, ordered by
+     * descending text length.  The model samples these as single token ids
+     * and the transcript round-trips them as literal text; re-tokenizing
+     * that text must land on the same id, or any marker surviving into the
+     * replayed history breaks exact prefix reuse every following turn. */
+    ds4_special_token *specials;
+    int n_specials;
     str_i32_table token_to_id;
     str_i32_table merge_rank;
 };
@@ -45310,6 +45322,13 @@ static int vocab_lookup_optional(const ds4_vocab *vocab, const char *text) {
 
 /* Load token strings, special token ids, and merge ranks from GGUF metadata. */
 
+static int ds4_special_len_cmp(const void *a, const void *b) {
+    const ds4_special_token *x = a, *y = b;
+    size_t la = strlen(x->text), lb = strlen(y->text);
+    if (la != lb) return la > lb ? -1 : 1;
+    return strcmp(x->text, y->text);
+}
+
 static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
     memset(vocab, 0, sizeof(*vocab));
 
@@ -45333,6 +45352,34 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
     for (int i = 0; i < vocab->n_vocab; i++) {
         if (!cursor_string(&c, &vocab->token[i])) ds4_die(c.error);
         table_put(&vocab->token_to_id, vocab->token[i], i);
+    }
+
+    /* Collect the vocab's CONTROL tokens into the replay whitelist.  Every
+     * one of them can be sampled as a single id and comes back through the
+     * transcript as literal text, so the rendered-chat tokenizer must map
+     * the text back to the same id (longest span wins). */
+    vocab->specials = NULL;
+    vocab->n_specials = 0;
+    ds4_array_ref tt;
+    if (model_get_array(model, "tokenizer.ggml.token_type", &tt) &&
+        tt.type == GGUF_VALUE_INT32 && tt.len <= (uint64_t)vocab->n_vocab) {
+        ds4_cursor tc = cursor_at(model, tt.data_pos);
+        int cap = 0;
+        for (int i = 0; i < vocab->n_vocab; i++) {
+            int32_t ty = 0;
+            if (!cursor_read(&tc, &ty, sizeof(ty))) break;
+            if (ty != 3 || vocab->token[i].ptr[0] != '<') continue;
+            if (vocab->n_specials == cap) {
+                cap = cap ? cap * 2 : 64;
+                vocab->specials = xrealloc(vocab->specials,
+                                           (size_t)cap * sizeof(vocab->specials[0]));
+            }
+            vocab->specials[vocab->n_specials].text = vocab->token[i].ptr;
+            vocab->specials[vocab->n_specials].id = i;
+            vocab->n_specials++;
+        }
+        qsort(vocab->specials, (size_t)vocab->n_specials,
+              sizeof(vocab->specials[0]), ds4_special_len_cmp);
     }
 
     table_init(&vocab->merge_rank, merges.len);
@@ -45422,6 +45469,7 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
 
 static void vocab_free(ds4_vocab *vocab) {
     free(vocab->token);
+    free(vocab->specials);
     table_free(&vocab->token_to_id);
     table_free(&vocab->merge_rank);
     memset(vocab, 0, sizeof(*vocab));
@@ -45621,6 +45669,16 @@ static bool special_token_at(const ds4_vocab *vocab, const char *p, int *token, 
             *token = specials[i].token;
             *len = n;
             return true;
+        }
+    }
+    if (p[0] == '<') {
+        for (int i = 0; i < vocab->n_specials; i++) {
+            size_t n = strlen(vocab->specials[i].text);
+            if (!strncmp(p, vocab->specials[i].text, n)) {
+                *token = vocab->specials[i].id;
+                *len = n;
+                return true;
+            }
         }
     }
     return false;
@@ -89311,6 +89369,27 @@ int ds4_session_ctx(ds4_session *s) {
 
 int ds4_session_prefill_cap(ds4_session *s) {
     return s ? (int)s->prefill_cap : 0;
+}
+
+/* Test hook: every CONTROL token text the vocab declares must round-trip
+ * through the rendered-chat tokenizer back to its single special id.  A
+ * marker that re-tokenizes into plain BPE pieces breaks exact-prefix KV
+ * reuse on every turn after the model emits it. */
+bool ds4_test_control_token_roundtrip(ds4_engine *engine) {
+    ds4_vocab *v = &engine->vocab;
+    bool ok = v->n_specials > 0;
+    for (int i = 0; ok && i < v->n_specials; i++) {
+        char probe[512];
+        snprintf(probe, sizeof(probe), "quoted %s tail", v->specials[i].text);
+        token_vec toks = {0};
+        tokenize_rendered_chat_vocab(v, probe, &toks);
+        bool found = false;
+        for (int t = 0; t < toks.len; t++)
+            if (toks.v[t] == v->specials[i].id) found = true;
+        token_vec_free(&toks);
+        if (!found) ok = false;
+    }
+    return ok;
 }
 
 #ifndef DS4_NO_GPU
