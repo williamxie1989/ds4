@@ -752,6 +752,36 @@ warm 上限参照 bench 166–170 t/s（831 行）：架构内现实目标 1000 
 100 行 ≈1.5–2 s。小行数**不建议**压 packed 阈值（<512 带 packing 写放大且
 compute 非瓶颈）。
 
+### 14.7 P0f：gather 窗口 1024→2048（>1024 行 append 的真空段补上，默认生效）
+
+生产日志（10:23–10:28）暴露 1524 行 append 只有 61.9 t/s——P0c 的 gather 准入帽
+1024 是 §0 "<1024 目标"的精确划线，**1025–2048 行落在整层臂真空段**（10:08 的
+2042 行 @108 t/s 同源）。受控对照（固定内容、1524 行 append 连走 ctx 40k→55k，
+`/tmp/p0f/{A,B,C,D}_*.csv`）：
+
+| 配置 | cache | >1024 窗口 | 吞吐 @40–55k |
+|---|---|---|---|
+| A | 6959 | 整层臂 | 83–86 t/s |
+| B | 9000 | 整层臂 | **55–63 t/s（更差）** |
+| C | 9000 | gather 2048 | 211–248 t/s |
+| D | 6959 | gather 2048 | 194–212 t/s |
+
+结论：① 窗口 2048 带来 ~2.4–2.8×；② **cache 扩容（6959→9000）无收益**——
+整层臂下反而有害，gather 下差异淹没在噪声里；agent 型流量每轮触达 ≈300/384
+experts/层，LRU 跨轮近全表冲洗，容量增益结构性无效。**server 不要带
+`--ssd-streaming-cache-experts 9000`**，维持 auto。
+
+- 改动：`ds4.c` admission `max_rows 1024→2048` + `ds4_metal.m`
+  `ds4_gpu_stream_prefill_batch_selected_addr_auto_max` 384 专家默认 `1024→2048`。
+  **两处必须同步**（注释里写明互为镜像）：只改引擎侧会失败——gather 跳层锁页后
+  metal 按整层 bind 索要 mapped view → "not covered by mapped model views" →
+  layer 0 prefill 失败（P0f 开发中实测踩中，新登记陷阱）。
+- 门（`/tmp/p0f/`）：1524 行（frontiers 2048/3572/5096）与 2044 行（2048/4092）
+  gather-ON vs kill-OFF 对拍 **IDENTICAL**（`cmp_1524.json`/`cmp_2044.json`），
+  P0c 的构造性逐位一致扩展到 2048 行。注意 compare 脚本 frontier 链语义：
+  `prefill_tokens = frontier − previous`，**锚点 2048 必须一起传**。
+- 部署：重启 server 吃到新默认；kill 仍是 `DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER`。
+
 ---
 
 ## 15. P0e 路线设计（未开工）：行数分层与跨路契约
