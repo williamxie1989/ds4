@@ -29,6 +29,10 @@ static int check_dispatch(void) {
         2047, 2048, 2048, 2048, 4096, 4096, 6144, 8192, 8192,
         14336, 16384, 16384, 30720, 32768, 32768, 32768};
     _Static_assert(sizeof(remaining) == sizeof(cold), "prefill dispatch table sizes");
+    /* The fake weights carry the gather recipe, but without an initialized
+     * Metal runtime ds4_gpu_v41_stream_gather_parity_supported() is false, so
+     * P0d's gather-floor branch stays inert and the table below is the
+     * pre-P0d dispatch. */
     for (uint32_t cache = half - 1; cache <= half; cache++) {
         ds4_gpu_set_streaming_expert_cache_budget(cache);
         for (uint32_t warm = 0; warm < 2; warm++) {
@@ -42,11 +46,11 @@ static int check_dispatch(void) {
                 if (remaining[i] > 2048 && remaining[i] < 8192 && remaining[i] % 2048 >= 256)
                     expected = remaining[i];
 #endif
-                if (ds41_prefill_count(&g, remaining[i]) != expected)
+                if (ds41_prefill_count(&g, &weights, remaining[i]) != expected)
                     fprintf(stderr, "dispatch cache=%u configured=%u warm=%u remaining=%u expected=%u actual=%u\n",
                         cache, ds4_gpu_stream_expert_cache_configured_count(), warm,
-                        remaining[i], expected, ds41_prefill_count(&g, remaining[i]));
-                CHECK(ds41_prefill_count(&g, remaining[i]) == expected);
+                        remaining[i], expected, ds41_prefill_count(&g, &weights, remaining[i]));
+                CHECK(ds41_prefill_count(&g, &weights, remaining[i]) == expected);
                 uint32_t small = 0;
 #ifndef __APPLE__
                 if (remaining[i] >= 2 && remaining[i] < 256)
@@ -58,14 +62,14 @@ static int check_dispatch(void) {
     }
     g.pos = 0;
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
-    CHECK(ds41_prefill_count(&g, 2303) == 2048);
-    CHECK(ds41_prefill_count(&g, 2304) == 2304);
-    CHECK(ds41_prefill_count(&g, 3241) == 3241);
+    CHECK(ds41_prefill_count(&g, &weights, 2303) == 2048);
+    CHECK(ds41_prefill_count(&g, &weights, 2304) == 2304);
+    CHECK(ds41_prefill_count(&g, &weights, 3241) == 3241);
     CHECK(setenv("DS4_CUDA_DISABLE_SSD_MEDIUM_SWEEP", "1", 1) == 0);
-    CHECK(ds41_prefill_count(&g, 3241) == 2048);
+    CHECK(ds41_prefill_count(&g, &weights, 3241) == 2048);
     CHECK(unsetenv("DS4_CUDA_DISABLE_SSD_MEDIUM_SWEEP") == 0);
     g.prefill_cap = 1024;
-    CHECK(ds41_prefill_count(&g, 3241) == 1024);
+    CHECK(ds41_prefill_count(&g, &weights, 3241) == 1024);
     g.prefill_cap = 8192;
 #endif
     g.tp_world = 2;
@@ -78,11 +82,11 @@ static int check_dispatch(void) {
         if (remaining[i] >= 2 && remaining[i] < 256)
             small = remaining[i] < 8 ? remaining[i] : 8;
 #endif
-        CHECK(ds41_prefill_count(&g, remaining[i]) == expected);
+        CHECK(ds41_prefill_count(&g, &weights, remaining[i]) == expected);
         CHECK(ds41_short_prefill_count(&g, &weights, remaining[i]) == small);
     }
     CHECK(setenv("DS4_METAL_DISABLE_V41_TP_SMALL_PREFILL", "1", 1) == 0);
-    CHECK(ds41_prefill_count(&g, 255) == 1);
+    CHECK(ds41_prefill_count(&g, &weights, 255) == 1);
     CHECK(ds41_short_prefill_count(&g, &weights, 255) == 0);
     CHECK(unsetenv("DS4_METAL_DISABLE_V41_TP_SMALL_PREFILL") == 0);
     const char *ablations[] = {"DS4_METAL_DISABLE_V41_BATCH_ATTN",
@@ -90,23 +94,23 @@ static int check_dispatch(void) {
         "DS4_METAL_DISABLE_V41_BATCH_HC", "DS4_METAL_DISABLE_V41_LAYER_PREFILL"};
     for (size_t i = 0; i < sizeof(ablations) / sizeof(*ablations); i++) {
         CHECK(setenv(ablations[i], "1", 1) == 0);
-        CHECK(ds41_prefill_count(&g, 65536) == 1);
+        CHECK(ds41_prefill_count(&g, &weights, 65536) == 1);
         CHECK(unsetenv(ablations[i]) == 0);
     }
     g.tp_world = 1;
-    CHECK(ds41_prefill_count(&g, 7) == 1);
-    CHECK(ds41_prefill_count(&g, 8) == 8);
+    CHECK(ds41_prefill_count(&g, &weights, 7) == 1);
+    CHECK(ds41_prefill_count(&g, &weights, 8) == 8);
     for (size_t i = 0; i < sizeof(remaining) / sizeof(*remaining); i++)
-        CHECK(ds41_prefill_count(&g, remaining[i]) ==
+        CHECK(ds41_prefill_count(&g, &weights, remaining[i]) ==
             (remaining[i] >= 8 && remaining[i] < 256 ? remaining[i] : cold[i]));
     ds4_imatrix_collector imatrix = {0};
     g.imatrix = &imatrix;
-    CHECK(ds41_prefill_count(&g, 65536) == 1);
+    CHECK(ds41_prefill_count(&g, &weights, 65536) == 1);
     g.imatrix = NULL;
     g.carry_cap = 0;
-    CHECK(ds41_prefill_count(&g, 65536) == 2048);
+    CHECK(ds41_prefill_count(&g, &weights, 65536) == 2048);
     g.prefill_cap = 1024;
-    CHECK(ds41_prefill_count(&g, 4096) == 1024);
+    CHECK(ds41_prefill_count(&g, &weights, 4096) == 1024);
     g.prefill_cap = 8192;
     CHECK(ds41_encoder_chunk_cap(&g, 8191) == 2048);
     CHECK(ds41_encoder_chunk_cap(&g, 8192) == 4096);
@@ -153,7 +157,7 @@ static void progress_note(void *ud, const char *event, int current, int total) {
             const uint32_t small = ds41_short_prefill_count(&before, &s->engine->weights,
                 (uint32_t)(total - p->frontier));
             assert((uint32_t)count == (small ? small : ds41_prefill_count(&before,
-                (uint32_t)(total - p->frontier))));
+                &s->engine->weights, (uint32_t)(total - p->frontier))));
             if (count == 1) p->scalar++;
             else if (small) p->short_batches++;
             else p->batches++;
