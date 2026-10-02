@@ -2333,7 +2333,6 @@ static int ds4_gpu_model_residency_request_views(void) {
 
     return 1;
 }
-
 static int ds4_gpu_add_model_view_range(
         const void *model_map,
         uint64_t    model_size,
@@ -10550,10 +10549,33 @@ static bool ds4_gpu_dsv41_exact_admitted(uint32_t test_flag, const char *rollbac
     return getenv(rollback_env) == NULL;
 }
 
+/* Activation-only V4.1 exact kernels. The fused paths are pure per-layer
+ * functions of the attention activations and the dense/attention weights,
+ * which SSD streaming always maps statically (only routed experts are
+ * cache-gathered): streaming changes neither input values nor the arithmetic,
+ * so the exact results are unchanged and the kernels port to the streaming
+ * domain on M5-class devices. gather_reuse stays excluded -- unlike these two
+ * it reads a cross-layer scratch (selected_kv) whose lifetime must span a
+ * pipeline flush, which bit-exact sampling cannot certify race-free under the
+ * streaming decode pipeline. The verify-row kernels stay excluded because
+ * they belong to the batched verify (drafting) path. Each kernel keeps its
+ * own rollback environment on top of the domain switch. */
+static bool ds4_gpu_dsv41_activation_exact_admitted(uint32_t test_flag,
+                                                    const char *rollback_env) {
+    if (g_quality_mode || g_tp_split_world != 1) return false;
+    const bool streaming_port = g_ssd_streaming_mode &&
+        ds4_gpu_device_is_m5_apple_silicon() &&
+        getenv("DS4_METAL_DISABLE_V41_STREAMING_ACTIVATION_FUSIONS") == NULL;
+    if (!(g_test_flags & test_flag) &&
+        !streaming_port &&
+        !(g_v41_measured_config && ds4_gpu_device_is_m3_ultra())) return false;
+    return getenv(rollback_env) == NULL;
+}
+
 void ds4_gpu_dsv41_arm_attention_epilogue(uint32_t pos, bool compressed, bool enable) {
     g_v41_attention_used = false;
     g_v41_attention_armed = enable && pos < 1048576u &&
-        ds4_gpu_dsv41_exact_admitted(DS4_GPU_TEST_V41_FUSIONS,
+        ds4_gpu_dsv41_activation_exact_admitted(DS4_GPU_TEST_V41_FUSIONS,
             "DS4_METAL_DISABLE_V41_ATTN_EPILOGUE");
     if (!g_v41_attention_armed) return;
     g_v41_attention_rope = (ds4_gpu_dsv41_rope_args){512,64,1,pos,1,1,{0}};
@@ -10578,7 +10600,7 @@ int ds4_gpu_dsv41_verify_attn_out_rows_admitted(void) {
 }
 
 int ds4_gpu_dsv41_qb_bf16_admitted(void) {
-    return ds4_gpu_dsv41_exact_admitted(DS4_GPU_TEST_V41_FUSIONS,
+    return ds4_gpu_dsv41_activation_exact_admitted(DS4_GPU_TEST_V41_FUSIONS,
                                       "DS4_METAL_DISABLE_V41_QB_BF16");
 }
 
@@ -14813,7 +14835,11 @@ static uint32_t ds4_gpu_stream_prefill_batch_selected_addr_auto_max(
             return (uint32_t)v;
         }
     }
-    if (n_total_expert == 384) return 800u;
+    /* Small streaming sweeps (HANDOFF-V41 P0b) pass force_resident=false
+     * with the layer mapped decode-span only; they must clear this window
+     * or the whole-tensor bind would find no expert bytes to bind. The
+     * ds4.c sweep admission mirrors this default exactly. */
+    if (n_total_expert == 384) return 1024u;
     if (n_total_expert == 256) return 760u;
     return 0;
 }
@@ -32315,6 +32341,21 @@ static int ds4_gpu_routed_mm_mpp_mask(void) {
     return ds4_gpu_mpp_available() ? 7 : 0;
 }
 
+/* P0c (HANDOFF-V41-STREAMING-SMALL-PREFILL 13.4): parity-mirror availability
+ * for the streaming sweep gather. The gather arm stays bit-identical to the
+ * whole-layer arm only inside the TensorOps mask-7 domain, where the address
+ * table mirrors of the exact whole-layer mm-id family (packed TensorOps at
+ * >=512 rows, plain mpp mm-id at 32..511) exist. ds4.c queries this before
+ * admitting a sweep gather, because the decode-span map admits no whole-layer
+ * fallback bind. */
+bool ds4_gpu_v41_stream_gather_parity_supported(void) {
+    return ds4_gpu_routed_mm_mpp_mask() == 7 &&
+        ds4_gpu_get_pipeline("kernel_mul_mm_id_iq2_xxs_mpp_packed_cached") != nil &&
+        ds4_gpu_get_pipeline("kernel_mul_mm_id_q2_K_mpp_packed_cached") != nil &&
+        ds4_gpu_get_mul_mm_id_pipeline("kernel_mul_mm_id_iq2_xxs_cached_f32_mpp", false) != nil &&
+        ds4_gpu_get_mul_mm_id_pipeline("kernel_mul_mm_id_q2_K_cached_f16_mpp", false) != nil;
+}
+
 static id<MTLComputePipelineState> ds4_gpu_routed_mm_pipeline(uint32_t type) {
     switch (type) {
     case DS4_METAL_TENSOR_Q8_0:
@@ -44715,8 +44756,52 @@ int ds4_gpu_routed_moe_batch_tensor(
                     gate_type, down_type);
             return 0;
         }
+        /* P0c (HANDOFF-V41-STREAMING-SMALL-PREFILL 13.4): the streaming sweep
+         * gather at mm-id row counts must run the exact whole-layer expert
+         * matmul family, binding weights from the streaming expert cache's
+         * per-expert address table (cached buffers or whole-layer overflow
+         * views, both the identical GGUF bytes). Same kernel template, same
+         * tile iteration and accumulation: bit-identical by construction,
+         * unlike the mul_mv addr pair family with its different mid domain.
+         * The mirror holds on the TensorOps mask-7 domain only: at rows
+         * >=512 the whole-layer arm runs the packed TensorOps kernels, at
+         * 32..511 the plain mpp mm-id kernels; below 32 rows the whole-layer
+         * arm stays on the mul_mv family, which the streaming addr pair
+         * kernels already match bit-for-bit (HANDOFF 12.7). */
+        const bool use_v41_stream_gather_addr =
+            !force_resident &&
+            g_ssd_streaming_mode &&
+            g_tp_split_world == 1 &&
+            !g_quality_mode &&
+            n_tokens >= 32u &&
+            n_tokens < 8192u &&
+            n_expert == 6u &&
+            n_total_expert == 384u &&
+            expert_in_dim == 5120u &&
+            expert_mid_dim == 2304u &&
+            gate_type == DS4_METAL_TENSOR_IQ2_XXS &&
+            down_type == DS4_METAL_TENSOR_Q2_K &&
+            ds4_gpu_routed_mm_mpp_mask() == 7 &&
+            ds4_gpu_stream_prefill_batch_selected_addr_enabled(n_tokens,
+                                                                 n_total_expert,
+                                                                 n_expert,
+                                                                 gate_type,
+                                                                 down_type) &&
+            ds4_gpu_stream_expert_cache_note_expert_size(gate_expert_bytes,
+                                                          down_expert_bytes) &&
+            ds4_gpu_stream_expert_cache_configured_count() >= n_total_expert &&
+            getenv("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR") == NULL &&
+            getenv("DS4_METAL_DISABLE_STREAMING_EXPERT_ADDR_TABLE") == NULL &&
+            getenv("DS4_METAL_DISABLE_ROUTED_PAIR_SWIGLU_FUSION") == NULL &&
+            getenv("DS4_METAL_MOE_WRITE_CLAMPED_ACT") == NULL &&
+            getenv("DS4_METAL_DISABLE_V41_STREAM_GATHER_MM_ID") == NULL &&
+            ds4_gpu_get_mul_mm_id_pipeline("kernel_mul_mm_id_iq2_xxs_cached_f32_mpp", false) != nil &&
+            ds4_gpu_get_mul_mm_id_pipeline("kernel_mul_mm_id_q2_K_cached_f16_mpp", false) != nil &&
+            ds4_gpu_get_pipeline("kernel_mul_mm_id_iq2_xxs_mpp_packed_cached") != nil &&
+            ds4_gpu_get_pipeline("kernel_mul_mm_id_q2_K_mpp_packed_cached") != nil;
         const bool use_iq2_batch_selected_addr =
             !force_resident &&
+            !use_v41_stream_gather_addr &&
             ds4_gpu_stream_prefill_batch_selected_addr_enabled(n_tokens,
                                                                n_total_expert,
                                                                n_expert,
@@ -44748,7 +44833,14 @@ int ds4_gpu_routed_moe_batch_tensor(
             getenv("DS4_METAL_DISABLE_TINY_PAIR_SWIGLU_FUSION") == NULL &&
             getenv("DS4_METAL_MOE_WRITE_CLAMPED_ACT") == NULL &&
             getenv("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR") == NULL;
-        const bool use_cached_batch = use_iq2_batch_selected_addr || use_iq2_cached_batch;
+        const bool use_cached_batch =
+            use_iq2_batch_selected_addr || use_iq2_cached_batch ||
+            use_v41_stream_gather_addr;
+        /* The mm-id tile kernels bind the per-expert address table whenever
+         * the batch's experts come from the streaming cache, be it the GLM
+         * cached batch or the V4.1 sweep gather. */
+        const bool use_mm_id_stream_addr =
+            use_iq2_cached_batch || use_v41_stream_gather_addr;
 
         ds4_gpu_mul_mv_id_args gate_args =
             ds4_gpu_make_mul_mv_id_args(expert_in_dim, expert_mid_dim, n_total_expert,
@@ -44816,7 +44908,7 @@ int ds4_gpu_routed_moe_batch_tensor(
             expert_mid_dim == 2304u;
         const uint64_t packed_limit = (v41_packed ? UINT64_C(512) : UINT64_C(256)) << 20;
         const bool use_packed_mpp = use_mm_id && !g_quality_mode &&
-            (!g_ssd_streaming_mode || force_resident) && n_tokens >= 512u &&
+            (!g_ssd_streaming_mode || force_resident || use_v41_stream_gather_addr) && n_tokens >= 512u &&
             n_tokens <= (v41_packed ? 8192u : 4096u) &&
             n_expert == 6u && n_total_expert <= 384u &&
             expert_in_dim <= 5120u && expert_mid_dim <= 4096u &&
@@ -45124,10 +45216,13 @@ int ds4_gpu_routed_moe_batch_tensor(
             }
             if (use_packed_mpp) {
                 gate_mm_pipeline = up_mm_pipeline =
-                    ds4_gpu_get_pipeline(gate_type == DS4_METAL_TENSOR_MXFP4 ?
+                    ds4_gpu_get_pipeline(use_v41_stream_gather_addr ?
+                        "kernel_mul_mm_id_iq2_xxs_mpp_packed_cached" :
+                        gate_type == DS4_METAL_TENSOR_MXFP4 ?
                         "kernel_mul_mm_id_mxfp4_mpp_packed" : packed_m32n128 ?
                         "kernel_mul_mm_id_iq2_xxs_mpp_packed_m32n128" : "kernel_mul_mm_id_iq2_xxs_mpp_packed");
-                down_mm_pipeline = ds4_gpu_get_pipeline(down_type == DS4_METAL_TENSOR_MXFP4 ?
+                down_mm_pipeline = ds4_gpu_get_pipeline(use_v41_stream_gather_addr ?
+                        "kernel_mul_mm_id_q2_K_mpp_packed_cached" : down_type == DS4_METAL_TENSOR_MXFP4 ?
                         "kernel_mul_mm_id_mxfp4_mpp_packed" : packed_m32n128 ?
                         "kernel_mul_mm_id_q2_K_mpp_packed_m32n128" : "kernel_mul_mm_id_q2_K_mpp_packed");
             }
@@ -45172,15 +45267,21 @@ int ds4_gpu_routed_moe_batch_tensor(
             }
         }
 
-        if (use_iq2_cached_batch && use_mm_id) {
+        if ((use_iq2_cached_batch || use_v41_stream_gather_addr) &&
+            use_mm_id && !use_packed_mpp) {
             const int mpp = ds4_gpu_routed_mm_mpp_mask();
             gate_mm_pipeline = up_mm_pipeline = ds4_gpu_get_mul_mm_id_pipeline(
                 mpp ? "kernel_mul_mm_id_iq2_xxs_cached_f32_mpp" :
                       "kernel_mul_mm_id_iq2_xxs_cached_f32", false);
-            down_mm_pipeline = ds4_gpu_get_mul_mm_id_pipeline(
-                request_mid_f16 ? (mpp ? "kernel_mul_mm_id_iq2_xxs_cached_f16_mpp" :
-                                        "kernel_mul_mm_id_iq2_xxs_cached_f16") :
-                                  "kernel_mul_mm_id_iq2_xxs_cached_f32", false);
+            /* V4.1's down projection is Q2_K: its address-table mirror is
+             * kernel_mul_mm_id_q2_K_cached_f16_mpp, matching the whole-layer
+             * arm's mpp down at these row counts. */
+            down_mm_pipeline = use_v41_stream_gather_addr ?
+                ds4_gpu_get_mul_mm_id_pipeline("kernel_mul_mm_id_q2_K_cached_f16_mpp", false) :
+                ds4_gpu_get_mul_mm_id_pipeline(
+                    request_mid_f16 ? (mpp ? "kernel_mul_mm_id_iq2_xxs_cached_f16_mpp" :
+                                            "kernel_mul_mm_id_iq2_xxs_cached_f16") :
+                                      "kernel_mul_mm_id_iq2_xxs_cached_f32", false);
             if (!gate_mm_pipeline || !down_mm_pipeline) return 0;
         }
         if (use_cached_batch) {
@@ -45369,6 +45470,7 @@ int ds4_gpu_routed_moe_batch_tensor(
         const char *moe_path =
             use_q4_batch_expert_table ? "q4_table_pair_swiglu" :
             use_iq2_batch_selected_addr ? "iq2_batch_stream_addr" :
+            use_v41_stream_gather_addr ? (use_packed_mpp ? "v41_gather_packed_mpp" : "v41_gather_mm_id_mpp") :
             use_iq2_cached_batch ? (use_mm_id ? "iq2_cached_mm" : "iq2_cached_mv") :
             use_mm_id_pair_swiglu ? "mm_id_pair_swiglu" :
             use_mm_id ? "mm_id" :
@@ -45383,7 +45485,7 @@ int ds4_gpu_routed_moe_batch_tensor(
             if (!cb) return 0;
             moe_stage_t0 = ds4_gpu_now_ms();
         }
-        if (use_iq2_cached_batch && stream_resource_count &&
+        if (use_mm_id_stream_addr && stream_resource_count &&
             !ds4_gpu_stream_expert_cache_mark_entries_inflight(
                 stream_resources, stream_resource_count, 0)) return 0;
 #define DS4_METAL_PROFILE_MOE_STAGE(name) do { \
@@ -45567,14 +45669,14 @@ int ds4_gpu_routed_moe_batch_tensor(
                 ok = ds4_gpu_encode_mul_mm_id_mapped_tile_resources(cb,
                                                            gate_mm_pipeline,
                                                            &gate_mm_args,
-                                                           use_iq2_cached_batch ? stream_gate_addr_buf : gate_buf,
+                                                           use_mm_id_stream_addr ? stream_gate_addr_buf : gate_buf,
                                                            (NSUInteger)gate_inner,
                                                            use_packed_mpp ? g_moe_packed_rhs_buffer : xbuf,
                                                            use_packed_mpp ? 0 : ds4_gpu_tensor_offset(x),
                                                            gatebuf,
                                                            ds4_gpu_tensor_offset(gate),
                                                            packed_m32n128 ? 16384u : mm_id_mpp_active ? 12288u : 8192u,
-                                                           use_iq2_cached_batch ? stream_resources : NULL,
+                                                           use_mm_id_stream_addr ? stream_resources : NULL,
                                                            stream_resource_count, 0, stream_overflow_gate,
                                                            packed_m32n128 ? 32u : 64u);
                 DS4_METAL_PROFILE_MOE_STAGE("gate");
@@ -45583,14 +45685,14 @@ int ds4_gpu_routed_moe_batch_tensor(
                 ok = ds4_gpu_encode_mul_mm_id_mapped_tile_resources(cb,
                                                    up_mm_pipeline,
                                                    &gate_mm_args,
-                                                   use_iq2_cached_batch ? stream_up_addr_buf : up_buf,
+                                                   use_mm_id_stream_addr ? stream_up_addr_buf : up_buf,
                                                    (NSUInteger)up_inner,
                                                    use_packed_mpp ? g_moe_packed_rhs_buffer : xbuf,
                                                    use_packed_mpp ? 0 : ds4_gpu_tensor_offset(x),
                                                    upbuf,
                                                    ds4_gpu_tensor_offset(up),
                                                    packed_m32n128 ? 16384u : mm_id_mpp_active ? 12288u : 8192u,
-                                                   use_iq2_cached_batch ? stream_resources : NULL,
+                                                   use_mm_id_stream_addr ? stream_resources : NULL,
                                                    stream_resource_count, 1, stream_overflow_up,
                                                    packed_m32n128 ? 32u : 64u);
                 DS4_METAL_PROFILE_MOE_STAGE("up");
@@ -45881,14 +45983,14 @@ int ds4_gpu_routed_moe_batch_tensor(
                 if (ok) ok = ds4_gpu_encode_mul_mm_id_mapped_tile_resources(cb,
                                                        down_mm_pipeline,
                                                        &down_mm_args,
-                                                       use_iq2_cached_batch ? stream_down_addr_buf : down_buf,
+                                                       use_mm_id_stream_addr ? stream_down_addr_buf : down_buf,
                                                        (NSUInteger)down_inner,
                                                        use_packed_mpp ? g_moe_packed_rhs_buffer : midbuf,
                                                        use_packed_mpp ? 0 : ds4_gpu_tensor_offset(mid),
                                                        down_dst,
                                                        down_dst_off,
                                                        packed_m32n128 ? 16384u : mm_id_mpp_active ? 12288u : 8192u,
-                                                       use_iq2_cached_batch ? stream_resources : NULL,
+                                                       use_mm_id_stream_addr ? stream_resources : NULL,
                                                        stream_resource_count, 2, stream_overflow_down,
                                                        packed_m32n128 ? 32u : 64u);
             } else if (use_iq2_cached_batch) {

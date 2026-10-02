@@ -9108,7 +9108,7 @@ template [[host_name("kernel_moe_pack_rhs_f16")]] kernel moe_pack_rhs_t kernel_m
 
 template<typename block_q, short nl,
          void (*dequantize_func)(device const block_q *, short, thread half4x4 &),
-         int TileM = 64, int TileN = 32>
+         int TileM = 64, int TileN = 32, bool EXPERT_ADDRESSES = false>
 kernel void kernel_mul_mm_id_mpp_packed(
         constant ds4_metal_args_mul_mm_id &args,
         device const char *src0,
@@ -9137,6 +9137,18 @@ kernel void kernel_mul_mm_id_mpp_packed(
         return;
     }
 
+    /* The expert's weight base: whole-layer map with the nb02 stride, or the
+     * per-expert GPU address from the streaming expert cache's address table
+     * (cached bytes or a whole-layer overflow view, both the identical GGUF
+     * bytes). The tile iteration and accumulation are untouched. */
+    device const char *wsrc = src0;
+    if (EXPERT_ADDRESSES) {
+        wsrc = reinterpret_cast<device const char *>(
+            ((device const uint64_t *)src0)[expert]);
+    }
+    const uint64_t wbase = EXPERT_ADDRESSES ? 0 :
+        (uint64_t)(expert - args.tp_expert_base)*args.nb02;
+
     threadgroup half *sa = (threadgroup half *)shmem;
     auto tA0 = tensor(sa, dextents<int32_t, 2>(K, M));
     auto tA1 = tensor(sa + M*K, dextents<int32_t, 2>(K, M));
@@ -9155,8 +9167,7 @@ kernel void kernel_mul_mm_id_mpp_packed(
         if (tid >= M*2) return;
         const int row = min((int)tid/2, nr0 - 1);
         const int col = k + 16*(tid%2);
-        device const block_q *w = (device const block_q *)(src0 +
-            (uint64_t)(expert - args.tp_expert_base)*args.nb02 +
+        device const block_q *w = (device const block_q *)(wsrc + wbase +
             (r0 + row)*args.nb01);
         half4x4 values;
         dequantize_func(w + col/(16*nl), (col/16)%nl, values);
@@ -9189,6 +9200,8 @@ kernel void kernel_mul_mm_id_mpp_packed(
 typedef decltype(kernel_mul_mm_id_mpp_packed<block_iq2_xxs, QK_NL, dequantize_iq2_xxs>) mm_id_packed_t;
 template [[host_name("kernel_mul_mm_id_iq2_xxs_mpp_packed")]] kernel mm_id_packed_t kernel_mul_mm_id_mpp_packed<block_iq2_xxs, QK_NL, dequantize_iq2_xxs>;
 template [[host_name("kernel_mul_mm_id_q2_K_mpp_packed")]] kernel mm_id_packed_t kernel_mul_mm_id_mpp_packed<block_q2_K, QK_NL, dequantize_q2_K>;
+template [[host_name("kernel_mul_mm_id_iq2_xxs_mpp_packed_cached")]] kernel mm_id_packed_t kernel_mul_mm_id_mpp_packed<block_iq2_xxs, QK_NL, dequantize_iq2_xxs, 64, 32, true>;
+template [[host_name("kernel_mul_mm_id_q2_K_mpp_packed_cached")]] kernel mm_id_packed_t kernel_mul_mm_id_mpp_packed<block_q2_K, QK_NL, dequantize_q2_K, 64, 32, true>;
 template [[host_name("kernel_mul_mm_id_mxfp4_mpp_packed")]] kernel mm_id_packed_t kernel_mul_mm_id_mpp_packed<block_mxfp4, 2, dequantize_mxfp4>;
 template [[host_name("kernel_mul_mm_id_iq2_xxs_mpp_packed_m32n128")]] kernel mm_id_packed_t kernel_mul_mm_id_mpp_packed<block_iq2_xxs, QK_NL, dequantize_iq2_xxs, 32, 128>;
 template [[host_name("kernel_mul_mm_id_q2_K_mpp_packed_m32n128")]] kernel mm_id_packed_t kernel_mul_mm_id_mpp_packed<block_q2_K, QK_NL, dequantize_q2_K, 32, 128>;
@@ -9405,6 +9418,7 @@ template [[host_name("kernel_mul_mm_id_q2_K_f16_mpp")]]    kernel mul_mm_id_mpp_
 template [[host_name("kernel_mul_mm_id_iq2_xxs_f16_mpp")]] kernel mul_mm_id_mpp_f16_rhs_t kernel_mul_mm_id_mpp<half, half4x4, simdgroup_half8x8, half, half2x4, simdgroup_half8x8, block_iq2_xxs, QK_NL, dequantize_iq2_xxs, half, half4x4, half, half2x4>;
 template [[host_name("kernel_mul_mm_id_iq2_xxs_cached_f32_mpp")]] kernel mul_mm_id_mpp_t kernel_mul_mm_id_mpp<half, half4x4, simdgroup_half8x8, half, half2x4, simdgroup_half8x8, block_iq2_xxs, QK_NL, dequantize_iq2_xxs, float, float4x4, float, float2x4, true>;
 template [[host_name("kernel_mul_mm_id_iq2_xxs_cached_f16_mpp")]] kernel mul_mm_id_mpp_f16_rhs_t kernel_mul_mm_id_mpp<half, half4x4, simdgroup_half8x8, half, half2x4, simdgroup_half8x8, block_iq2_xxs, QK_NL, dequantize_iq2_xxs, half, half4x4, half, half2x4, true>;
+template [[host_name("kernel_mul_mm_id_q2_K_cached_f16_mpp")]]  kernel mul_mm_id_mpp_f16_rhs_t kernel_mul_mm_id_mpp<half, half4x4, simdgroup_half8x8, half, half2x4, simdgroup_half8x8, block_q2_K, QK_NL, dequantize_q2_K, half, half4x4, half, half2x4, true>;
 template [[host_name("kernel_mul_mm_id_mxfp4_f32_mpp")]]   kernel mul_mm_id_mpp_t kernel_mul_mm_id_mpp<half, half4x4, simdgroup_half8x8, half, half2x4, simdgroup_half8x8, block_mxfp4, 2, dequantize_mxfp4, float, float4x4, float, float2x4>;
 template [[host_name("kernel_mul_mm_id_mxfp4_f16_mpp")]]   kernel mul_mm_id_mpp_f16_rhs_t kernel_mul_mm_id_mpp<half, half4x4, simdgroup_half8x8, half, half2x4, simdgroup_half8x8, block_mxfp4, 2, dequantize_mxfp4, half, half4x4, half, half2x4>;
 

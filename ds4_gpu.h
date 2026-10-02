@@ -444,6 +444,10 @@ int ds4_gpu_qwen4_batch_mm_q8_tensor(
 uint64_t ds4_gpu_recommended_working_set_size(void);
 uint32_t ds4_gpu_stream_expert_cache_configured_count(void);
 uint32_t ds4_gpu_stream_expert_cache_current_count(void);
+/* True when the streaming sweep gather can bind the streaming address table
+ * while staying bit-identical to the whole-layer mm-id family (Metal only;
+ * referenced only from __APPLE__ code in ds4.c). */
+bool ds4_gpu_v41_stream_gather_parity_supported(void);
 typedef struct ds4_gpu_stream_expert_table {
     const void *model_map;
     uint64_t    model_size;

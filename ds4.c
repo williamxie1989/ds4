@@ -19,6 +19,7 @@
 #include <float.h>
 #include <inttypes.h>
 #include <ctype.h>
+#include <dlfcn.h>
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
@@ -41052,6 +41053,10 @@ static void ds41_graph_free(ds41_gpu_graph *g) {
 #ifdef __APPLE__
     /* Whatever encodes next publishes its own configuration first. */
     ds4_gpu_dsv41_set_measured_config(0);
+    /* Measurement only: the V4.1 graph paths have no memory-report call site,
+     * so the streaming expert-cache dump would never run on this family. */
+    if (g && getenv("DS4_METAL_MEMORY_REPORT"))
+        ds4_gpu_print_memory_report("before V4.1 graph free");
 #endif
     if (!g) return;
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
@@ -42347,9 +42352,14 @@ static bool ds41_route_batch(ds41_gpu_graph *g, const ds4_model *m,
     return true;
 }
 
+/* gather_streaming_experts binds the routed tables from the streaming expert
+ * cache (per-layer selected address table) instead of direct whole-tensor
+ * map views; the graph's streaming domain maps only static weights, so the
+ * gather is the only bind the batch rows can use there. Callers admit it
+ * only where the GPU-side batch kernels are known to take that route. */
 static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
                            const ds4_layer_weights *l, uint32_t il, uint32_t count,
-                           bool shared_owner) {
+                           bool shared_owner, bool gather_streaming_experts) {
     ds41_prefill_row *b = &g->batch;
     const uint64_t gate_row = routed_expert_row_bytes(l->ffn_gate_exps);
     const uint64_t down_row = routed_expert_row_bytes(l->ffn_down_exps);
@@ -42380,7 +42390,7 @@ static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
             gate_row * DS4_N_FF_EXP, gate_row, down_row * DS4_N_EMBD, down_row,
             DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD, b->selected, b->route_weights,
             DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, b->norm,
-            il, count, &mid_f16, true)) &&
+            il, count, &mid_f16, !gather_streaming_experts)) &&
         (!shared_owner || g->tp_rank != (il & 1u) ||
             ds4_gpu_add_tensor(b->routed, b->routed, b->shared, count * DS4_N_EMBD)) &&
         ds41_sum_partial_batch(g, b->routed, il, count);
@@ -42551,6 +42561,27 @@ static bool ds41_publish_measured_config(const ds41_gpu_graph *g, const ds4_weig
     return measured;
 }
 
+/* The decode queue's pipeline scheduling and the Engram step readers change
+ * only when the host commits and how the two table reads are issued; every
+ * dispatch and its order within the queue are unchanged, and the values are
+ * the same either way. They were tuned on the measured M3 Ultra
+ * configuration, and upstream #1090 generalized the pipeline to single-box
+ * text decode, which covers streaming: the trailing Engram table gets its
+ * own input, layer 13 stops draining, the logits head encodes early, and
+ * the table reads overlap layer 0. M5-class machines admit it for every
+ * single-device text configuration; quality, image, imatrix and TP keep the
+ * synchronous path they were validated on. */
+static bool ds41_decode_pipeline_admitted(const ds41_gpu_graph *g, bool measured_m3_ultra) {
+    if (g->tp_world != 1 || g->imatrix || g->image_count || g->quality) return false;
+    if (measured_m3_ultra) return true;
+#ifdef __APPLE__
+    return ds4_gpu_device_is_m5_apple_silicon() &&
+           !getenv("DS4_METAL_DISABLE_V41_DECODE_PIPELINE_PORTS");
+#else
+    return false;
+#endif
+}
+
 static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model *m,
                                              const ds4_weights *w, int token, float *logits) {
     if (!g || !g->valid || g->pos >= g->ctx || token < 0 || (uint32_t)token >= DS4_N_VOCAB) return false;
@@ -42591,7 +42622,7 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
      * dispatch and its order within the queue are unchanged. */
     const bool pipeline_layers =
 #ifdef __APPLE__
-        measured_m3_ultra && queue_layers && g->tp_world == 1 &&
+        ds41_decode_pipeline_admitted(g, measured_m3_ultra) && queue_layers &&
         !getenv("DS4_METAL_DISABLE_V41_DECODE_PIPELINE");
 #else
         false;
@@ -42602,7 +42633,8 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
      * values are the same either way. */
     ds4_engram_step engram_step;
     bool engram_pending = false;
-    if (measured_m3_ultra && !ds41_image_at(g, g->pos) &&
+    const bool step_readers = ds41_decode_pipeline_admitted(g, measured_m3_ultra);
+    if (step_readers && !ds41_image_at(g, g->pos) &&
         !getenv("DS4_DISABLE_V41_ENGRAM_STEP_READERS")) {
         float *step_rows[DS4_ENGRAM_LAYERS] = {g->rows[0], g->rows[1]};
         if (pipeline_layers && !getenv("DS4_DISABLE_V41_ENGRAM_STEP_OVERLAP")) {
@@ -42674,6 +42706,29 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
 #endif
         const bool drain = !queue_layers || (!pipeline_layers && il == 13) || last;
         if (drain && !ds4_gpu_end_commands()) ok = false;
+        /* Measurement only: a compact binary trace of the routed-expert
+         * selections per decode token, replayed offline against the expert
+         * cache's dual (DRAM/SSD) ledger. The read must follow the layer's
+         * drain, so a trace arm runs with DS4_METAL_DISABLE_V41_DECODE_QUEUE=1
+         * to drain every layer; timing from such a run is not representative. */
+        static FILE *expert_trace;
+        static int expert_trace_checked;
+        if (!expert_trace_checked) {
+            expert_trace_checked = 1;
+            const char *const tp = getenv("DS4_V41_TRACE_EXPERTS");
+            if (tp) {
+                expert_trace = fopen(tp, "wb");
+                if (!expert_trace) fprintf(stderr, "ds4: cannot open expert trace %s\n", tp);
+            }
+        }
+        if (ok && expert_trace && drain) {
+            const int32_t *const sel = ds4_gpu_tensor_contents(g->selected);
+            if (sel) {
+                fwrite(&g->pos, sizeof g->pos, 1, expert_trace);
+                fwrite(&il, sizeof il, 1, expert_trace);
+                fwrite(sel, sizeof(int32_t), DS4_N_EXPERT_USED, expert_trace);
+            }
+        }
         /* Commit the queued layer without waiting so the GPU starts it while
          * the CPU encodes the next one: 21.6 -> 23.1 t/s on top of the queue
          * (M3 Ultra, Q4 resident, greedy output byte-identical).
@@ -42783,7 +42838,12 @@ static bool ds41_tp_batch_enabled(const ds41_gpu_graph *g) {
         !getenv("DS4_METAL_DISABLE_V41_BATCH_HC"));
 }
 
-static uint32_t ds41_prefill_count(const ds41_gpu_graph *g, uint32_t remaining) {
+static bool ds41_streaming_sweep_moe_gather_admitted(const ds41_gpu_graph *g,
+                                                     const ds4_weights *w,
+                                                     uint32_t rows);
+static uint32_t ds41_prefill_count(const ds41_gpu_graph *g,
+                                   const ds4_weights *w,
+                                   uint32_t remaining) {
     /* TP batches use the bulk protocol; row-gate ablations stay token-major. */
     if (!ds41_tp_batch_enabled(g) || g->imatrix ||
         getenv("DS4_METAL_DISABLE_V41_LAYER_PREFILL")) return 1;
@@ -42802,14 +42862,30 @@ static uint32_t ds41_prefill_count(const ds41_gpu_graph *g, uint32_t remaining) 
         ds4_gpu_stream_expert_cache_configured_count() >= DS4_N_LAYER * DS4_N_EXPERT / 2u)
         minimum = 1024u;
 #endif
+    /* P0d (HANDOFF-V41-STREAMING-SMALL-PREFILL 14.5): the 256/1024 floors
+     * date from the era where an append sweep read whole expert layers from
+     * disk, so tiny appends were cheaper one token at a time. The streaming
+     * gather removed that premise: inside the parity domain the sweep reads
+     * only the selected experts and runs the bit-identical whole-layer
+     * kernel family, beating the token-major walk several times over at
+     * every admitted row count. Lower the floor to the gather's own floor;
+     * rows 2..31 keep the token-major path the address table does not
+     * mirror. */
+    if (g->streaming && g->tp_world == 1 && remaining >= 32u && minimum > 32u &&
+        ds41_streaming_sweep_moe_gather_admitted(g, w, remaining))
+        minimum = 32u;
     if (remaining < minimum) return 1;
-#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
+#if !defined(DS4_ROCM_BUILD)
     /* Keep a medium SSD append in one layer sweep without changing its
-     * 2048-row arithmetic partitions. Tiny tails retain the exact row path. */
+     * 2048-row arithmetic partitions. Tiny tails retain the exact row path.
+     * The sweep body consumes the unaligned tail through the same byte-offset
+     * carry copy the shipped CUDA path uses; the carry copy has no 2048
+     * alignment requirement. Apple had been excluded on caution only. */
     if (g->streaming && g->tp_world == 1 && g->prefill_cap >= 2048u &&
         g->carry_cap >= remaining &&
         remaining > 2048u && remaining < 8192u && remaining % 2048u >= 256u &&
         !getenv("DS4_CUDA_DISABLE_SSD_MEDIUM_SWEEP") &&
+        !getenv("DS4_METAL_DISABLE_V41_SSD_MEDIUM_SWEEP") &&
         !getenv("DS4_METAL_DISABLE_V41_WIDE_PREFILL")) return remaining;
 #endif
     if (g->carry_cap && remaining >= 4096u &&
@@ -43058,10 +43134,86 @@ static uint32_t ds41_encoder_chunk_cap(const ds41_gpu_graph *g, uint32_t count) 
     return g->prefill_cap;
 }
 
+/* The decoder suffix gate is a measured-size threshold, not a geometry limit:
+ * the shrinking-tail schedule only requires layer 20 to hold its full
+ * 1 + 19 * 127 dependency rows, so the sweep must reach 4096 aligned rows for
+ * the schedule to pay off (the 2542 floor keeps the first - 127 warm window
+ * in range). The M5 Max streaming domain measured 4096-row sweeps at +9.3%
+ * steady (2026-10-01 ABBA, non-overlapping clusters). Correctness follows the
+ * same two-part contract the shipped 8192 gate uses: dependency pruning is
+ * bit-exact under held arithmetic (batch-off isolation test at 4096 rows
+ * PASS), while batch-on sweeps change GEMM partitioning and so carry the same
+ * tiling-rounding class as the published 8192 behavior (band fixture: paired
+ * nll drift within +-2.5%, zero first_match/lcp flips). The default sits at
+ * the first wide band; DS4_V41_DECODER_SUFFIX_MIN_ROWS=8192 restores the old
+ * gate. */
+static uint32_t ds41_decoder_suffix_min_rows(void) {
+    const char *env = getenv("DS4_V41_DECODER_SUFFIX_MIN_ROWS");
+    if (!env || !*env) return 4096u;
+    char *end = NULL;
+    const unsigned long value = strtoul(env, &end, 10);
+    if (!end || *end || value < 2542ul || value > UINT32_MAX) return 8192u;
+    return (uint32_t)value;
+}
+
 /* Process rows in causal order within each layer. Selection/candidate rows
  * travel down the stack with their token, while only source layers append KV.
  * A failed partial chunk cannot be snapshotted: its layers have different
  * frontiers, so the caller must rebuild from its retained token history. */
+/* P0b (HANDOFF-V41-STREAMING-SMALL-PREFILL §6): a small streaming append
+ * inside ds41_graph_prefill_sweep binds its routed experts through the
+ * selected-address gather that single-token decode and verification rows
+ * already use, so the sweep preads the cache-miss set instead of the whole
+ * expert table. This predicate decides the layer map and the MoE bind
+ * together, so it must mirror ds4_metal.m's selected-addr gate exactly: the
+ * decode-span map holds no expert bytes for a whole-tensor bind to fall back
+ * to. rows is the largest per-chunk row count the sweep will pass.
+ *
+ * Gate status (HANDOFF §13/§13.4): PASSED on this build. The P0b gate judged
+ * the sweep-size gather DRIFT — the whole-layer arm dispatched the mm_id tile
+ * family (f16 mid, IQ2_XXS) while the gather arm dispatched the mul_mv_addr
+ * pair family (f32 mid). The kernel port closed the gap: at rows >= 32
+ * ds4_metal.m binds the streaming address table into the exact whole-layer
+ * mm-id family (packed TensorOps at >=512 rows, plain mpp mm-id at 32..511),
+ * and the --moe-bind-parity microtest (rows 2..1024, layers 0/20/39) plus the
+ * frontier-logits gate (831/931 appends, strict identity) judged it
+ * bit-identical. The gather is now the default inside the parity mirror's
+ * TensorOps domain (ds4_gpu_v41_stream_gather_parity_supported); rows 2..31
+ * stay on the whole-layer bind because below 32 the whole-layer arm uses
+ * mul_mv kernels the address table does not mirror at sweep sizes. Opt out
+ * with DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER. */
+static bool ds41_streaming_sweep_moe_gather_admitted(const ds41_gpu_graph *g,
+                                                     const ds4_weights *w,
+                                                     uint32_t rows) {
+#ifdef __APPLE__
+    if (getenv("DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER") ||
+        getenv("DS4_METAL_DISABLE_V41_STREAM_GATHER_MM_ID")) return false;
+    if (!ds4_gpu_v41_stream_gather_parity_supported()) return false;
+    if (!g->streaming || g->tp_world != 1 || g->quality || g->imatrix ||
+        g->image_count || rows < 32u || DS4_N_EXPERT_USED != 6) return false;
+    if (getenv("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR") ||
+        getenv("DS4_METAL_DISABLE_STREAMING_EXPERT_ADDR_TABLE") ||
+        getenv("DS4_METAL_DISABLE_ROUTED_PAIR_SWIGLU_FUSION") ||
+        getenv("DS4_METAL_MOE_WRITE_CLAMPED_ACT")) return false;
+    if (ds4_gpu_stream_expert_cache_configured_count() < DS4_N_EXPERT) return false;
+    const ds4_layer_weights *l = &w->layer[0];
+    if (l->ffn_gate_exps->type != DS4_TENSOR_IQ2_XXS ||
+        l->ffn_up_exps->type != DS4_TENSOR_IQ2_XXS ||
+        l->ffn_down_exps->type != DS4_TENSOR_Q2_K) return false;
+    uint32_t max_rows = 1024u;
+    const char *env = getenv("DS4_METAL_STREAMING_PREFILL_BATCH_SELECTED_ADDR_MAX");
+    if (env && env[0]) {
+        char *end = NULL;
+        const long v = strtol(env, &end, 10);
+        if (end != env) max_rows = v <= 0 ? 0 : (uint32_t)v;
+    }
+    return rows <= max_rows;
+#else
+    (void)g; (void)w; (void)rows;
+    return false;
+#endif
+}
+
 static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
                               const ds4_weights *w, const int *tokens, uint32_t total_count,
                               ds4_session_progress_fn progress, void *progress_ud,
@@ -43080,9 +43232,20 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
     const bool batch_core = batch_attention && !getenv("DS4_METAL_DISABLE_V41_BATCH_CORE");
     const bool batch_hc = batch_attention && batch_moe &&
         !getenv("DS4_METAL_DISABLE_V41_BATCH_HC");
-    const bool decoder_suffix = wide && total_count >= 8192u &&
+    const bool decoder_suffix = wide &&
+        total_count >= ds41_decoder_suffix_min_rows() &&
         !getenv("DS4_METAL_DISABLE_V41_DECODER_SUFFIX");
     if ((encoder_only || resume_encoder) && !decoder_suffix) return false;
+    /* P0b (HANDOFF-V41 §6): a small streaming append binds routed experts
+     * through the selected-addr gather the verification rows already use.
+     * One decision drives both the per-layer map and the MoE bind below,
+     * because the decode-span map holds no expert bytes for a whole-tensor
+     * bind to fall back to. Wide sweeps keep the whole-layer schedule. */
+    const uint32_t gather_rows =
+        total_count < encoder_chunk ? total_count : encoder_chunk;
+    const bool gather_sweep = g->streaming && !wide && !encoder_only &&
+        !resume_encoder &&
+        ds41_streaming_sweep_moe_gather_admitted(g, w, gather_rows);
     uint32_t (*ids)[2][DS4_ENGRAM_COLS] = g->prefill_ids;
     ds4_engram_history next_history = g->history;
     if (!ds41_hash_tokens(g, &next_history, tokens, total_count, &ids[0][0][0]))
@@ -43128,9 +43291,11 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
             const uint32_t first_count = total_count < encoder_chunk ? total_count : encoder_chunk;
             if (!g->encoder_resident || il >= 20)
                 ok = metal_graph_stream_prepare_join_layer(NULL, m, w, il, first_count,
-                        false, true, false, false, &prepare, 1);
+                        false, true, false, gather_sweep, &prepare, 1);
 #endif
-            if (ok) ok = metal_graph_stream_map_layer(m, w, il);
+            if (ok) ok = gather_sweep ?
+                metal_graph_stream_map_layer_decode(m, w, il) :
+                metal_graph_stream_map_layer(m, w, il);
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
             /* Below 2K, unused expert reads outweigh the overlap. */
             if (ok && total_count >= 2048u) {
@@ -43151,7 +43316,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
             if (ok && il + 1u < (encoder_only ? 20u : DS4_N_LAYER) &&
                 (!g->encoder_resident || il + 1u >= 20))
                 ok = metal_graph_stream_prepare_start_if_needed(NULL, m, w, il + 1u, first_count,
-                        false, true, false, false, &prepare, 1);
+                        false, true, false, gather_sweep, &prepare, 1);
 #endif
         }
         const double t_map = profile ? now_sec() : 0;
@@ -43316,7 +43481,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
                 }
             }
             if (ok && batch_moe) {
-                ok = ds41_moe_batch(g, m, &w->layer[il], il, count, false);
+                ok = ds41_moe_batch(g, m, &w->layer[il], il, count, false, gather_sweep);
                 DS41_STAGE("shared/routed ffn");
                 if (ok && batch_hc) {
                     ok = ds4_gpu_add_tensor(active.block, active.routed, active.shared, count * DS4_N_EMBD) &&
@@ -43435,6 +43600,44 @@ static uint32_t ds41_short_prefill_count(const ds41_gpu_graph *g, const ds4_weig
     return remaining < DS4_TP_BATCH_MAX_ROWS ? remaining : DS4_TP_BATCH_MAX_ROWS;
 }
 
+/* The streaming verification rows bind the routed experts through the
+ * gathered selected-expert batch kernels: the host reads each layer's GPU-
+ * selected ids back, the expert cache pages them in, and an address table
+ * feeds the fused pair/matvec kernels -- the same gather the single-token
+ * streaming decode runs, in batch form. It is admitted only under the
+ * kernels' own preconditions (the V41 Q2 routed recipe, a cache that can
+ * hold one layer's experts at once, the row window those kernels accept)
+ * so a miss never rebinds a batch that could not complete; drafting stays
+ * off instead, and the session decodes one token at a time as before. */
+static bool ds41_streaming_verify_moe_gather_admitted(const ds41_gpu_graph *g,
+                                                      const ds4_weights *w,
+                                                      uint32_t rows) {
+#ifdef __APPLE__
+    if (!g->streaming || g->tp_world != 1 || g->quality || g->imatrix ||
+        g->image_count || rows < 2u) return false;
+    if (getenv("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR") ||
+        getenv("DS4_METAL_DISABLE_STREAMING_EXPERT_ADDR_TABLE") ||
+        getenv("DS4_METAL_DISABLE_V41_STREAMING_VERIFY_GATHER")) return false;
+    if (ds4_gpu_stream_expert_cache_configured_count() < DS4_N_EXPERT) return false;
+    const ds4_layer_weights *l = &w->layer[0];
+    if (l->ffn_gate_exps->type != DS4_TENSOR_IQ2_XXS ||
+        l->ffn_up_exps->type != DS4_TENSOR_IQ2_XXS ||
+        l->ffn_down_exps->type != DS4_TENSOR_Q2_K) return false;
+    uint32_t max_rows = 800u;
+    const char *env = getenv("DS4_METAL_STREAMING_PREFILL_BATCH_SELECTED_ADDR_MAX");
+    if (env && env[0]) {
+        char *end = NULL;
+        const long v = strtol(env, &end, 10);
+        if (end != env) max_rows = v <= 0 ? 0 : (uint32_t)v;
+    }
+    if (rows > max_rows) return false;
+    return true;
+#else
+    (void)g; (void)w; (void)rows;
+    return false;
+#endif
+}
+
 static DS4_MAYBE_UNUSED bool ds41_graph_step_batch_spec(ds41_gpu_graph *const *graphs, const int *tokens, int count,
                                    uint32_t prefill_rows,
                                    const ds4_model *model, const ds4_weights *weights,
@@ -43471,6 +43674,12 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch_spec(ds41_gpu_graph *const *g
 #endif
     const bool shared_owner = g->tp_world == 2 &&
         !getenv("DS4_METAL_DISABLE_V41_TP_SHARED_OWNER");
+    /* Streaming verification rows read the routed tables through the same
+     * per-layer selected-expert gather the single-token streaming decode
+     * uses; the whole-layer map the resident batch kernels bind is a sweep
+     * prefill artifact that verification never creates. */
+    const bool gather_moe = spec && g->streaming &&
+        ds41_streaming_verify_moe_gather_admitted(g, weights, rows);
     ds41_prefill_row active = {0};
     ds4_engram_history history[DS4_TP_BATCH_MAX_ROWS];
     uint32_t positions[DS4_TP_BATCH_MAX_ROWS];
@@ -43553,7 +43762,7 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch_spec(ds41_gpu_graph *const *g
         if (ok) ok = ds41_sum_partial_batch(g, active.block, il, rows);
         if (ok) ok = ds4_gpu_dsv41_quantize(active.block, DS4_N_EMBD, rows, DS4_V41_BF16) &&
             ds41_after_attention_batch(&active, model, l, rows) &&
-            ds41_moe_batch(g, model, l, il, rows, shared_owner) &&
+            ds41_moe_batch(g, model, l, il, rows, shared_owner, gather_moe) &&
             (shared_owner ? ds4_gpu_tensor_copy(active.block, 0, active.routed, 0,
                 (uint64_t)rows * DS4_N_EMBD * sizeof(float)) :
                 ds4_gpu_add_tensor(active.block, active.routed, active.shared, rows * DS4_N_EMBD)) &&
@@ -43715,9 +43924,9 @@ static bool ds41_draft_seed(ds41_draft *d, uint32_t rows) {
     ds4_gpu_tensor *hidden = ds4_gpu_tensor_view(d->spec.hidden, 0, (uint64_t)rows * width * sizeof(float));
     ds4_gpu_tensor *main_x = ds4_gpu_tensor_view(d->main_x, 0, (uint64_t)rows * DS4_N_EMBD * sizeof(float));
     ds4_gpu_tensor *kv = ds4_gpu_tensor_view(d->main_kv, 0, (uint64_t)rows * 512u * sizeof(float));
-    bool ok = hidden && main_x && kv &&
-        ds41_matmul_batch(main_x, dm, dw->stage[0].main_proj, hidden, rows, true) &&
-        ds41_norm_batch(main_x, main_x, dm, dw->stage[0].main_norm, rows);
+    bool ok = hidden && main_x && kv;
+    if (ok) ok = ds41_matmul_batch(main_x, dm, dw->stage[0].main_proj, hidden, rows, true);
+    if (ok) ok = ds41_norm_batch(main_x, main_x, dm, dw->stage[0].main_norm, rows);
     for (uint32_t st = 0; ok && st < dw->n_stages; st++) {
         const ds4_layer_weights *l = &dw->stage[st].block;
         ok = ds41_matmul_batch(kv, dm, l->attn_kv, main_x, rows, true) &&
@@ -43854,6 +44063,11 @@ static uint32_t ds41_draft_block(ds41_gpu_graph *g, ds41_draft *d, const ds4_mod
     }
     if (ok) ok = ds4_gpu_end_commands() != 0;
     else if (ds4_gpu_commands_active()) (void)ds4_gpu_end_commands();
+    /* The block's argmax chain finishes on the GPU; the host reads its ids,
+     * final_x and markov rows right after, so wait for the committed work.
+     * The streaming queue is deeper than the resident one and loses this
+     * race without an explicit synchronize. */
+    if (ok) ds4_gpu_synchronize();
     ds4_gpu_tensor_free(logits); ds4_gpu_tensor_free(final_x);
 #define DS41_DRAFT_FREE(name, width) ds4_gpu_tensor_free(active.name);
     DS41_PREFILL_ROWS(DS41_DRAFT_FREE)
@@ -43870,7 +44084,31 @@ static uint32_t ds41_draft_block(ds41_gpu_graph *g, ds41_draft *d, const ds4_mod
         for (uint32_t k = 0; k < DS4_N_EMBD; k++) score += (double)proj[k] * x[(uint64_t)i * DS4_N_EMBD + k];
         for (uint32_t k = 0; k < rank; k++) score += (double)proj[DS4_N_EMBD + k] * embed[(uint64_t)i * rank + k];
         drafts[i] = out[i + 1u];
-        confidence[i] = (float)(1.0 / (1.0 + exp(-score)));
+        /* The sigmoid goes through libm via the dynamic symbol table: this
+         * translation unit compiles with -ffast-math, which rewrites the
+         * direct exp() call into a form that misbehaves at exp()'s domain
+         * boundaries (observed: the confidence gate held NaN at any
+         * threshold while every scanned input was finite, on the clang
+         * arm64 line). An indirect call is opaque to the optimizer; the
+         * host path is once per draft, so it costs nothing. */
+        typedef double (*ds4_libm_exp_fn)(double);
+        static ds4_libm_exp_fn ds4_exp_libm = NULL;
+        static bool ds4_exp_libm_seen = false;
+        if (!ds4_exp_libm_seen) {
+            ds4_exp_libm = (ds4_libm_exp_fn)dlsym(RTLD_NEXT, "exp");
+            if (!ds4_exp_libm) ds4_exp_libm = (ds4_libm_exp_fn)dlsym(RTLD_DEFAULT, "exp");
+            ds4_exp_libm_seen = true;
+        }
+        const double neg = -score;
+        const double e = ds4_exp_libm ? ds4_exp_libm(neg) : 1.0;
+        double p = 1.0 / (1.0 + e);
+        /* Belt and braces: -ffast-math may fold even the store-reload. */
+        if (!(p >= 0.0 && p <= 1.0)) {
+            volatile double held = p;
+            (void)held;
+            p = 0.0;
+        }
+        confidence[i] = (float)p;
     }
     return rows;
 }
@@ -73567,10 +73805,15 @@ static int ds4_engine_open_internal(ds4_engine **out,
             !load_slice && !opt->glm_mtp &&
             !opt->first_token_test && !opt->metal_graph_test &&
             /* DSpark drafts for the resident, single-device Metal graph, whose
-             * verification equals one-token decode. */
+             * verification equals one-token decode.  The streaming ports gate
+             * (P1-A lineage) lets M5 experiments opt the same path into
+             * ssd-streaming behind an explicit env; draft weights arrive as
+             * whole-region model-map views, independent of the expert cache. */
             ((!opt->dspark && (!opt->mtp_path || !opt->mtp_path[0])) ||
-             (e->backend == DS4_BACKEND_METAL && !opt->ssd_streaming &&
-              opt->tp.role == DS4_TP_NONE)) &&
+             (e->backend == DS4_BACKEND_METAL &&
+              opt->tp.role == DS4_TP_NONE &&
+              (!opt->ssd_streaming ||
+               getenv("DS4_EXPERIMENTAL_DSPARK_STREAMING") != NULL))) &&
             (!opt->directional_steering_file || !opt->directional_steering_file[0]) &&
             e->power_percent == 100 && opt->context_size <= 1048576;
         if (!supported) {
@@ -74074,7 +74317,8 @@ static int ds4_engine_open_internal(ds4_engine **out,
     }
     if (opt->mtp_path && opt->mtp_path[0] &&
         opt->distributed.role == DS4_DISTRIBUTED_NONE) {
-        if (e->ssd_streaming) {
+        if (e->ssd_streaming &&
+            !(opt->dspark && getenv("DS4_EXPERIMENTAL_DSPARK_STREAMING"))) {
             fprintf(stderr, "ds4: --ssd-streaming is not compatible with --mtp-model yet\n");
             ds4_engine_close(e);
             *out = NULL;
@@ -78538,7 +78782,7 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
                 ds41_short_prefill_count(g, &e->weights, remaining);
             const uint32_t count = short_count ? short_count : g->encoder_resident ?
                 (remaining - 512u < g->prefill_cap ? remaining - 512u : g->prefill_cap) :
-                ds41_prefill_count(g, remaining);
+                ds41_prefill_count(g, &e->weights, remaining);
             const bool defer_decoder = !g->encoder_resident && count >= 16384u &&
                 remaining - count >= 8192u &&
                 !getenv("DS4_METAL_DISABLE_V41_DECODER_SUFFIX") &&
@@ -87610,7 +87854,17 @@ static int ds4_session_ds41_spec_cycle(ds4_session *s, int first_token, int max_
         payload_set_err(err, errlen, "V4.1 speculative decode requires a synchronized checkpoint");
         return -1;
     }
-    const bool drafting = !g->streaming && !g->quality && !g->imatrix && !g->image_count &&
+    /* Streaming opt-in (P1-A lineage): the draft reads its weights through the
+     * support model's own map, so the expert cache stays untouched. The
+     * verification rows bind their routed experts through the streaming
+     * gather; where those kernels are not admitted the cycle stays a plain
+     * decode rather than binding a resident whole-tensor view the streaming
+     * domain does not map. */
+    const bool drafting = (!g->streaming ||
+        (getenv("DS4_EXPERIMENTAL_DSPARK_STREAMING") != NULL &&
+         ds41_streaming_verify_moe_gather_admitted(g, &e->weights,
+             DS4_TP_BATCH_MAX_ROWS))) &&
+        !g->quality && !g->imatrix && !g->image_count &&
         g->tp_world == 1 && e->dspark_weights.missing_tensors == 0 &&
         e->dspark_weights.invalid_tensors == 0 && e->dspark_weights.metadata_errors == 0;
     if (drafting && !s->ds41_draft_ready) {
