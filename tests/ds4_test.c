@@ -9,6 +9,7 @@
 
 bool ds4_test_dspark_cache_window_crop(void);
 bool ds4_test_dspark_prefix_capture(ds4_engine *engine, const ds4_tokens *prompt);
+bool ds4_test_control_token_roundtrip(ds4_engine *engine);
 
 static ds4_engine *test_engine_fast;
 static ds4_engine *test_engine_quality;
@@ -784,6 +785,18 @@ static void test_fill_copy_f32_patterns(void *dst, uint32_t n, uint32_t salt) {
         const uint32_t bits = test_copy_f32_patterns[(i + salt) % n_patterns];
         memcpy(bytes + (uint64_t)i * sizeof(bits), &bits, sizeof(bits));
     }
+}
+
+/* Regression: literal CONTROL-token text in replayed content must
+ * re-tokenize to the single special id the vocab declares.  Before the
+ * replay whitelist was vocab-driven only a dozen hardcoded markers
+ * round-tripped; any other marker the model sampled as one token came
+ * back as plain BPE pieces on the next request, breaking exact-prefix
+ * KV reuse on every following turn. */
+static void test_control_token_text_roundtrip(void) {
+    ds4_engine *engine = test_get_engine(false);
+    if (!engine) return;
+    TEST_ASSERT(ds4_test_control_token_roundtrip(engine));
 }
 #endif
 
@@ -7355,6 +7368,7 @@ static const ds4_test_entry test_entries[] = {
     {"--glm53-continued-prefill", "glm53-continued-prefill", "GLM 5.3 resumed prefill latency, throughput, progress, and cold-path agreement", test_glm53_continued_prefill},
     {"--metal-kernels", "metal-kernels", "isolated Metal kernel numeric regressions", test_metal_kernel_group},
     {"--metal-tensor-equivalence", "metal-tensor-equivalence", "fast/quality Metal prompt-logit and greedy equivalence", test_metal_mpp_equivalence},
+    {"--control-token-roundtrip", "control-token-roundtrip", "literal CONTROL-token text in replayed content round-trips to the sampled single special id", test_control_token_text_roundtrip},
     {"--streaming-decode-prefill-correctness", "streaming-decode-prefill-correctness", "streaming decode-style cold prefill drift and repeatability", test_streaming_decode_prefill_correctness},
     {"--mtp-verify-depth", "mtp-verify-depth", "MTP speculative verify commits autoregressive-identical tokens at draft depth > 2", test_mtp_verify_depth},
     {"--dspark-verify-depth", "dspark-verify-depth", "DSpark speculative verify commits autoregressive-identical tokens at draft depth > 2", test_dspark_verify_depth},
