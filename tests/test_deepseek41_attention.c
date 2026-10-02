@@ -64,7 +64,11 @@ int main(void){
   ds4_gpu_dsv41_arm_attention_epilogue(1,false,true);
   CHECK(ds4_gpu_begin_commands());
   CHECK(ds4_gpu_attention_decode_heads_tensor(out,model,16384,0,q,raw,128,128,0,comp,0,512,NULL,0,H,D));
-  CHECK(!ds4_gpu_dsv41_attention_epilogue_used());
+  /* Since the epilogue fusion ported to the streaming decode pipeline on
+   * admitted devices, it follows the same bit-exact activation admission
+   * as the qb_bf16 arm (same gate, and this loop keeps both rollback envs
+   * clear): on under the admitted streaming port, off under quality. */
+  CHECK(ds4_gpu_dsv41_attention_epilogue_used()==ds4_gpu_dsv41_qb_bf16_admitted());
   CHECK(ds4_gpu_end_commands());
  }
  ds4_gpu_set_quality(false);ds4_gpu_set_ssd_streaming(false);

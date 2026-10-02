@@ -37,7 +37,8 @@ static int check_dispatch(void) {
                 uint32_t expected = cold[i];
 #ifdef __APPLE__
                 if (warm && cache == half && remaining[i] < 1024) expected = 1;
-#elif !defined(DS4_ROCM_BUILD)
+#endif
+#if !defined(DS4_ROCM_BUILD)
                 if (remaining[i] > 2048 && remaining[i] < 8192 && remaining[i] % 2048 >= 256)
                     expected = remaining[i];
 #endif
