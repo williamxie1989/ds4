@@ -42452,7 +42452,11 @@ static bool ds41_streaming_sweep_moe_gather_admitted(const ds41_gpu_graph *g,
     if (l->ffn_gate_exps->type != DS4_TENSOR_IQ2_XXS ||
         l->ffn_up_exps->type != DS4_TENSOR_IQ2_XXS ||
         l->ffn_down_exps->type != DS4_TENSOR_Q2_K) return false;
-    uint32_t max_rows = 1024u;
+    /* P0f (HANDOFF-V41-STREAMING-SMALL-PREFILL 14.7): the window now covers
+     * one full prefill tail chunk (tail_cap = min(prefill_cap, 2048)).
+     * Whole-layer sweeps above 1024 rows lost 2.6x to gather in the 1002
+     * A/B/C sweep (55-63/84 vs 220-248 t/s at 1524 rows over 40..55k). */
+    uint32_t max_rows = 2048u;
     const char *env = getenv("DS4_METAL_STREAMING_PREFILL_BATCH_SELECTED_ADDR_MAX");
     if (env && env[0]) {
         char *end = NULL;

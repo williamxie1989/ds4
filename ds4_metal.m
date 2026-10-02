@@ -14838,8 +14838,9 @@ static uint32_t ds4_gpu_stream_prefill_batch_selected_addr_auto_max(
     /* Small streaming sweeps (HANDOFF-V41 P0b) pass force_resident=false
      * with the layer mapped decode-span only; they must clear this window
      * or the whole-tensor bind would find no expert bytes to bind. The
-     * ds4.c sweep admission mirrors this default exactly. */
-    if (n_total_expert == 384) return 1024u;
+     * ds4.c sweep admission mirrors this default exactly. P0f: 1024 -> 2048
+     * to cover one full prefill tail chunk (see ds4.c admission). */
+    if (n_total_expert == 384) return 2048u;
     if (n_total_expert == 256) return 760u;
     return 0;
 }
