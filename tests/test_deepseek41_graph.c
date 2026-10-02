@@ -1222,12 +1222,15 @@ static int check_decoder_suffix(const char *path, const char *prompt_path) {
     REQUIRE(imatrix_read_text_file(prompt_path, &prompt, &prompt_bytes));
     REQUIRE(ds4_engine_open(&engine, &opt) == 0);
     ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
-    REQUIRE(tokens.len > 16386);
+    const uint32_t suffix_count = getenv("DS4_TEST_SUFFIX_COUNT") ?
+        (uint32_t)atoi(getenv("DS4_TEST_SUFFIX_COUNT")) : 8192u;
+    REQUIRE(suffix_count >= 4096u && suffix_count <= 8192u);
+    REQUIRE(tokens.len > (int)(2 * suffix_count + 2));
     REQUIRE(ds4_session_create(&control, engine, 18432) == 0);
     REQUIRE(ds4_session_create(&candidate, engine, 18432) == 0);
     ds41_gpu_graph *a = &control->ds41_graph, *b = &candidate->ds41_graph;
     for (uint32_t pass = 0; pass < 2; pass++) {
-        const uint32_t start = a->pos, count = 8192;
+        const uint32_t start = a->pos, count = suffix_count;
         setenv("DS4_METAL_DISABLE_V41_DECODER_SUFFIX", "1", 1);
         double t0 = now_sec();
         REQUIRE(ds41_graph_prefill(a, &engine->model, &engine->weights,
