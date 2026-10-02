@@ -42470,6 +42470,30 @@ static bool ds41_streaming_sweep_moe_gather_admitted(const ds41_gpu_graph *g,
 #endif
 }
 
+/* P0g (HANDOFF-V41-STREAMING-SMALL-PREFILL 16/17): gather sweeps can run the
+ * prepare slots as a ring; explicit DS4_METAL/ROCM_*_PREPARE_AHEAD picks the
+ * depth (1 = pre-P0g single-layer look-ahead). The getter is sweep-local on
+ * purpose: retiming it must not touch the V4/GLM layer-major rings that read
+ * the shared metal_graph_stream_prefill_layer_prepare_ahead(). The default
+ * stays 1: the 2026-10-02 speed gates (17.4/17.5) showed no gain in any
+ * measurable regime — inside gather the ring only pre-reads the decode span
+ * while the expert miss bytes are router-data-bound — and D>1 trended a few
+ * percent negative. Raising the default needs new evidence first (17.6). */
+#define DS41_SWEEP_PREPARE_AHEAD_DEFAULT 1u
+
+static uint32_t ds41_streaming_sweep_prepare_ahead(void) {
+    const char *env = glm_graph_env_value(
+            "DS4_ROCM_STREAMING_PREFILL_LAYER_PREPARE_AHEAD",
+            "DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_AHEAD");
+    if (!env || !env[0]) return DS41_SWEEP_PREPARE_AHEAD_DEFAULT;
+    char *end = NULL;
+    unsigned long v = strtoul(env, &end, 10);
+    if (end == env || *end != '\0' || v == 0) return 1;
+    if (v > DS4_STREAM_PREFILL_MAX_PREPARE_AHEAD)
+        return DS4_STREAM_PREFILL_MAX_PREPARE_AHEAD;
+    return (uint32_t)v;
+}
+
 static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
                               const ds4_weights *w, const int *tokens, uint32_t total_count,
                               ds4_session_progress_fn progress, void *progress_ud,
@@ -42502,6 +42526,17 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
     const bool gather_sweep = g->streaming && !wide && !encoder_only &&
         !resume_encoder &&
         ds41_streaming_sweep_moe_gather_admitted(g, w, gather_rows);
+    /* P0g (HANDOFF-V41-STREAMING-SMALL-PREFILL 16): short gather sweeps leave
+     * the GPU idle between layers because each layer's page-in is only issued
+     * one layer ahead. The prepare slots work as a ring like the layer-major
+     * loops above: DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_AHEAD layers of
+     * pread overlap the compute window. Whole-layer sweeps keep the single
+     * slot: their page-in already carries the full expert working set and
+     * deepening it would only pin more slab bytes per in-flight layer.
+     * Depth changes only prepare timing; the bytes read are the same spans. */
+    const uint32_t prepare_ahead = gather_sweep &&
+        metal_graph_stream_prefill_layer_pagein_overlap_enabled() ?
+        ds41_streaming_sweep_prepare_ahead() : 1u;
     uint32_t (*ids)[2][DS4_ENGRAM_COLS] = g->prefill_ids;
     ds4_engram_history next_history = g->history;
     if (!ds41_hash_tokens(g, &next_history, tokens, total_count, &ids[0][0][0]))
@@ -42526,7 +42561,8 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
     bool engram_prefetched = overlap_engram &&
         ds41_engram_prefetch_start(&engram_prefetch, g, 0, total_count);
     bool ok = !g->streaming || metal_graph_stream_map_token(m, w);
-    metal_graph_stream_prepare_slot prepare = {0};
+    metal_graph_stream_prepare_slot prepare[DS4_STREAM_PREFILL_MAX_PREPARE_AHEAD];
+    memset(prepare, 0, sizeof(prepare));
     for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
         if (cancel && cancel(cancel_ud)) { ok = false; break; }
         if (encoder_only && il == 20u) {
@@ -42547,7 +42583,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
             const uint32_t first_count = total_count < encoder_chunk ? total_count : encoder_chunk;
             if (!g->encoder_resident || il >= 20)
                 ok = metal_graph_stream_prepare_join_layer(NULL, m, w, il, first_count,
-                        false, true, false, gather_sweep, &prepare, 1);
+                        false, true, false, gather_sweep, prepare, prepare_ahead);
 #endif
             if (ok) ok = gather_sweep ?
                 metal_graph_stream_map_layer_decode(m, w, il) :
@@ -42569,10 +42605,15 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
 #endif
 #ifdef __APPLE__
             /* CUDA reads into its device cache: warming mmap would read twice. */
-            if (ok && il + 1u < (encoder_only ? 20u : DS4_N_LAYER) &&
-                (!g->encoder_resident || il + 1u >= 20))
-                ok = metal_graph_stream_prepare_start_if_needed(NULL, m, w, il + 1u, first_count,
-                        false, true, false, gather_sweep, &prepare, 1);
+            const uint32_t prepare_last = encoder_only ? 20u : DS4_N_LAYER;
+            for (uint32_t depth = 1u; ok && depth <= prepare_ahead; depth++) {
+                const uint32_t ahead = il + depth;
+                if (ahead >= prepare_last) break;
+                if (g->encoder_resident && ahead < 20u) continue;
+                ok = metal_graph_stream_prepare_start_if_needed(NULL, m, w, ahead,
+                        first_count, false, true, false, gather_sweep,
+                        prepare, prepare_ahead);
+            }
 #endif
         }
         const double t_map = profile ? now_sec() : 0;
@@ -42794,7 +42835,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
     if (g->streaming) ds4_gpu_stream_expert_cache_prefetch_finish(true);
 #endif
-    if (!metal_graph_stream_prepare_join_all(&prepare, 1)) ok = false;
+    if (!metal_graph_stream_prepare_join_all(prepare, prepare_ahead)) ok = false;
     if (g->streaming && !metal_graph_stream_map_decode_static_all(m, w)) ok = false;
     if (ok && !encoder_only) {
         ok = ds4_gpu_begin_commands() &&
