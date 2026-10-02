@@ -863,3 +863,71 @@ E0.1/E0.2 微测只在 E1 真要动时再跑。
   都不过 → 分层维持现状，E0.3 红灯作为登记偏差长期保留。
 - 非目标：批量家族数值变更（禁）；decode 步进吞吐回退；CUDA 侧同构（本机域外）；
   quality/imatrix/TP 路径。
+
+---
+
+## 16. P0G 任务书（交接专用：lookahead 深度 1→N，治"短 chunk GPU 等盘"）
+
+**给新 session 的一句话**：按本节做，前置背景全在本手册（必读 §0、§14 全节、§15.5 改判）。
+
+### 16.1 问题与量化证据
+
+layer-major prefill sweep 每层的 GPU 计算只被"提前 1 层"的 expert 页换入掩护；
+短/中行数 append 单层计算太短（97 行单层 ~几 ms），盖不住每层 miss 读盘（每层触达
+≈300/384 unique experts ≈2.9 GiB），GPU 占空比 ~15%，表现为每层"burst→干等"。
+证据（1002 生产日志 + `/tmp/p0f/` A–D 受控）：97 行 @36k = 28.8 t/s、
+643 行 @39k = 87.7、1524 行 @40–55k = 194–212（gather 后）、warm bench 166–248。
+**档间差 = 计算盖盘读的盖率差，不是内核差。** 深度 2–3 让 2–3 层的读盘流水进计算期。
+
+### 16.2 现状坐标（已实地核实，动手前先重读确认）
+
+- 深度常量：ds4.c `DS4_STREAM_PREFILL_MAX_PREPARE_AHEAD = 4`（~20879），env
+  `DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_AHEAD`（`glm_graph_env_value` 双名，
+  **默认 1**，clamp 到 4，函数 `metal_graph_stream_prefill_layer_prepare_ahead` ~20881）。
+- **已有 ring 的循环**：~37638 与 ~54211 用 `layer_prepare_slots[DS4_STREAM_PREFILL_MAX_PREPARE_AHEAD]`
+  数组（多深度槽位环）。
+- **gather sweep 循环（生产流量热路径）仍是单槽深度 1**：`ds41_graph_prefill_sweep`
+  （~42464 起）`metal_graph_stream_prepare_slot prepare = {0}`（~42529），只发
+  `prepare_start_if_needed(..., il+1u, ...)` 一层 ahead；mmap 预热 `ds4_gpu_stream_expert_cache_prefetch(&current, &next)` 同样只 current+next。
+- prepare 槽原语：`metal_graph_stream_prepare_start_if_needed/find/free`（~21363–21464），
+  底层 join 的是 `metal_graph_stream_pagein_job`（多 worker 分 range 读页）。
+
+### 16.3 实施阶梯（按序，每步可独立验收）
+
+- **V0（半小时级，先做）**：确认 env>1 对 gather sweep 是否已经生效/被忽略（读
+  sweep 循环是否消费 `..._prepare_ahead()`）。顺带 bench 实测 `env=2/3`（bench 命令
+  模板见 §7.2/14.3；勿用 `| grep -m1`，SIGPIPE 杀进程写坏 CSV）。若非 gather 路径
+  已吃到 env，量下 decode/verify 有无回退。
+- **V1（主改）**：把 ring 接进 gather sweep 循环：单槽→环、`il+1`→`il+D`、消费时
+  join；mmap `prefetch(&current,&next)` 同步扩窗。默认 D 从 1 起步（env 显式开启），
+  门全绿后默认 2。**slab 记账是本任务唯一硬风险**：在飞 D+1 层各钉住自己的 unique
+  工作集（最多 384/层），auto cache 6959 下 D=2 需要 ~3×~330 钉住 + LRU 余量——
+  撞过 §14.1 的簿记过载角；gate 必含 cache 压力场景（小 cache 如 `--ssd-streaming-cache-experts
+  2048` 下跑 643/1524 行，验证只慢不错、无 thrash 死循环）。
+- **数值论证**：D 只改 gather prepare 的时机/并发，LRU 顺序变化不改读到的字节身份
+  （expert 字节永远来自同一 GGUF offset）→ 构造性 bit-identical。dump 门必须证明。
+- **非目标**：扩窗（§14.7 P0f2 负）、cache 扩容（负）、动内核家族（§15 红线）、
+  decode 步进回退。
+
+### 16.4 验收门（全部必须，命令模板都在 §7.2/§14.2/14.3）
+
+1. `--moe-bind-parity` 微测 27/27（`make tests/test_deepseek41_dspark`）。
+2. 逐位 dump：D=新默认 vs `DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER=1`，
+   steps {223, 1524}，frontiers 链**必须带锚点 2048**（compare 语义
+   `prefill_tokens=frontier−previous`，§14.7 踩过）→ IDENTICAL。
+3. slab 压力：小 cache 2048 + 643/1524 行 append，run 完、结果与门 2 同。
+4. 速度达标线（bench 固定内容 step=100 @ctx 36k 起步 / step=500 @40k 起步）：
+   100 行档 25–31→**≥40 t/s**，500 行档 83–87→**≥110 t/s**；1524/2605 大档不回退。
+5. `make` 零警告；提交信息带 A/B 表。
+
+### 16.5 运维现实（不做会浪费半天）
+
+- **单实例 flock 锁**：server 在跑时 bench 直接拒启（"another ds4 process…pid"）。
+  所有测量要**空窗**（server 停着）；测完提醒用户重启 server。
+- 对比开关栈：`DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER`（engine 准入总 kill）、
+  `DS4_METAL_DISABLE_V41_STREAM_GATHER_MM_ID`（metal 谓词）。`DS4_METAL_DISABLE_V41_LAYER_PREFILL`
+  是全局 ablation，**别用它做对照**（会把锚点也打回 scalar 族，比较无效，§14.5 踩过）。
+- gather/metal 两侧行数帽互为镜像（§14.7 P0f 陷阱）：任何窗口类改动必须同步两处。
+- 机器 128 GB M5 Max；bench 一次全量加载 ~1 min，ctx-alloc 393216；
+  `--ssd-streaming-cache-experts` 只用于压力场景，生产已裁定用 auto（§14.7）。
+- 契约红线：任何 logits 变化都要先停下向用户报备裁定（P0d 先例 §14.5）。
