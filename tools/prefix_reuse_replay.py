@@ -43,7 +43,8 @@ def load_timeline(path):
             tools = d['data']['header'].get('tools') or []
         elif t == 'user/message':
             msg = {'role': 'user', 'content': blocks_text(d['data'].get('content'))}
-            flat.append(msg); seq_to_idx[d['seq']] = len(flat) - 1; cur.append(msg)
+            flat.append(msg); seq_to_idx[d['seq']] = len(flat) - 1
+            cur.append(('m', len(flat) - 1))
         elif t == 'assistant/message':
             m = d['data']['message']
             reasoning, text, calls = [], [], []
@@ -66,15 +67,18 @@ def load_timeline(path):
             if calls:
                 msg['tool_calls'] = calls
             msg['content'] = msg.get('content') or ('' if calls else '')
-            flat.append(msg); seq_to_idx[d['seq']] = len(flat) - 1; cur.append(msg)
+            flat.append(msg); seq_to_idx[d['seq']] = len(flat) - 1
+            cur.append(('m', len(flat) - 1))
         elif t == 'tool/result':
             m = d['data']['message']
             msg = {'role': 'tool', 'tool_call_id': m.get('toolCallId', ''),
                    'content': blocks_text(m.get('content'))}
-            flat.append(msg); seq_to_idx[d['seq']] = len(flat) - 1; cur.append(msg)
+            flat.append(msg); seq_to_idx[d['seq']] = len(flat) - 1
+            cur.append(('m', len(flat) - 1))
         elif t == 'compaction/prune':
-            prunes.append(d['seq'])
-            cur.append(('__prune__', d['seq']))
+            shadowed = d['data'].get('shadowedSeqs') or []
+            prunes.extend(shadowed)
+            cur.append(('__prune__', shadowed))
         if cur:
             at_turn_end = (t == 'step/end')
             if at_turn_end:
@@ -82,15 +86,6 @@ def load_timeline(path):
     if cur:
         steps.append(cur)
     return tools, steps, flat, seq_to_idx, prunes
-
-def apply_prunes(history, seq_to_idx, prune_seqs, shadowed):
-    """history: list of msgs (appended order). Remove shadowed tool results."""
-    drop = set()
-    for pseq in prune_seqs:
-        idx = seq_to_idx.get(pseq)
-        if idx is not None:
-            drop.add(idx)
-    return [m for i, m in enumerate(history) if i not in drop]
 
 def openai_tools(tools):
     return [{'type': 'function', 'function': t} for t in (tools or [])]
@@ -116,20 +111,22 @@ def replay(args, tools, steps, flat, seq_to_idx, prune_seqs, shadowed_map):
     base = args.base.rstrip('/')
     model = args.model
     history = []
-    pending_prunes = []
+    dropped = set()
     report = []
     for si, step in enumerate(steps):
         for item in step:
             if isinstance(item, tuple) and item[0] == '__prune__':
-                pending_prunes.append(item[1])
+                if args.apply_prunes:
+                    for s in item[1]:
+                        idx = seq_to_idx.get(s)
+                        if idx is not None:
+                            dropped.add(idx)
             else:
-                history.append(item)
-        if args.apply_prunes and pending_prunes:
-            history = apply_prunes(history, seq_to_idx, pending_prunes, None)
-            pending_prunes = []
-        if not history:
+                history.append(item[1])
+        msgs = [flat[i] for i in history if i not in dropped]
+        if not msgs:
             continue
-        body = {'model': model, 'messages': history, 'max_tokens': 1,
+        body = {'model': model, 'messages': msgs, 'max_tokens': 1,
                 'temperature': 0, 'stream': False}
         if tools:
             body['tools'] = openai_tools(tools)
@@ -149,10 +146,10 @@ def replay(args, tools, steps, flat, seq_to_idx, prune_seqs, shadowed_map):
         prompt = u.get('prompt_tokens') or u.get('input_tokens') or 0
         cached = extract_cached(u)
         ratio = (cached / prompt) if (cached is not None and prompt) else None
-        report.append({'step': si, 'msgs': len(history), 'prompt': prompt,
+        report.append({'step': si, 'msgs': len(msgs), 'prompt': prompt,
                        'cached': cached, 'ratio': ratio, 'secs': round(dt, 1)})
         print('step %3d  msgs=%4d  prompt=%7s  cached=%7s  ratio=%s  %5.1fs' % (
-            si, len(history), prompt, cached,
+            si, len(msgs), prompt, cached,
             ('%.4f' % ratio) if ratio is not None else 'n/a', dt), flush=True)
     with open(args.out, 'w') as f:
         json.dump(report, f, indent=1)
