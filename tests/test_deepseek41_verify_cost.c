@@ -3,7 +3,16 @@
  *   test_deepseek41_dspark MODEL --verify-parity PROMPT   checks
  *   test_deepseek41_dspark MODEL --short-prefill PROMPT   checks
  *   test_deepseek41_dspark MODEL --verify-timing PROMPT   measures
- *   test_deepseek41_dspark MODEL --stage-timing PROMPT    measures */
+ *   test_deepseek41_dspark MODEL --stage-timing PROMPT    measures
+ * The --verify-parity-ssd and --short-prefill-ssd variants run the same checks
+ * with the engine in SSD-streaming mode, where verification rows bind their
+ * routed experts through the streaming selected-address gather. These run on a
+ * host that cannot hold the resident model.
+ *   test_deepseek41_dspark MODEL --moe-bind-parity   checks one layer's batch
+ *   MoE twice on identical inputs: whole-map bind vs the streaming address
+ *   table, bit-exact (HANDOFF-V41 12.5). Rows sweep past the mm-id and
+ *   packed-TensorOps thresholds to 1024, so both arms run the same expert
+ *   matmul family with only the weight bind differing (HANDOFF-V41 13.4). */
 #include "../ds4.c"
 
 #define REQUIRE(x) do { if (!(x)) { \
@@ -23,10 +32,22 @@ static char *read_text(const char *path) {
     return text;
 }
 
+/* Streaming runs carry an explicit expert-cache budget. The target covers a
+ * prefill headroom (~7.1 GiB at ctx 4096) first; the dynamic expert cache is
+ * what remains, and it must hold one layer's experts at once (DS4_N_EXPERT *
+ * ~9.49 MiB ~= 3.64 GiB on V4.1 Q2) for the streaming gather kernels to be
+ * admitted at all. DS4_TEST_STREAMING_CACHE_GIB overrides it. */
+static uint64_t ds41_test_streaming_cache_bytes(void) {
+    const char *env = getenv("DS4_TEST_STREAMING_CACHE_GIB");
+    uint32_t gib = env ? (uint32_t)atoi(env) : 16u;
+    if (gib < 8u) gib = 8u;
+    return (uint64_t)gib * 1024ull * 1024ull * 1024ull;
+}
+
 /* A verified suffix must be what one-token decode computes, and any kept
  * prefix must leave the session that decode would have left: every logit of
  * every row, the serialized state, and the tokens that follow. */
-static int check_verify_parity(const char *model, const char *prompt_path) {
+static int check_verify_parity(const char *model, const char *prompt_path, bool streaming) {
     ds4_engine *engine = NULL;
     ds4_session *scalar = NULL, *verified = NULL;
     ds4_session_snapshot base = {0}, want = {0}, got = {0};
@@ -39,6 +60,10 @@ static int check_verify_parity(const char *model, const char *prompt_path) {
     const uint32_t targets[] = {37, 38, 39};
     ds4_engine_options opt = {.model_path = model, .backend = DS4_BACKEND_METAL,
         .context_size = 4096, .power_percent = 100};
+    if (streaming) {
+        opt.ssd_streaming = true;
+        opt.ssd_streaming_cache_bytes = ds41_test_streaming_cache_bytes();
+    }
     REQUIRE(text);
     REQUIRE(ds4_engine_open(&engine, &opt) == 0);
     ds4_tokenize_text(engine, text, &prompt);
@@ -141,7 +166,7 @@ done:
 
 /* The production continued prefill of two to eight rows is one-token decode:
  * every routed recipe keeps scalar reductions through eight rows. */
-static int check_short_prefill(const char *model, const char *prompt_path) {
+static int check_short_prefill(const char *model, const char *prompt_path, bool streaming) {
     ds4_engine *engine = NULL;
     ds4_session *scalar = NULL, *batched = NULL;
     ds4_tokens prompt = {0}, prefix = {0};
@@ -150,6 +175,10 @@ static int check_short_prefill(const char *model, const char *prompt_path) {
     int rc = 1;
     ds4_engine_options opt = {.model_path = model, .backend = DS4_BACKEND_METAL,
         .context_size = 4096, .power_percent = 100};
+    if (streaming) {
+        opt.ssd_streaming = true;
+        opt.ssd_streaming_cache_bytes = ds41_test_streaming_cache_bytes();
+    }
     REQUIRE(text && ds4_engine_open(&engine, &opt) == 0);
     ds4_tokenize_text(engine, text, &prompt);
     REQUIRE(ds4_session_create(&scalar, engine, 4096) == 0);
@@ -364,15 +393,189 @@ done:
     return rc;
 }
 
+/* HANDOFF-V41-STREAMING-SMALL-PREFILL 12.5. With one layer's routed experts
+ * mapped into the streaming model view, run the batch MoE twice on identical
+ * activations, selected ids and route weights: once bound through the whole
+ * expert map (force_resident) and once through the streaming selected-address
+ * gather. The legs differ only in where the expert bytes come from, so a
+ * bit-exact verdict isolates the address-table bind from every shared batch
+ * operator upstream. */
+static uint32_t bind_rng_state = 0x9e3779b9u;
+static uint32_t bind_rng(void) {
+    bind_rng_state ^= bind_rng_state << 13;
+    bind_rng_state ^= bind_rng_state >> 17;
+    bind_rng_state ^= bind_rng_state << 5;
+    return bind_rng_state;
+}
+
+static int check_moe_bind_parity(const char *model) {
+    ds4_engine *engine = NULL;
+    ds4_gpu_tensor *x = NULL, *selected = NULL, *weights = NULL;
+    ds4_gpu_tensor *a_gate = NULL, *a_up = NULL, *a_mid = NULL, *a_experts = NULL, *a_out = NULL;
+    ds4_gpu_tensor *b_gate = NULL, *b_up = NULL, *b_mid = NULL, *b_experts = NULL, *b_out = NULL;
+    float *host_x = NULL, *host_w = NULL, *host_a = NULL, *host_b = NULL;
+    int32_t *host_ids = NULL;
+    char err[256] = {0};
+    int rc = 1;
+    ds4_engine_options opt = {.model_path = model, .backend = DS4_BACKEND_METAL,
+        .context_size = 4096, .power_percent = 100, .ssd_streaming = true,
+        .ssd_streaming_cache_bytes = ds41_test_streaming_cache_bytes()};
+    REQUIRE(ds4_engine_open(&engine, &opt) == 0);
+    const ds4_model *m = &engine->model;
+    const ds4_weights *w = &engine->weights;
+    const uint32_t max_rows = 1024u, max_pairs = max_rows * DS4_N_EXPERT_USED;
+#define BIND_TENSOR(name, floats) \
+    name = ds4_gpu_tensor_alloc((uint64_t)(floats) * sizeof(float)); \
+    REQUIRE(name);
+    BIND_TENSOR(x, (uint64_t)max_rows * DS4_N_EMBD)
+    BIND_TENSOR(selected, max_pairs)
+    BIND_TENSOR(weights, max_pairs)
+    BIND_TENSOR(a_gate, (uint64_t)max_pairs * DS4_N_FF_EXP)
+    BIND_TENSOR(a_up, (uint64_t)max_pairs * DS4_N_FF_EXP)
+    BIND_TENSOR(a_mid, (uint64_t)max_pairs * DS4_N_FF_EXP)
+    BIND_TENSOR(a_experts, (uint64_t)max_pairs * DS4_N_EMBD)
+    BIND_TENSOR(a_out, (uint64_t)max_rows * DS4_N_EMBD)
+    BIND_TENSOR(b_gate, (uint64_t)max_pairs * DS4_N_FF_EXP)
+    BIND_TENSOR(b_up, (uint64_t)max_pairs * DS4_N_FF_EXP)
+    BIND_TENSOR(b_mid, (uint64_t)max_pairs * DS4_N_FF_EXP)
+    BIND_TENSOR(b_experts, (uint64_t)max_pairs * DS4_N_EMBD)
+    BIND_TENSOR(b_out, (uint64_t)max_rows * DS4_N_EMBD)
+#undef BIND_TENSOR
+    host_x = malloc((size_t)max_rows * DS4_N_EMBD * sizeof(float));
+    host_w = malloc(max_pairs * sizeof(float));
+    host_ids = malloc(max_pairs * sizeof(int32_t));
+    host_a = malloc((size_t)max_rows * DS4_N_EMBD * sizeof(float));
+    host_b = malloc((size_t)max_rows * DS4_N_EMBD * sizeof(float));
+    REQUIRE(host_x && host_w && host_ids && host_a && host_b);
+    const uint32_t layers[] = {0, 20, 39};
+    /* Sweep past the family thresholds: mul_mv tiny pair (2..8), plain
+     * mm-id TensorOps (32..511), packed TensorOps mm-id (512..1024).
+     * 511/512 straddle the packed switch; 831/1024 are the live sweep
+     * append sizes and the selected-addr auto_max cap (HANDOFF-V41 13.4). */
+    const uint32_t row_sets[] = {2, 5, 8, 32, 256, 511, 512, 831, 1024};
+    int drifts = 0;
+    for (size_t li = 0; li < sizeof(layers) / sizeof(layers[0]); li++) {
+        const uint32_t il = layers[li];
+        REQUIRE(metal_graph_stream_map_layer(m, w, il));
+        const ds4_layer_weights *l = &w->layer[il];
+        REQUIRE(l->ffn_gate_exps->type == DS4_TENSOR_IQ2_XXS &&
+                l->ffn_down_exps->type == DS4_TENSOR_Q2_K);
+        const uint64_t gate_row = routed_expert_row_bytes(l->ffn_gate_exps);
+        const uint64_t down_row = routed_expert_row_bytes(l->ffn_down_exps);
+        REQUIRE(gate_row && down_row);
+        for (size_t ri = 0; ri < sizeof(row_sets) / sizeof(row_sets[0]); ri++) {
+            const uint32_t rows = row_sets[ri];
+            const uint64_t pairs = (uint64_t)rows * DS4_N_EXPERT_USED;
+            /* Distinct selected ids within each token (routing never repeats
+             * an expert for one token); across tokens ids repeat freely once
+             * the batch pairs exceed the expert count, so large sweeps give
+             * every expert many rows exactly as production routing does. */
+            for (uint32_t t = 0; t < rows; t++) {
+                bool seen[DS4_N_EXPERT];
+                memset(seen, 0, sizeof(seen));
+                for (uint32_t e = 0; e < DS4_N_EXPERT_USED; e++) {
+                    const uint64_t p = (uint64_t)t * DS4_N_EXPERT_USED + e;
+                    uint32_t id;
+                    do { id = bind_rng() % DS4_N_EXPERT; } while (seen[id]);
+                    seen[id] = true;
+                    host_ids[p] = (int32_t)id;
+                    host_w[p] = 0.05f + (float)(bind_rng() % 1000u) / 1000.0f;
+                }
+            }
+            for (uint64_t i = 0; i < (uint64_t)rows * DS4_N_EMBD; i++)
+                host_x[i] = ((float)(int32_t)(bind_rng() >> 8) - 8388608.0f) / 8388608.0f;
+            const uint64_t out_bytes = (uint64_t)rows * DS4_N_EMBD * sizeof(float);
+            bool f16_a = false, f16_b = false, f16_ok = false;
+#define BIND_ZERO(gate, up, mid, experts, out) \
+            (ds4_gpu_tensor_fill_f32((gate), 0.f, (uint64_t)pairs * DS4_N_FF_EXP) && \
+             ds4_gpu_tensor_fill_f32((up), 0.f, (uint64_t)pairs * DS4_N_FF_EXP) && \
+             ds4_gpu_tensor_fill_f32((mid), 0.f, (uint64_t)pairs * DS4_N_FF_EXP) && \
+             ds4_gpu_tensor_fill_f32((experts), 0.f, (uint64_t)pairs * DS4_N_EMBD) && \
+             ds4_gpu_tensor_fill_f32((out), 0.f, (uint64_t)rows * DS4_N_EMBD))
+#define BIND_REWRITE_INPUTS \
+            (ds4_gpu_tensor_write(x, 0, host_x, \
+                        (uint64_t)rows * DS4_N_EMBD * sizeof(float)) && \
+             ds4_gpu_tensor_write(selected, 0, host_ids, pairs * sizeof(int32_t)) && \
+             ds4_gpu_tensor_write(weights, 0, host_w, pairs * sizeof(float)))
+            REQUIRE(BIND_ZERO(a_gate, a_up, a_mid, a_experts, a_out));
+            REQUIRE(BIND_REWRITE_INPUTS);
+            REQUIRE(ds4_gpu_begin_commands());
+            const bool ok_a = ds4_gpu_routed_moe_batch_tensor(a_out, a_gate, a_up, a_mid, a_experts,
+                m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_up_exps->abs_offset,
+                l->ffn_down_exps->abs_offset, l->ffn_gate_exps->type, l->ffn_down_exps->type,
+                gate_row * DS4_N_FF_EXP, gate_row, down_row * DS4_N_EMBD, down_row,
+                DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD, selected, weights,
+                DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, x, il, rows,
+                &f16_a, true);
+            REQUIRE(ok_a && ds4_gpu_end_commands());
+            REQUIRE(BIND_ZERO(b_gate, b_up, b_mid, b_experts, b_out));
+            REQUIRE(BIND_REWRITE_INPUTS);
+            REQUIRE(ds4_gpu_begin_commands());
+            const bool ok_b = ds4_gpu_routed_moe_batch_tensor(b_out, b_gate, b_up, b_mid, b_experts,
+                m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_up_exps->abs_offset,
+                l->ffn_down_exps->abs_offset, l->ffn_gate_exps->type, l->ffn_down_exps->type,
+                gate_row * DS4_N_FF_EXP, gate_row, down_row * DS4_N_EMBD, down_row,
+                DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD, selected, weights,
+                DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, x, il, rows,
+                &f16_b, false);
+            REQUIRE(ok_b && ds4_gpu_end_commands());
+            f16_ok = (f16_a == f16_b);
+            REQUIRE(f16_ok);
+            REQUIRE(ds4_gpu_tensor_read(a_out, 0, host_a, out_bytes) &&
+                    ds4_gpu_tensor_read(b_out, 0, host_b, out_bytes));
+            if (memcmp(host_a, host_b, out_bytes) == 0) {
+                printf("layer %u rows %u: address-table bind bit-exact vs whole-map bind\n",
+                       il, rows);
+            } else {
+                float worst = 0.0f;
+                for (uint64_t i = 0; i < (uint64_t)rows * DS4_N_EMBD; i++) {
+                    const float d = host_a[i] > host_b[i] ? host_a[i] - host_b[i]
+                                                          : host_b[i] - host_a[i];
+                    if (d > worst) worst = d;
+                }
+                printf("layer %u rows %u: address-table bind DRIFTS vs whole-map bind (worst %g)\n",
+                       il, rows, worst);
+                drifts++;
+            }
+#undef BIND_ZERO
+        }
+    }
+    if (drifts) {
+        fprintf(stderr, "V4.1 MoE bind parity: %d case(s) drift -- the gather kernel "
+                        "itself changes the bits\n", drifts);
+        goto done;
+    }
+    printf("V4.1 MoE bind parity: address-table gather bit-exact at every layer and size\n");
+    rc = 0;
+done:
+    if (err[0]) fprintf(stderr, "error: %s\n", err);
+    if (ds4_gpu_commands_active()) ds4_gpu_end_commands();
+    free(host_x); free(host_w); free(host_ids); free(host_a); free(host_b);
+    ds4_gpu_tensor_free(x); ds4_gpu_tensor_free(selected); ds4_gpu_tensor_free(weights);
+    ds4_gpu_tensor_free(a_gate); ds4_gpu_tensor_free(a_up); ds4_gpu_tensor_free(a_mid);
+    ds4_gpu_tensor_free(a_experts); ds4_gpu_tensor_free(a_out);
+    ds4_gpu_tensor_free(b_gate); ds4_gpu_tensor_free(b_up); ds4_gpu_tensor_free(b_mid);
+    ds4_gpu_tensor_free(b_experts); ds4_gpu_tensor_free(b_out);
+    ds4_engine_close(engine);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     if (argc == 4 && !strcmp(argv[2], "--stage-timing"))
         return time_stages(argv[1], argv[3]);
     if (argc == 4 && !strcmp(argv[2], "--verify-timing"))
         return time_verify(argv[1], argv[3]);
     if (argc == 4 && !strcmp(argv[2], "--short-prefill"))
-        return check_short_prefill(argv[1], argv[3]);
+        return check_short_prefill(argv[1], argv[3], false);
+    if (argc == 4 && !strcmp(argv[2], "--short-prefill-ssd"))
+        return check_short_prefill(argv[1], argv[3], true);
     if (argc == 4 && !strcmp(argv[2], "--verify-parity"))
-        return check_verify_parity(argv[1], argv[3]);
-    fprintf(stderr, "usage: %s MODEL --verify-parity PROMPT\n", argv[0]);
+        return check_verify_parity(argv[1], argv[3], false);
+    if (argc == 4 && !strcmp(argv[2], "--verify-parity-ssd"))
+        return check_verify_parity(argv[1], argv[3], true);
+    if (argc == 3 && !strcmp(argv[2], "--moe-bind-parity"))
+        return check_moe_bind_parity(argv[1]);
+    fprintf(stderr, "usage: %s MODEL --verify-parity|--verify-parity-ssd"
+                    "|--short-prefill|--short-prefill-ssd PROMPT\n", argv[0]);
     return 2;
 }
