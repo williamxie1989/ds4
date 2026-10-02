@@ -729,6 +729,29 @@ mul_mv pair 升到 packed TensorOps 镜像，不止省 I/O。
 - 产物：`/tmp/p0c/{F223,G223b}/`、`cmp_223b.json`、`p0d_223*.csv`。
 - 部署：server 进程需重启才吃到 P0d（build 时间晚于进程启动即是旧进程）。
 
+### 14.6 1002 live-traffic 验证（生产 server 重启后，P0c+P0d 生效确认）
+
+| append rows | ctx | t/s | 用时 |
+|---|---|---|---|
+| 100 | 36.5k | 30.2 | 3.31 s |
+| 1005 | 37.0k | 112.6 | 8.92 s |
+| 2042 | 40.2k | 108.4 | 18.84 s |
+| 1000 | 44.8k | 110.0 | 9.09 s |
+
+≥512 行段 108–113 t/s = packed TensorOps gather 带（P0c 前整层 46–52，×2.2+）；
+100 行段 30 t/s > 单 token 步进的 17–21 → P0d 已生效，落在 [32,512) plain mpp 带。
+提交：`977a8eb`（P0c+P0d+microtest+本文档）、`975238a`（前一阶段 microtest 适配）。
+
+**live 数据的读法（决定下一步优化方向）**：生日数学下 100 行 append 每层触达
+unique experts ≈ 384×(1−(378/384)^100) ≈ **304/384**——1000 行内的小 append 触达
+expert 比例与 831 行几乎相同，gather 省不了 I/O，瓶颈是 miss 换入而非计算。
+auto cache 6959 experts ≈ 18 层容量，多轮对话 LRU 每轮冲洗 → 命中率是首要杠杆
+（`--ssd-streaming-cache-experts N|NGB` 调大，零代码；P0d 覆盖使 ≥7680 触发
+`minimum=1024` 旧分支也不会把 [32,1024) 弹出 sweep，无行为副作用）。
+warm 上限参照 bench 166–170 t/s（831 行）：架构内现实目标 1000 行 ≈6–7 s、
+100 行 ≈1.5–2 s。小行数**不建议**压 packed 阈值（<512 带 packing 写放大且
+compute 非瓶颈）。
+
 ---
 
 ## 15. P0e 路线设计（未开工）：行数分层与跨路契约
