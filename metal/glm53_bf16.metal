@@ -342,3 +342,18 @@ kernel void kernel_glm53_kda_inputs_q8_bf16(
         if(lane==0u)o[row]=sum;
     }
 }
+
+// PF-6: one-time F32 -> BF16 conversion of a layer's router projection so the
+// prefill router can run on the tuned BF16 tensor-unit matmul. Round-to-nearest
+// even on the discarded low half; router weights are finite.
+kernel void kernel_glm53_cvt_f32_bf16(
+        device const float  *src,
+        device ushort       *dst,
+        constant uint       &count,
+        uint gid [[thread_position_in_grid]],
+        uint tit [[threads_per_grid]]) {
+    for (uint i = gid; i < count; i += tit) {
+        const uint u = as_type<uint>(src[i]);
+        dst[i] = (ushort)((u + 0x7fffu + ((u >> 16) & 1u)) >> 16);
+    }
+}
