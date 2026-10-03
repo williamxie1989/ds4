@@ -15651,7 +15651,12 @@ retry:
     }
 
     if (victim_count == 0) {
-        if (skipped_inflight && !waited_inflight) {
+        /* The service thread must never wait here: the in-flight batch it
+         * would wait for may itself be waiting for this thread to release a
+         * layer. Without a victim the load fails and the caller reports it,
+         * which is the same shape the single-buffer reuse path above uses. */
+        if (skipped_inflight && !waited_inflight &&
+            !ds4_gpu_stream_expert_cache_on_service_thread()) {
             waited_inflight = 1;
             if (!ds4_gpu_stream_expert_cache_wait_inflight(
                     "streaming expert cache batch reuse")) {
