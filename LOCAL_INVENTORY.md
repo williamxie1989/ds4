@@ -118,12 +118,11 @@
 
 ## E. 全仓代码对账（2026-10-04）：A/B/D 之外的代码
 
-对 main、全部分支、4 个 worktree、stash、未跟踪文件逐一枚举后，**main 的 58 个提交与 A/B 全部对上账**（上游作者 34 片、本地 23 片、merge 1）；`pr-*`/`up/pr/*` 均为 PR 原文存档（D 已列），`feat/glm53-*` 两分支仅多 3 个提交 = `1e09244`/`003e007`/`ff5b4e0` 的原件（无独立代码），`fix/*` 指向 main 上的提交，`/tmp` 两对照 worktree 无独有代码。真正的"账外代码"只有以下四项：
+对 main、全部分支、4 个 worktree、stash、未跟踪文件逐一枚举后，**main 的 58 个提交与 A/B 全部对上账**（上游作者 34 片、本地 23 片、merge 1）；`pr-*`/`up/pr/*` 均为 PR 原文存档（D 已列），`feat/glm53-*` 两分支仅多 3 个提交 = `1e09244`/`003e007`/`ff5b4e0` 的原件（无独立代码），`fix/*` 指向 main 上的提交，`/tmp` 两对照 worktree 无独有代码。真正的"账外代码"只剩以下三项（stash 三项已裁决丢弃）：
 
 | 项 | 内容与规模 | 状态/建议 |
 |---|---|---|
-| `stash@{2}` | `ds4.c` +4：`deepseek4.vocab_size` 缺失时回退 129280（unsloth GGUF 适配） | **未入 main、此前无任何记录**。老 main 时代的 4 行 workaround；要留就单独提交，不要就 `git stash drop` |
-| `stash@{0}`/`stash@{1}` | 分别 = `9bc0bd7`、`ff5b4e0` 的已应用原件（319/25 行 diff 与落树提交逐字节一致） | 纯残留，`git stash drop` 可清 |
+| `stash@{0}`/`{1}`/`{2}` | 0/1 = `9bc0bd7`、`ff5b4e0` 的已应用残留；2 = `ds4.c` +4 `vocab_size` 缺失回退 129280（unsloth GGUF 适配，未入 main） | **2026-10-04 用户裁决全部丢弃**，`git stash clear`；patch 备份在 `.git/LOCAL_BACKUPS/stashes-2026-10-04.patch`，日后要捡回 vocab 回退从这里取 |
 | card H 实现（`~/ds4-cardh` 未提交） | `ds4.c` +76 / `ds4_metal.m` +2：`DS4_METAL_ENABLE_V41_MOE_EARLY_LOAD` 门控的 MoE early-load + `ds4_gpu_signal_selected_readback_ready` 免逐层回读（宣称 bit-exact）+ `.cardh-ab/` A/B 产物 | D 表只记了"主攻"名目，**这 78 行全仓只存在于该 worktree 工作区，零 git 备份**——建议先 commit 到 `p4-cardh-early-load` 再继续 |
 | 未跟踪工具脚本 ~1.2k 行 | `gguf-tools/deepseek41_dspark_convert.py`(349)、`speed-bench/{build_dspark_support_gguf.py(228), jigsaw_to_ds4_dspark.py(211), mtp_ledger_replay.py(160)}` = DSpark/MTP 资产管道；`speed-bench/{v41_m5max_streaming_ab.sh(66), v41_m5max_server_probe.sh(50)}` + `v41_m5max_ab/` 实测数据 = 基线方案台架 | DSpark 四件套随 MTP 线裁决转**封存备查**（≥256G 机重开时要用）；v41 台架服务在途工作，建议随下批提交入库。注意 `ds4-attn-glue`/`ds4-io-diag`/`/tmp/ds4-main` 里各有一份 `v41_m5max_streaming_ab.sh`/`v41_m5max_ab/` 拷贝，清理时别认错本尊 |
 
