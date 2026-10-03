@@ -1,6 +1,6 @@
 # 本地仓库 vs 上游 antirez/ds4：提交与在途工作清单
 
-> 生成日期：2026-10-03。基准：`main` = `d09ca3b`，比 `origin/main`（上游）领先 **57 个提交**（34 个 cherry-pick + 1 个 merge + 22 个本地实现）；`fork/main`（williamxie1989/ds4）落后本地 main 35 个提交——最后 35 个（含 09-30 之后的全部 NAX 移植、P0 系列、prefix-replay 工具链）尚未推到 fork。
+> 生成日期：2026-10-03（2026-10-04 全仓代码对账更新）。基准：`main` = `4c95017`，比 `origin/main`（上游）领先 **58 个提交**（34 cherry-pick + 1 merge + 22 本地实现 + 1 台账提交）；`fork/main` 已同步至 `4c95017`——注意其中含 HANDOFF/PLAN/本台账等私有文档，fork 可见性需自查。
 >
 > 依据：cherry-pick trailer、patch-id 对拍、`pr-*`/`up/pr/*` 本地分支、合并提交 `0743c7f` 正文、以及仓库内 9/25 之后的移交/规划文档。
 >
@@ -40,7 +40,7 @@
 | #985 (Rick Ratmansky) | 归一化 tool replay 跨轮保住 KV cache | `b8e4474` | 10-02 前缀复用批次 |
 | #727 (LEFBE) | transient metadata block 剥离后保住 live KV（issue #364，#378 的返工） | `bfbf557`, `ba80b4b` | 同上 |
 
-## B. 本地实现提交（22 个，含从自己 feat 分支重新落地）
+## B. 本地实现提交（23 个，含从自己 feat 分支重新落地）
 
 | 提交 | 主题 | 性质 |
 |---|---|---|
@@ -57,6 +57,7 @@
 | `6fb153e` | tokenizer：CONTROL-token 文本重放为单一 special id（保 exact-prefix KV 复用） | 本地（#727/#985 主线延伸） |
 | `e4488c1` `3b2abc4` | 录制 session 前缀复用 A/B 回放器 + compaction prunes 修正 | 本地（同上主线） |
 | `d09ca3b` | GLM-5.3 prefill router 走调优 BF16 tensor-unit matmul（M5 +7.3%） | 本地（依赖 `9bc0bd7` 的 NAX 门放开） |
+| `4c95017` | 本台账 + AGENTS.md 维护规则入库 | 台账 |
 
 ## C. 本地工作 → 依赖的 cherry-pick PR（与 main 的差异所在）
 
@@ -114,3 +115,17 @@
 - 一次性噪声已入 `.git/info/exclude`（纯本地、不随任何 PR 携带）：`pic.jpeg`、`start.md`/`start.txt`（server 启动备忘）、`tests/*.o.tmp`、`tests/test_metal_rewind`（构建残留）、`.codegraph/`、`.cursor/`
 - 本文件与 `AGENTS.md` 已纳入 git 跟踪。**PR 纪律**：PR 分支一律从上游 `origin/main` 切、只 cherry-pick 目标修复提交；不 merge 本地 main、不 `git add -A`——docs commit 不在 PR 范围即不会携带
 - `/tmp/ds4-main`、`/tmp/pf6-pr-base` 对照 worktree：重启即失，需按 BASELINE §13.2 重建流程
+
+## E. 全仓代码对账（2026-10-04）：A/B/D 之外的代码
+
+对 main、全部分支、4 个 worktree、stash、未跟踪文件逐一枚举后，**main 的 58 个提交与 A/B 全部对上账**（上游作者 34 片、本地 23 片、merge 1）；`pr-*`/`up/pr/*` 均为 PR 原文存档（D 已列），`feat/glm53-*` 两分支仅多 3 个提交 = `1e09244`/`003e007`/`ff5b4e0` 的原件（无独立代码），`fix/*` 指向 main 上的提交，`/tmp` 两对照 worktree 无独有代码。真正的"账外代码"只有以下四项：
+
+| 项 | 内容与规模 | 状态/建议 |
+|---|---|---|
+| `stash@{2}` | `ds4.c` +4：`deepseek4.vocab_size` 缺失时回退 129280（unsloth GGUF 适配） | **未入 main、此前无任何记录**。老 main 时代的 4 行 workaround；要留就单独提交，不要就 `git stash drop` |
+| `stash@{0}`/`stash@{1}` | 分别 = `9bc0bd7`、`ff5b4e0` 的已应用原件（319/25 行 diff 与落树提交逐字节一致） | 纯残留，`git stash drop` 可清 |
+| card H 实现（`~/ds4-cardh` 未提交） | `ds4.c` +76 / `ds4_metal.m` +2：`DS4_METAL_ENABLE_V41_MOE_EARLY_LOAD` 门控的 MoE early-load + `ds4_gpu_signal_selected_readback_ready` 免逐层回读（宣称 bit-exact）+ `.cardh-ab/` A/B 产物 | D 表只记了"主攻"名目，**这 78 行全仓只存在于该 worktree 工作区，零 git 备份**——建议先 commit 到 `p4-cardh-early-load` 再继续 |
+| 未跟踪工具脚本 ~1.2k 行 | `gguf-tools/deepseek41_dspark_convert.py`(349)、`speed-bench/{build_dspark_support_gguf.py(228), jigsaw_to_ds4_dspark.py(211), mtp_ledger_replay.py(160)}` = DSpark/MTP 资产管道；`speed-bench/{v41_m5max_streaming_ab.sh(66), v41_m5max_server_probe.sh(50)}` + `v41_m5max_ab/` 实测数据 = 基线方案台架 | DSpark 四件套随 MTP 线裁决转**封存备查**（≥256G 机重开时要用）；v41 台架服务在途工作，建议随下批提交入库。注意 `ds4-attn-glue`/`ds4-io-diag`/`/tmp/ds4-main` 里各有一份 `v41_m5max_streaming_ab.sh`/`v41_m5max_ab/` 拷贝，清理时别认错本尊 |
+
+另：`CLAUDE.md` 是 5 月分叉时的旧孪生文档（未跟踪，内容=上游版 AGENTS.md，无新章节），待办：同步 AGENTS.md 新章节或删掉以 AGENTS.md 为单一事实源。
+
