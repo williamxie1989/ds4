@@ -103,6 +103,7 @@
 | p42-attn-glue | worktree `~/ds4-attn-glue`，全部未提交 | 实测 ≈中性，**等用户 review 决定合/弃** |
 | p3-io-diag | worktree `~/ds4-io-diag` | 7 行诊断补丁，可留可弃 |
 | `tests/test_glm53_router_shared.c` 未提交补丁 | 测试补 `ds4_gpu_test_set_flags` | 小修，可随手提交 |
+| PF-6 上游 PR 移植 | 分支 `pf6-upstream`（基于 origin/main `0aaea5a`，提交 `32ebc1f`，已推 fork）；worktree `/tmp/pf6-pr-base`（重启即失，重建见杂项） | PR 分支自测 41k +5.2%（364.1→382.8）、锚点确认（f32 router 0 调用、cvt=42、上游 wrapper 无门控故 M3/M5 默认生效）；**待开 PR → antirez/ds4**，质量数字引用 `d09ca3b` 实测并注明测量树 |
 
 ### 本地保留但**未取用**的上游 PR（评审存档，非依赖）
 
