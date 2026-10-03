@@ -1550,6 +1550,45 @@ static int ds4_gpu_stream_expert_cache_mark_entries_inflight(
 
 static int ds4_gpu_stream_expert_cache_wait_inflight(const char *label);
 
+/*
+ * A dispatch that reaches its expert weights through the address table never
+ * binds those buffers, so Metal is never told what the kernel reads. Left that
+ * way the read is a silent, run-to-run hazard: two identical runs produced
+ * different expert bytes. The synchronous path avoids this by marking the six
+ * entries it hands to the encode helper; the binding path does not know the
+ * entries at encode time, so it marks the cache's slabs, which are the only
+ * storage the published addresses can point at.
+ */
+static void ds4_gpu_stream_expert_cache_use_slabs(
+        id<MTLComputeCommandEncoder> enc) {
+    if (!enc) return;
+    for (uint32_t i = 0; i < g_stream_expert_cache_slab_count; i++) {
+        id<MTLBuffer> slab = g_stream_expert_cache_slabs[i];
+        if (slab) {
+            [enc useResource:slab usage:MTLResourceUsageRead];
+        }
+    }
+}
+
+/* The GPU-binding service thread resolves a layer after the encode thread has
+ * already armed later layers, so the ambient batch sequence no longer names
+ * the command buffer that will read these slots. It stamps the sequence the
+ * request was armed with instead, which is the same buffer the synchronous
+ * path would have marked. */
+static int ds4_gpu_stream_expert_cache_mark_entries_inflight_seq(
+        ds4_gpu_stream_expert_cache_entry * const *entries,
+        uint32_t n_entries,
+        uint32_t active_mask,
+        uint64_t seq) {
+    if (!entries || n_entries == 0 || seq == 0) return 0;
+    for (uint32_t i = 0; i < n_entries; i++) {
+        if (active_mask != 0 && (active_mask & (1u << i)) == 0) continue;
+        if (!entries[i] || !entries[i]->valid) return 0;
+        entries[i]->inflight_seq = seq;
+    }
+    return 1;
+}
+
 static int ds4_gpu_wait_pending_command_buffers(const char *label) {
     int ok = 1;
     for (id<MTLCommandBuffer> pending in g_pending_cbs) {
@@ -14384,11 +14423,36 @@ static int ds4_gpu_stream_compact_addr_requested(void) {
            getenv("DS4_METAL_DISABLE_STREAMING_EXPERT_ADDR_TABLE") == NULL;
 }
 
+/*
+ * Keep the routing
+ * decision on the GPU during V4.1 streaming decode. The routed kernels read
+ * the router ids straight out of their GPU buffer through the expert address
+ * table, and a service thread consumes the ids and fills the table. The
+ * machinery lives next to ds4_gpu_routed_moe_one_tensor; this is the gate,
+ * resolved once per process after streaming mode is known.
+ */
+static int g_v41_moe_gpu_binding_requested = -1;
+
+static int ds4_gpu_v41_moe_gpu_binding_requested(void) {
+    if (!g_ssd_streaming_mode) return 0;
+    if (g_v41_moe_gpu_binding_requested >= 0) return g_v41_moe_gpu_binding_requested;
+    g_v41_moe_gpu_binding_requested =
+        getenv("DS4_METAL_ENABLE_V41_MOE_GPU_BINDING") != NULL &&
+        getenv("DS4_METAL_DISABLE_V41_MOE_GPU_BINDING") == NULL &&
+        getenv("DS4_METAL_DISABLE_STREAMING_EXPERT_ADDR_TABLE") == NULL &&
+        /* The record/replay debug tools feed selected ids to this thread, which
+         * the binding path deliberately cannot do. */
+        getenv("DS4_MOE_RECORD_SELECTED_IDS") == NULL &&
+        getenv("DS4_MOE_REPLAY_SELECTED_IDS") == NULL;
+    return g_v41_moe_gpu_binding_requested;
+}
+
 static int ds4_gpu_stream_expert_addr_table_requested(void) {
     return g_ssd_streaming_mode &&
            (getenv("DS4_METAL_ENABLE_STREAMING_EXPERT_ADDR_TABLE") != NULL ||
             getenv("DS4_METAL_ENABLE_STREAMING_EXPERT_HIT_VALIDATOR") != NULL ||
             getenv("DS4_METAL_ENABLE_STREAMING_EXPERT_MASKED_ADDR") != NULL ||
+            ds4_gpu_v41_moe_gpu_binding_requested() ||
             g_stream_prefill_batch_selected_addr_building ||
             g_glm_stream_expert_addr_table_building ||
             (getenv("DS4_METAL_ENABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR") != NULL &&
@@ -32582,9 +32646,10 @@ static int ds4_gpu_encode_mul_mv_addr_iq2_pair_swiglu(
         NSUInteger                  nsg,
         bool                        rows_per_group_is_nr0,
         id<MTLBuffer>               overflow_gate,
-        id<MTLBuffer>               overflow_up) {
-    if (!cb || !pipeline || !args || !act || !entries ||
-        (n_entries == 0 && !overflow_gate) ||
+        id<MTLBuffer>               overflow_up,
+        bool                        ids_only) {
+    if (!cb || !pipeline || !args || !act ||
+        (!ids_only && (!entries || (n_entries == 0 && !overflow_gate))) ||
         !gate_addrs || !up_addrs ||
         !src1 || !dst_a || !dst_b || !dst_mid || !ids || !weights ||
         args->ne00 <= 0 || args->ne01 <= 0 ||
@@ -32596,7 +32661,10 @@ static int ds4_gpu_encode_mul_mv_addr_iq2_pair_swiglu(
     for (uint32_t i = 0; i < n_entries; i++) {
         if (!entries[i] || !entries[i]->gate_buffer || !entries[i]->up_buffer) return 0;
     }
-    if (!ds4_gpu_stream_expert_cache_mark_entries_inflight(entries,
+    /* With ids_only the caller is the V4.1 GPU binding path: no entry is
+     * visible on this thread, and the binding thread already protected them. */
+    if (!ids_only &&
+        !ds4_gpu_stream_expert_cache_mark_entries_inflight(entries,
                                                            n_entries,
                                                            0)) {
         return 0;
@@ -32627,6 +32695,9 @@ static int ds4_gpu_encode_mul_mv_addr_iq2_pair_swiglu(
      * when a layer's unique selected set exceeds the cache budget. */
     if (overflow_gate) [enc useResource:overflow_gate usage:MTLResourceUsageRead];
     if (overflow_up) [enc useResource:overflow_up usage:MTLResourceUsageRead];
+    if (ids_only) {
+        ds4_gpu_stream_expert_cache_use_slabs(enc);
+    }
     if (threadgroup_bytes != 0) {
         [enc setThreadgroupMemoryLength:threadgroup_bytes atIndex:0];
     }
@@ -32717,9 +32788,10 @@ static int ds4_gpu_encode_mul_mv_addr_q2_sum6(
         NSUInteger                  ids_off,
         NSUInteger                  threadgroup_bytes,
         NSUInteger                  nsg,
-        id<MTLBuffer>               overflow_down) {
-    if (!cb || !pipeline || !args || !entries ||
-        (n_entries == 0 && !overflow_down) ||
+        id<MTLBuffer>               overflow_down,
+        bool                        ids_only) {
+    if (!cb || !pipeline || !args ||
+        (!ids_only && (!entries || (n_entries == 0 && !overflow_down))) ||
         !addrs || !src1 || !dst || !ids ||
         args->ne00 <= 0 || args->ne01 <= 0 || args->nei0 != 6 || args->nei1 <= 0 ||
         args->ne02 <= 0 || args->ne02 > 384) {
@@ -32728,7 +32800,10 @@ static int ds4_gpu_encode_mul_mv_addr_q2_sum6(
     for (uint32_t i = 0; i < n_entries; i++) {
         if (!entries[i] || !entries[i]->down_buffer) return 0;
     }
-    if (!ds4_gpu_stream_expert_cache_mark_entries_inflight(entries,
+    /* With ids_only the caller is the V4.1 GPU binding path: no entry is
+     * visible on this thread, and the binding thread already protected them. */
+    if (!ids_only &&
+        !ds4_gpu_stream_expert_cache_mark_entries_inflight(entries,
                                                            n_entries,
                                                            0)) {
         return 0;
@@ -32748,6 +32823,9 @@ static int ds4_gpu_encode_mul_mv_addr_q2_sum6(
         [enc useResource:entries[i]->down_buffer usage:MTLResourceUsageRead];
     }
     if (overflow_down) [enc useResource:overflow_down usage:MTLResourceUsageRead];
+    if (ids_only) {
+        ds4_gpu_stream_expert_cache_use_slabs(enc);
+    }
     if (threadgroup_bytes != 0) {
         [enc setThreadgroupMemoryLength:threadgroup_bytes atIndex:0];
     }
@@ -32780,22 +32858,29 @@ static int ds4_gpu_encode_mul_mv_addr_iq2_pair_swiglu_masked(
         NSUInteger                  weights_off,
         NSUInteger                  threadgroup_bytes,
         NSUInteger                  nsg,
-        bool                        rows_per_group_is_nr0) {
-    if (!cb || !pipeline || !args || !act || !split || !entries ||
+        bool                        rows_per_group_is_nr0,
+        bool                        ids_only) {
+    if (!cb || !pipeline || !args || !act || !split ||
+        (!ids_only && !entries) ||
         !gate_addrs || !up_addrs || !src1 || !dst_a || !dst_b || !dst_mid ||
         !ids || !weights ||
         args->ne00 <= 0 || args->ne01 <= 0 || args->nei0 != 6 || args->nei1 <= 0 ||
         args->ne02 <= 0 || args->ne02 > 384) {
         return 0;
     }
-    for (uint32_t i = 0; i < 6; i++) {
-        if ((split->active_mask & (1u << i)) == 0) continue;
-        if (!entries[i] || !entries[i]->gate_buffer || !entries[i]->up_buffer) return 0;
-    }
-    if (!ds4_gpu_stream_expert_cache_mark_entries_inflight(entries,
-                                                           6,
-                                                           split->active_mask)) {
-        return 0;
+    /* With ids_only the caller is the V4.1 GPU binding path: the routed ids
+     * stay in the GPU-selected buffer and the binding thread already marked
+     * the six slots inflight, so no entry is visible on this thread. */
+    if (!ids_only) {
+        for (uint32_t i = 0; i < 6; i++) {
+            if ((split->active_mask & (1u << i)) == 0) continue;
+            if (!entries[i] || !entries[i]->gate_buffer || !entries[i]->up_buffer) return 0;
+        }
+        if (!ds4_gpu_stream_expert_cache_mark_entries_inflight(entries,
+                                                               6,
+                                                               split->active_mask)) {
+            return 0;
+        }
     }
 
     const NSUInteger nr0 = (NSUInteger)args->nr0;
@@ -32816,10 +32901,15 @@ static int ds4_gpu_encode_mul_mv_addr_iq2_pair_swiglu_masked(
     [enc setBuffer:dst_mid    offset:dst_mid_off atIndex:8];
     [enc setBuffer:ids        offset:ids_off     atIndex:9];
     [enc setBuffer:weights    offset:weights_off atIndex:10];
-    for (uint32_t i = 0; i < 6; i++) {
-        if ((split->active_mask & (1u << i)) == 0) continue;
-        [enc useResource:entries[i]->gate_buffer usage:MTLResourceUsageRead];
-        [enc useResource:entries[i]->up_buffer usage:MTLResourceUsageRead];
+    if (!ids_only) {
+        for (uint32_t i = 0; i < 6; i++) {
+            if ((split->active_mask & (1u << i)) == 0) continue;
+            [enc useResource:entries[i]->gate_buffer usage:MTLResourceUsageRead];
+            [enc useResource:entries[i]->up_buffer usage:MTLResourceUsageRead];
+        }
+    }
+    if (ids_only) {
+        ds4_gpu_stream_expert_cache_use_slabs(enc);
     }
     if (threadgroup_bytes != 0) {
         [enc setThreadgroupMemoryLength:threadgroup_bytes atIndex:0];
@@ -32844,21 +32934,27 @@ static int ds4_gpu_encode_mul_mv_addr_q2_sum6_masked(
         id<MTLBuffer>               ids,
         NSUInteger                  ids_off,
         NSUInteger                  threadgroup_bytes,
-        NSUInteger                  nsg) {
-    if (!cb || !pipeline || !args || !split || !entries || !addrs ||
+        NSUInteger                  nsg,
+        bool                        ids_only) {
+    if (!cb || !pipeline || !args || !split || (!ids_only && !entries) ||
+        !addrs ||
         !src1 || !dst || !ids ||
         args->ne00 <= 0 || args->ne01 <= 0 || args->nei0 != 6 || args->nei1 <= 0 ||
         args->ne02 <= 0 || args->ne02 > 384) {
         return 0;
     }
-    for (uint32_t i = 0; i < 6; i++) {
-        if ((split->active_mask & (1u << i)) == 0) continue;
-        if (!entries[i] || !entries[i]->down_buffer) return 0;
-    }
-    if (!ds4_gpu_stream_expert_cache_mark_entries_inflight(entries,
-                                                           6,
-                                                           split->active_mask)) {
-        return 0;
+    /* With ids_only the caller is the V4.1 GPU binding path; see the masked
+     * gate/up helper above. */
+    if (!ids_only) {
+        for (uint32_t i = 0; i < 6; i++) {
+            if ((split->active_mask & (1u << i)) == 0) continue;
+            if (!entries[i] || !entries[i]->down_buffer) return 0;
+        }
+        if (!ds4_gpu_stream_expert_cache_mark_entries_inflight(entries,
+                                                               6,
+                                                               split->active_mask)) {
+            return 0;
+        }
     }
 
     const NSUInteger rows_per_group = (NSUInteger)args->nr0 * nsg;
@@ -32872,9 +32968,14 @@ static int ds4_gpu_encode_mul_mv_addr_q2_sum6_masked(
     [enc setBuffer:src1  offset:src1_off atIndex:3];
     [enc setBuffer:dst   offset:dst_off  atIndex:4];
     [enc setBuffer:ids   offset:ids_off  atIndex:5];
-    for (uint32_t i = 0; i < 6; i++) {
-        if ((split->active_mask & (1u << i)) == 0) continue;
-        [enc useResource:entries[i]->down_buffer usage:MTLResourceUsageRead];
+    if (!ids_only) {
+        for (uint32_t i = 0; i < 6; i++) {
+            if ((split->active_mask & (1u << i)) == 0) continue;
+            [enc useResource:entries[i]->down_buffer usage:MTLResourceUsageRead];
+        }
+    }
+    if (ids_only) {
+        ds4_gpu_stream_expert_cache_use_slabs(enc);
     }
     if (threadgroup_bytes != 0) {
         [enc setThreadgroupMemoryLength:threadgroup_bytes atIndex:0];
@@ -40364,6 +40465,383 @@ static bool ds4_gpu_mxfp4_moe_decode_nsg1_enabled(uint32_t n_tokens) {
            getenv("DS4_METAL_DISABLE_PRE_M5_MXFP4_MOE_DECODE_NSG1") == NULL;
 }
 
+/*
+ * V4.1 streaming MoE GPU binding, behind DS4_METAL_ENABLE_V41_MOE_GPU_BINDING.
+ *
+ * The streaming decode path used to end the batch command buffer once per
+ * layer to read back the six router ids, decide what is resident, stage the
+ * missing preads and bind the six slots, before the routed MoE could be
+ * encoded: forty readback boundaries per token on the thread that also has to
+ * encode the rest of the layer. With the binding env on, the routed kernels
+ * take the existing address-table entry points instead: they read the ids out
+ * of the router's own buffer on the GPU and dereference the per-layer expert
+ * address table, which the streaming cache already keeps coherent (installing
+ * an expert sets its slot, evicting one zeroes it, and an in-flight slot is
+ * never evicted). A dedicated service thread waits until the router has
+ * written the ids, reads them, runs the bookkeeping the encode thread used to
+ * do, loads what is missing and marks the six slots in flight. The batch
+ * command buffer signals that thread when the router is done and waits for its
+ * release before the routed dispatch, so the table is complete by construction
+ * while the encode thread never learns the ids.
+ *
+ * Same ids, same kernels: the addr-table and the slots6 kernels call the
+ * identical iq2/q2 matvec implementation with the same nsg and the same
+ * dispatch geometry, so a layer is bit-identical as long as all six experts
+ * are resident, which the release gate guarantees. Like the tensor-parallel
+ * gates, a service-side failure releases the wait anyway (the GPU must not
+ * hang) and latches the failure; the next layer then fails the encode instead
+ * of running with a hole in the address table.
+ */
+#define DS4_METAL_V41_BINDING_SLOTS 128u
+#define DS4_METAL_V41_BINDING_WAIT_MS 60000
+
+typedef struct {
+    uint64_t              seq;
+    uint64_t              protect_seq;
+    const ds4_gpu_tensor *ids;
+    const void           *model_map;
+    uint64_t              model_size;
+    uint32_t              layer;
+    uint32_t              n_total_expert;
+    uint32_t              n_selected;
+    uint64_t              gate_offset;
+    uint64_t              up_offset;
+    uint64_t              down_offset;
+    uint64_t              gate_expert_bytes;
+    uint64_t              down_expert_bytes;
+} ds4_gpu_v41_binding_request;
+
+static id<MTLSharedEvent> g_v41_binding_ids_event;
+static id<MTLSharedEvent> g_v41_binding_ready_event;
+static uint64_t g_v41_binding_seq;
+static int g_v41_binding_failed;
+static pthread_mutex_t g_v41_binding_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_v41_binding_work_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t g_v41_binding_space_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t g_v41_binding_thread;
+static int g_v41_binding_thread_started;
+static ds4_gpu_v41_binding_request
+    g_v41_binding_ring[DS4_METAL_V41_BINDING_SLOTS];
+static uint32_t g_v41_binding_head;
+static uint32_t g_v41_binding_count;
+
+/*
+ * One layer's routing decision, resolved off the encode thread: read the ids
+ * the GPU just wrote, keep the cache bookkeeping the synchronous path used to
+ * do, make the six experts resident and publish their addresses.
+ */
+static int ds4_gpu_v41_moe_gpu_binding_serve(
+        const ds4_gpu_v41_binding_request *req) {
+    ds4_gpu_stream_expert_cache_entry
+        *entries[DS4_METAL_STREAM_EXPERT_CACHE_MAX_SELECTED] = { NULL };
+    uint64_t gate_abs[DS4_METAL_STREAM_EXPERT_CACHE_MAX_SELECTED] = { 0 };
+    uint64_t up_abs[DS4_METAL_STREAM_EXPERT_CACHE_MAX_SELECTED] = { 0 };
+    uint64_t down_abs[DS4_METAL_STREAM_EXPERT_CACHE_MAX_SELECTED] = { 0 };
+    int32_t ids[DS4_METAL_STREAM_EXPERT_CACHE_MAX_SELECTED] = { -1, -1, -1,
+                                                                -1, -1, -1 };
+
+    if (!req->ids || !req->model_map || req->n_selected == 0 ||
+        req->n_selected > DS4_METAL_STREAM_EXPERT_CACHE_MAX_SELECTED) {
+        return 0;
+    }
+    if (@available(macOS 12.0, *)) {
+        if (![g_v41_binding_ids_event
+                waitUntilSignaledValue:req->seq
+                             timeoutMS:DS4_METAL_V41_BINDING_WAIT_MS]) {
+            fprintf(stderr,
+                    "ds4: Metal V4.1 MoE GPU binding timed out waiting for the "
+                    "router ids at layer %u\n",
+                    req->layer);
+            return 0;
+        }
+    } else {
+        return 0;
+    }
+
+    if (!ds4_gpu_tensor_read(req->ids, 0, ids,
+                             sizeof(int32_t) * req->n_selected)) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < req->n_selected; i++) {
+        if (ids[i] < 0 || (uint32_t)ids[i] >= req->n_total_expert) {
+            fprintf(stderr,
+                    "ds4: Metal V4.1 MoE GPU binding expert id %d is outside "
+                    "0..%u at layer %u\n",
+                    ids[i], req->n_total_expert, req->layer);
+            return 0;
+        }
+    }
+
+    ds4_gpu_stream_expert_cache_note_selected_hotness(req->layer, ids,
+                                                      req->n_selected);
+    if (!ds4_gpu_moe_selected_trace_record(ids, req->n_selected) ||
+        !ds4_gpu_moe_selected_hotlist_record(req->layer, ids,
+                                             req->n_selected,
+                                             req->n_total_expert)) {
+        return 0;
+    }
+
+    uint32_t missing_mask = 0;
+    for (uint32_t i = 0; i < req->n_selected; i++) {
+        const uint64_t expert_id = (uint64_t)(uint32_t)ids[i];
+        if (expert_id > UINT64_MAX / (req->gate_expert_bytes ?
+                                      req->gate_expert_bytes : 1) ||
+            expert_id > UINT64_MAX / (req->down_expert_bytes ?
+                                      req->down_expert_bytes : 1)) {
+            return 0;
+        }
+        const uint64_t gate_rel = expert_id * req->gate_expert_bytes;
+        const uint64_t down_rel = expert_id * req->down_expert_bytes;
+        if (gate_rel > UINT64_MAX - req->gate_offset ||
+            down_rel > UINT64_MAX - req->down_offset) {
+            return 0;
+        }
+        gate_abs[i] = req->gate_offset + gate_rel;
+        up_abs[i] = req->up_offset + gate_rel;
+        down_abs[i] = req->down_offset + down_rel;
+        entries[i] = ds4_gpu_stream_expert_cache_peek(
+                req->model_map,
+                req->model_size,
+                req->layer,
+                (uint32_t)ids[i],
+                req->n_total_expert,
+                req->n_selected,
+                gate_abs[i],
+                up_abs[i],
+                down_abs[i],
+                req->gate_expert_bytes,
+                req->down_expert_bytes);
+        if (!entries[i]) missing_mask |= 1u << i;
+    }
+    if (missing_mask != 0 &&
+        !ds4_gpu_stream_expert_cache_load_selected_missing(
+                req->model_map,
+                req->model_size,
+                req->layer,
+                ids,
+                req->n_total_expert,
+                req->n_selected,
+                gate_abs,
+                up_abs,
+                down_abs,
+                req->gate_expert_bytes,
+                req->down_expert_bytes,
+                missing_mask,
+                entries)) {
+        fprintf(stderr,
+                "ds4: Metal V4.1 MoE GPU binding could not load the missing "
+                "experts at layer %u\n",
+                req->layer);
+        return 0;
+    }
+    for (uint32_t i = 0; i < req->n_selected; i++) {
+        if (entries[i]) continue;
+        fprintf(stderr,
+                "ds4: Metal V4.1 MoE GPU binding lost expert %d of layer %u "
+                "after the load (missing=0x%x)\n",
+                ids[i], req->layer, missing_mask);
+        return 0;
+    }
+    /* Keep the six slots out of eviction while this batch is in flight, which
+     * the synchronous path got from the encode helper. The sequence has to be
+     * the one the arm captured: by now the encode thread may have drained and
+     * opened a later command buffer, and the ambient sequence would either
+     * name the wrong buffer or be zero. */
+    if (!ds4_gpu_stream_expert_cache_mark_entries_inflight_seq(
+                entries, req->n_selected, 0, req->protect_seq)) {
+        fprintf(stderr,
+                "ds4: Metal V4.1 MoE GPU binding could not protect the experts "
+                "of layer %u (protect_seq=%llu batch_seq=%llu owned=%llu "
+                "done=%llu)\n",
+                req->layer,
+                (unsigned long long)req->protect_seq,
+                (unsigned long long)g_stream_expert_cache_batch_seq,
+                (unsigned long long)g_stream_expert_cache_owned_seq,
+                (unsigned long long)g_stream_expert_cache_done_seq);
+        return 0;
+    }
+    for (uint32_t i = 0; i < req->n_selected; i++) {
+        /* install/evict keep the table coherent, so this only re-asserts the
+         * six slots the kernels are about to read; it closes the window of an
+         * entry that predates the address table existing at all. */
+        if (!ds4_gpu_stream_expert_cache_set_addr_slot_raw(
+                    req->layer,
+                    (uint32_t)ids[i],
+                    entries[i]->gate_buffer,
+                    entries[i]->gate_inner,
+                    entries[i]->up_buffer,
+                    entries[i]->up_inner,
+                    entries[i]->down_buffer,
+                    entries[i]->down_inner)) {
+            return 0;
+        }
+    }
+    ds4_gpu_stream_expert_cache_prune_layer(req->layer,
+                                            req->n_total_expert,
+                                            req->n_selected,
+                                            ids,
+                                            req->n_selected);
+    ds4_gpu_stream_expert_cache_prune_global(req->layer, ids, req->n_selected);
+    return 1;
+}
+
+static void *ds4_gpu_v41_moe_gpu_binding_thread_main(void *arg) {
+    (void)arg;
+    /* The streaming cache must not wait on command buffers from this thread;
+     * registering it turns such a wait into a failure the caller latches. */
+    ds4_gpu_stream_expert_cache_note_service_thread();
+    for (;;) {
+        pthread_mutex_lock(&g_v41_binding_mutex);
+        while (g_v41_binding_count == 0) {
+            pthread_cond_wait(&g_v41_binding_work_cond, &g_v41_binding_mutex);
+        }
+        const ds4_gpu_v41_binding_request req =
+            g_v41_binding_ring[g_v41_binding_head];
+        g_v41_binding_head = (g_v41_binding_head + 1u) %
+                             DS4_METAL_V41_BINDING_SLOTS;
+        g_v41_binding_count--;
+        pthread_cond_signal(&g_v41_binding_space_cond);
+        pthread_mutex_unlock(&g_v41_binding_mutex);
+
+        if (!ds4_gpu_v41_moe_gpu_binding_serve(&req) && !g_v41_binding_failed) {
+            fprintf(stderr,
+                    "ds4: Metal V4.1 MoE GPU binding failed, the layer encode "
+                    "takes the synchronous path from here on\n");
+            g_v41_binding_failed = 1;
+        }
+        if (@available(macOS 12.0, *)) {
+            /* Always release: a batch command buffer waiting on this value may
+             * already be on the GPU, and the routed dispatch behind it must
+             * either see a complete table or the run must fail loudly. */
+            g_v41_binding_ready_event.signaledValue = req.seq;
+        }
+    }
+    return NULL;
+}
+
+static bool ds4_gpu_v41_moe_gpu_binding_ensure_runtime(void) {
+    if (g_v41_binding_failed) return false;
+    if (@available(macOS 12.0, *)) {
+        if (!g_initialized && !ds4_gpu_init()) return false;
+        if (!g_device) return false;
+        if (!g_v41_binding_ids_event) {
+            g_v41_binding_ids_event = [g_device newSharedEvent];
+        }
+        if (!g_v41_binding_ready_event) {
+            g_v41_binding_ready_event = [g_device newSharedEvent];
+        }
+        if (!g_v41_binding_ids_event || !g_v41_binding_ready_event) {
+            fprintf(stderr,
+                    "ds4: Metal V4.1 MoE GPU binding requires MTLSharedEvent "
+                    "support\n");
+            return false;
+        }
+    } else {
+        return false;
+    }
+    if (g_v41_binding_thread_started) return true;
+    const int rc = pthread_create(&g_v41_binding_thread, NULL,
+                                  ds4_gpu_v41_moe_gpu_binding_thread_main,
+                                  NULL);
+    if (rc != 0) {
+        fprintf(stderr,
+                "ds4: failed to start the Metal V4.1 MoE GPU binding thread: %s\n",
+                strerror(rc));
+        return false;
+    }
+    g_v41_binding_thread_started = 1;
+    return true;
+}
+
+/*
+ * A layer that does not bind takes the synchronous path, which is correct but
+ * slower. Report the first decline of each kind once, so a run that never
+ * engaged the binding path is not mistaken for one that did.
+ */
+static void ds4_gpu_v41_moe_gpu_binding_note_declined(
+        uint32_t layer, int reason, const char *what) {
+    static int g_v41_binding_decline_shown;
+    if ((g_v41_binding_decline_shown & (1 << reason)) != 0) return;
+    g_v41_binding_decline_shown |= 1 << reason;
+    fprintf(stderr,
+            "ds4: Metal V4.1 MoE GPU binding off from layer %u: %s\n",
+            layer, what);
+}
+
+/*
+ * Hand one layer to the binding thread and bracket the routed dispatch with the
+ * two event edges on the open batch command buffer. Returns 0 when the layer
+ * must fall back to the synchronous path (nothing was encoded), and fails once
+ * the thread has latched a failure.
+ */
+static bool ds4_gpu_v41_moe_gpu_binding_arm(
+        const ds4_gpu_tensor *ids,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint32_t              layer,
+        uint32_t              n_total_expert,
+        uint32_t              n_selected,
+        uint64_t              gate_offset,
+        uint64_t              up_offset,
+        uint64_t              down_offset,
+        uint64_t              gate_expert_bytes,
+        uint64_t              down_expert_bytes) {
+    if (g_v41_binding_failed) {
+        ds4_gpu_v41_moe_gpu_binding_note_declined(
+                layer, 0, "a previous layer failed to resolve");
+        return false;
+    }
+    if (!g_batch_cb || !ds4_gpu_v41_moe_gpu_binding_ensure_runtime()) {
+        ds4_gpu_v41_moe_gpu_binding_note_declined(
+                layer, 1, "no open batch command buffer or runtime");
+        return false;
+    }
+    /* The command buffer sequence to protect the six experts with: this is
+     * the buffer the gated dispatch is encoded into, and it cannot have
+     * completed yet. The service thread must not read the ambient sequence,
+     * which names a later buffer or, right after a drain, none at all. */
+    const uint64_t protect_seq = g_stream_expert_cache_batch_seq ?
+                                 g_stream_expert_cache_batch_seq :
+                                 g_stream_expert_cache_owned_seq;
+    if (protect_seq == 0) {
+        ds4_gpu_v41_moe_gpu_binding_note_declined(
+                layer, 2, "the batch command buffer has no sequence yet");
+        return false;
+    }
+
+    pthread_mutex_lock(&g_v41_binding_mutex);
+    while (g_v41_binding_count >= DS4_METAL_V41_BINDING_SLOTS) {
+        pthread_cond_wait(&g_v41_binding_space_cond, &g_v41_binding_mutex);
+    }
+    ds4_gpu_v41_binding_request *slot = &g_v41_binding_ring[
+        (g_v41_binding_head + g_v41_binding_count) % DS4_METAL_V41_BINDING_SLOTS];
+    slot->seq = ++g_v41_binding_seq;
+    slot->protect_seq = protect_seq;
+    slot->ids = ids;
+    slot->model_map = model_map;
+    slot->model_size = model_size;
+    slot->layer = layer;
+    slot->n_total_expert = n_total_expert;
+    slot->n_selected = n_selected;
+    slot->gate_offset = gate_offset;
+    slot->up_offset = up_offset;
+    slot->down_offset = down_offset;
+    slot->gate_expert_bytes = gate_expert_bytes;
+    slot->down_expert_bytes = down_expert_bytes;
+    g_v41_binding_count++;
+    const uint64_t seq = slot->seq;
+    pthread_cond_signal(&g_v41_binding_work_cond);
+    pthread_mutex_unlock(&g_v41_binding_mutex);
+
+    if (@available(macOS 12.0, *)) {
+        ds4_gpu_close_batch_encoder();
+        [g_batch_cb encodeSignalEvent:g_v41_binding_ids_event value:seq];
+        [g_batch_cb encodeWaitForEvent:g_v41_binding_ready_event value:seq];
+        g_batch_has_work = YES;
+    }
+    return true;
+}
+
 int ds4_gpu_routed_moe_one_tensor(
         ds4_gpu_tensor       *out,
         ds4_gpu_tensor       *gate,
@@ -40484,6 +40962,7 @@ int ds4_gpu_routed_moe_one_tensor(
         bool use_stream_expert_split_candidate = false;
         bool use_stream_expert_split_deferred = false;
         bool stream_expert_split_completed = false;
+        bool v41_gpu_binding = false;
         uint32_t stream_expert_resident_mask = 0;
         uint32_t stream_expert_missing_mask = 0;
         __unsafe_unretained id<MTLBuffer> gate_group6_bufs[6] = { nil, nil, nil, nil, nil, nil };
@@ -41419,10 +41898,39 @@ int ds4_gpu_routed_moe_one_tensor(
                 if (getenv("DS4_GLM_TP_DEBUG")) fprintf(stderr, "ds4: routed_moe_one silent return at line %d\n", 32831);
                 return 0;
             }
+            /*
+             * Hand this layer's routing decision to the GPU binding thread.
+             * From here the ids never come back to this thread:
+             * the routed kernels read them out of the router's buffer and
+             * dereference the expert address table the binding thread fills.
+             */
+            if (ds4_gpu_v41_moe_gpu_binding_requested() &&
+                use_iq2_selected_slots &&
+                use_stream_expert_cache &&
+                !use_iq2_full_expert_addr_table &&
+                n_tokens == 1 &&
+                g_tp_split_world == 1 &&
+                g_moe_mul_mv_addr_iq2_xxs_pair_swiglu_pipeline != nil &&
+                g_moe_mul_mv_addr_q2_k_sum6_pipeline != nil &&
+                ds4_gpu_stream_expert_cache_addr_buffers(layer_index,
+                                                         &stream_gate_addr_buf,
+                                                         &stream_up_addr_buf,
+                                                         &stream_down_addr_buf) &&
+                ds4_gpu_v41_moe_gpu_binding_arm(
+                        selected, model_map, model_size, layer_index,
+                        n_total_expert, n_expert, gate_offset, up_offset,
+                        down_offset, gate_expert_bytes, down_expert_bytes)) {
+                v41_gpu_binding = true;
+                selected_id_source = "gpu-binding";
+                selected_ids_available = false;
+                g_routed_moe_selected_override_n = 0;
+            }
             const bool stream_split_ready =
+                !v41_gpu_binding &&
                 use_stream_expert_cache &&
                 ds4_gpu_stream_expert_split_ready();
             const bool use_stream_compact_addr =
+                !v41_gpu_binding &&
                 use_stream_expert_cache &&
                 use_iq2_selected_slots &&
                 ds4_gpu_stream_compact_addr_requested() &&
@@ -41438,6 +41946,7 @@ int ds4_gpu_routed_moe_one_tensor(
                 g_moe_mul_mv_addr_iq2_xxs_pair_swiglu_masked_pipeline != nil &&
                 g_moe_mul_mv_addr_q2_k_sum6_masked_pipeline != nil;
             const bool use_stream_hit_validator =
+                !v41_gpu_binding &&
                 use_stream_expert_cache &&
                 use_iq2_selected_slots &&
                 ds4_gpu_stream_expert_hit_validator_requested() &&
@@ -41448,7 +41957,10 @@ int ds4_gpu_routed_moe_one_tensor(
                                                          &stream_gate_addr_buf,
                                                          &stream_up_addr_buf,
                                                          &stream_down_addr_buf);
-            if (use_iq2_full_expert_addr_table) {
+            if (v41_gpu_binding) {
+                /* Nothing to read back: the binding thread owns this layer's
+                 * ids from here, and the routed dispatch waits for it. */
+            } else if (use_iq2_full_expert_addr_table) {
                 selected_id_source = "gpu-full-addr";
                 selected_ids_available = false;
                 g_routed_moe_selected_override_n = 0;
@@ -41719,15 +42231,16 @@ int ds4_gpu_routed_moe_one_tensor(
             }
             if (use_stream_expert_cache) {
                 use_stream_expert_addr_table =
-                    ((use_iq2_selected_slots &&
-                      ds4_gpu_stream_expert_addr_table_kernel_requested() &&
-                      g_moe_mul_mv_addr_iq2_xxs_pair_swiglu_pipeline != nil &&
-                      g_moe_mul_mv_addr_q2_k_sum6_pipeline != nil) ||
-                     use_iq2_stream_addr_table) &&
-                    ds4_gpu_stream_expert_cache_addr_buffers(layer_index,
-                                                             &stream_gate_addr_buf,
-                                                             &stream_up_addr_buf,
-                                                             &stream_down_addr_buf);
+                    v41_gpu_binding ||
+                    (((use_iq2_selected_slots &&
+                       ds4_gpu_stream_expert_addr_table_kernel_requested() &&
+                       g_moe_mul_mv_addr_iq2_xxs_pair_swiglu_pipeline != nil &&
+                       g_moe_mul_mv_addr_q2_k_sum6_pipeline != nil) ||
+                      use_iq2_stream_addr_table) &&
+                     ds4_gpu_stream_expert_cache_addr_buffers(layer_index,
+                                                              &stream_gate_addr_buf,
+                                                              &stream_up_addr_buf,
+                                                              &stream_down_addr_buf));
                 if (use_iq2_stream_addr_table && !use_stream_expert_addr_table) {
                     fprintf(stderr,
                             "ds4: Metal IQ2/IQ2 streaming decode could not prepare expert address buffers\n");
@@ -41818,14 +42331,18 @@ int ds4_gpu_routed_moe_one_tensor(
                         }
                     }
                 }
-                ds4_gpu_stream_expert_cache_prune_layer(layer_index,
-                                                        n_total_expert,
-                                                        n_expert,
-                                                        selected_ids,
-                                                        n_expert);
-                ds4_gpu_stream_expert_cache_prune_global(layer_index,
-                                                         selected_ids,
-                                                         n_expert);
+                if (!v41_gpu_binding) {
+                    /* The binding thread prunes behind the ids it consumed;
+                     * this thread only has ids it is allowed to look at. */
+                    ds4_gpu_stream_expert_cache_prune_layer(layer_index,
+                                                            n_total_expert,
+                                                            n_expert,
+                                                            selected_ids,
+                                                            n_expert);
+                    ds4_gpu_stream_expert_cache_prune_global(layer_index,
+                                                             selected_ids,
+                                                             n_expert);
+                }
                 if (use_stream_compact_addr) {
                     id<MTLBuffer> compact_selected = nil;
                     if (!ds4_gpu_stream_compact_addr_prepare(layer_index,
@@ -42341,6 +42858,7 @@ int ds4_gpu_routed_moe_one_tensor(
                                                                                ds4_gpu_tensor_offset(weights),
                                                                                gate_smem,
                                                                                2,
+                                                                               false,
                                                                                false);
                         if (ok) {
                             ok = ds4_gpu_flush_commands();
@@ -42485,6 +43003,7 @@ int ds4_gpu_routed_moe_one_tensor(
                                                                                    ds4_gpu_tensor_offset(weights),
                                                                                    gate_smem,
                                                                                    2,
+                                                                                   false,
                                                                                    false);
                         }
                         if (ok) {
@@ -42501,7 +43020,8 @@ int ds4_gpu_routed_moe_one_tensor(
                                                                            selected_exec_buf,
                                                                            selected_exec_off,
                                                                            down_smem,
-                                                                           2);
+                                                                           2,
+                                                                           false);
                         }
                         stream_expert_split_completed = ok;
                         if (stream_split_timing) {
@@ -42538,7 +43058,7 @@ int ds4_gpu_routed_moe_one_tensor(
                                                                                &gate_args,
                                                                                &act_args,
                                                                                &split_args,
-                                                                               stream_slot_entries,
+                                                                               v41_gpu_binding ? NULL : stream_slot_entries,
                                                                                stream_gate_addr_buf,
                                                                                stream_up_addr_buf,
                                                                                xbuf,
@@ -42555,15 +43075,16 @@ int ds4_gpu_routed_moe_one_tensor(
                                                                                ds4_gpu_tensor_offset(weights),
                                                                                gate_smem,
                                                                                2,
-                                                                               false);
+                                                                               false,
+                                                                               v41_gpu_binding);
                     }
                 } else {
                     ok = ds4_gpu_encode_mul_mv_addr_iq2_pair_swiglu(cb,
                                                                     g_moe_mul_mv_addr_iq2_xxs_pair_swiglu_pipeline,
                                                                     &gate_args,
                                                                     &act_args,
-                                                                    stream_slot_entries,
-                                                                    n_expert,
+                                                                    v41_gpu_binding ? NULL : stream_slot_entries,
+                                                                    v41_gpu_binding ? 0u : n_expert,
                                                                     stream_gate_addr_buf,
                                                                     stream_up_addr_buf,
                                                                     xbuf,
@@ -42582,7 +43103,8 @@ int ds4_gpu_routed_moe_one_tensor(
                                                                     2,
                                                                     false,
                                                                     nil,
-                                                                    nil);
+                                                                    nil,
+                                                                    v41_gpu_binding);
                 }
             } else {
                 ok = (!use_stream_expert_cache ||
@@ -42897,7 +43419,7 @@ int ds4_gpu_routed_moe_one_tensor(
                                                                    g_moe_mul_mv_addr_q2_k_sum6_masked_pipeline,
                                                                    &down_args,
                                                                    &split_args,
-                                                                   stream_slot_entries,
+                                                                   v41_gpu_binding ? NULL : stream_slot_entries,
                                                                    stream_down_addr_buf,
                                                                    midbuf,
                                                                    ds4_gpu_tensor_offset(mid),
@@ -42906,13 +43428,14 @@ int ds4_gpu_routed_moe_one_tensor(
                                                                    selected_exec_buf,
                                                                    selected_exec_off,
                                                                    down_smem,
-                                                                   2);
+                                                                   2,
+                                                                   v41_gpu_binding);
                 } else {
                     ok = ds4_gpu_encode_mul_mv_addr_q2_sum6(cb,
                                                              g_moe_mul_mv_addr_q2_k_sum6_pipeline,
                                                              &down_args,
-                                                             stream_slot_entries,
-                                                             n_expert,
+                                                             v41_gpu_binding ? NULL : stream_slot_entries,
+                                                             v41_gpu_binding ? 0u : n_expert,
                                                              stream_down_addr_buf,
                                                              midbuf,
                                                              ds4_gpu_tensor_offset(mid),
@@ -42922,7 +43445,8 @@ int ds4_gpu_routed_moe_one_tensor(
                                                              selected_exec_off,
                                                              down_smem,
                                                              2,
-                                                             nil);
+                                                             nil,
+                                                             v41_gpu_binding);
                 }
             } else {
                 ok = (!use_stream_expert_cache ||
@@ -44003,7 +44527,8 @@ int ds4_gpu_routed_moe_batch_tensor(
                     2,
                     false,
                     stream_overflow_gate,
-                    stream_overflow_up);
+                    stream_overflow_up,
+                    false);
             if (!ok) {
                 fprintf(stderr,
                         "ds4: Metal streaming prefill batch selected addr layer=%u "
@@ -44134,7 +44659,7 @@ int ds4_gpu_routed_moe_batch_tensor(
                 xbuf, ds4_gpu_tensor_offset(x), gatebuf, ds4_gpu_tensor_offset(gate),
                 upbuf, ds4_gpu_tensor_offset(up), midbuf, ds4_gpu_tensor_offset(mid),
                 selectedbuf, ds4_gpu_tensor_offset(selected), weightsbuf, ds4_gpu_tensor_offset(weights),
-                gate_smem, 2, false, stream_overflow_gate, stream_overflow_up);
+                gate_smem, 2, false, stream_overflow_gate, stream_overflow_up, false);
         } else if (use_iq2_cached_batch) {
             ok = ds4_gpu_encode_mul_mv_addr_iq2(cb,
                 g_moe_mul_mv_addr_iq2_xxs_pipeline, &gate_args,
@@ -44360,7 +44885,8 @@ int ds4_gpu_routed_moe_batch_tensor(
                         ds4_gpu_tensor_offset(selected),
                         down_smem,
                         2,
-                        stream_overflow_down);
+                        stream_overflow_down,
+                        false);
                 if (!ok) {
                     fprintf(stderr,
                             "ds4: Metal streaming prefill batch selected addr layer=%u "
