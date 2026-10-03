@@ -99,7 +99,7 @@
 | 工作 | 载体 | 状态 |
 |---|---|---|
 | 主工作区未提交改动 | `ds4.c`/`ds4_metal.m`：`DS4_METAL_V41_STREAM_GATHER_SPEC_ROWS`（MTP A 候选实验）+ `DS4_METAL_ENABLE_GLM53_ROUTED_MPP_PACKED`（GLM top-8 packed 门，待 prefill A/B）+ `--mtp-timing` 统计 + indexed prefill trace env | BASELINE §13.2 明示 **WIP 勿动**，A/B 未定 |
-| p4-cardh-early-load（卡 H：decode early-load） | worktree `~/ds4-cardh` + `.cardh-ab/` | BASELINE §14.6 新增**主攻** |
+| p4-cardh-early-load（卡 H：decode early-load） | worktree `~/ds4-cardh`，已提交 `7cd04d6`（78 行）；`.cardh-ab/` 产物本地未入库 | BASELINE §14.6 主攻，但**实测未跑通**（ON 臂 layer-0 崩溃、parity 漂移 0.36、无速度数），详见 E 节 |
 | p42-attn-glue | worktree `~/ds4-attn-glue`，全部未提交 | 实测 ≈中性，**等用户 review 决定合/弃** |
 | p3-io-diag | worktree `~/ds4-io-diag` | 7 行诊断补丁，可留可弃 |
 | `tests/test_glm53_router_shared.c` 未提交补丁 | 测试补 `ds4_gpu_test_set_flags` | 小修，可随手提交 |
@@ -123,7 +123,7 @@
 | 项 | 内容与规模 | 状态/建议 |
 |---|---|---|
 | `stash@{0}`/`{1}`/`{2}` | 0/1 = `9bc0bd7`、`ff5b4e0` 的已应用残留；2 = `ds4.c` +4 `vocab_size` 缺失回退 129280（unsloth GGUF 适配，未入 main） | **2026-10-04 用户裁决全部丢弃**，`git stash clear`；patch 备份在 `.git/LOCAL_BACKUPS/stashes-2026-10-04.patch`，日后要捡回 vocab 回退从这里取 |
-| card H 实现（`~/ds4-cardh` 未提交） | `ds4.c` +76 / `ds4_metal.m` +2：`DS4_METAL_ENABLE_V41_MOE_EARLY_LOAD` 门控的 MoE early-load + `ds4_gpu_signal_selected_readback_ready` 免逐层回读（宣称 bit-exact）+ `.cardh-ab/` A/B 产物 | D 表只记了"主攻"名目，**这 78 行全仓只存在于该 worktree 工作区，零 git 备份**——建议先 commit 到 `p4-cardh-early-load` 再继续 |
+| card H 实现（`~/ds4-cardh`，**已提交 `7cd04d6` 到 `p4-cardh-early-load`**） | `ds4.c` +76 / `ds4_metal.m` +2：`DS4_METAL_ENABLE_V41_MOE_EARLY_LOAD` 门控的 MoE early-load + `ds4_gpu_signal_selected_readback_ready` 免逐层回读；`.cardh-ab/` 产物入 exclude 未入库 | **功能未跑通、速度未测**：自测 A/B 里 ON 臂在 `V4.1 layer 0 failed at position 2048` 崩溃（b2/b3 空表，仅 OFF 基线出数 23.3 t/s@2k、21.6@32k），`parity_ssd2.log` row4/5 漂移达 0.36 → 代码注释"bit-exact"未证实。投入前先做 disk-bound vs host-bound 判别；勿默认开 |
 | 未跟踪工具脚本 ~1.2k 行 | `gguf-tools/deepseek41_dspark_convert.py`(349)、`speed-bench/{build_dspark_support_gguf.py(228), jigsaw_to_ds4_dspark.py(211), mtp_ledger_replay.py(160)}` = DSpark/MTP 资产管道；`speed-bench/{v41_m5max_streaming_ab.sh(66), v41_m5max_server_probe.sh(50)}` + `v41_m5max_ab/` 实测数据 = 基线方案台架 | DSpark 四件套随 MTP 线裁决转**封存备查**（≥256G 机重开时要用）；v41 台架服务在途工作，建议随下批提交入库。注意 `ds4-attn-glue`/`ds4-io-diag`/`/tmp/ds4-main` 里各有一份 `v41_m5max_streaming_ab.sh`/`v41_m5max_ab/` 拷贝，清理时别认错本尊 |
 
 另：`CLAUDE.md` 是 5 月分叉时的旧孪生文档（未跟踪，内容=上游版 AGENTS.md，无新章节），待办：同步 AGENTS.md 新章节或删掉以 AGENTS.md 为单一事实源。
