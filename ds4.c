@@ -39320,19 +39320,14 @@ static void glm_debug_dump_prefill_logits(const float *logits) {
 }
 
 static bool glm_graph_indexed_prefill_trace_enabled(void) {
-    return getenv("DS4_GLM_INDEXED_PREFILL_TRACE") != NULL;
+    return false;
 }
 
 static bool glm_graph_indexed_prefill_trace_all(void) {
-    return getenv("DS4_GLM_INDEXED_PREFILL_TRACE_ALL") != NULL;
+    return false;
 }
 
 static uint32_t glm_graph_indexed_prefill_trace_slow_ms(void) {
-    const char *v = getenv("DS4_GLM_INDEXED_PREFILL_TRACE_SLOW_MS");
-    if (v && *v) {
-        const long ms = atol(v);
-        if (ms >= 0) return (uint32_t)ms;
-    }
     return 100u;
 }
 
@@ -43386,10 +43381,6 @@ static uint32_t ds41_draft_block(ds41_gpu_graph *g, ds41_draft *d, const ds4_mod
         for (uint32_t k = 0; k < DS4_N_EMBD; k++) score += (double)proj[k] * x[(uint64_t)i * DS4_N_EMBD + k];
         for (uint32_t k = 0; k < rank; k++) score += (double)proj[DS4_N_EMBD + k] * embed[(uint64_t)i * rank + k];
         drafts[i] = out[i + 1u];
-        if (getenv("DS4_DSPARK_TRACE_DRAFT")) {
-            fprintf(stderr, "ds4: [draft] row=%u tok=%d emb0=%.6f markov0=%.6f proj0=%.6f score=%.6f\n",
-                    i, drafts[i], x[(uint64_t)i * DS4_N_EMBD], embed[(uint64_t)i * rank], proj[0], score);
-        }
         /* The sigmoid goes through libm via the dynamic symbol table: this
          * translation unit compiles with -ffast-math, which rewrites the
          * direct exp() call into a form that misbehaves at exp()'s domain
@@ -62482,6 +62473,17 @@ struct ds4_session {
     uint32_t glm_mtp_min_pos;
     float *glm_mtp_hc;
     float *glm_mtp_logits0;
+    /* GLM MTP economics rollup, accumulated while --mtp-timing is set and
+     * printed at session close: the accept-rate vs cycle-cost decision table
+     * (plain cycle = single-token eval + draft seed; verify cycle = verify2
+     * rows + row0 head + draft reseeds). */
+    uint64_t glm_mtp_trace_verify_cycles;
+    uint64_t glm_mtp_trace_seed_cycles;
+    uint64_t glm_mtp_trace_accepted;
+    uint64_t glm_mtp_trace_committed;
+    double glm_mtp_trace_verify_ms;
+    double glm_mtp_trace_head_draft_ms;
+    double glm_mtp_trace_plain_ms;
     ds4_spec_frontier greedy_splitkv_anchor;
     /* Weak handle to graph.spec_* storage, not a second tensor snapshot.
      * end == 0 expires it; recoverable positions are (start, end). */
@@ -75590,6 +75592,43 @@ void ds4_session_free(ds4_session *s) {
         } else
 #endif
         if (ds4_session_is_glm(s)) {
+            if (s->engine && s->engine->glm_mtp_timing &&
+                (s->glm_mtp_trace_verify_cycles + s->glm_mtp_trace_seed_cycles) > 0) {
+                const uint64_t cycles = s->glm_mtp_trace_verify_cycles + s->glm_mtp_trace_seed_cycles;
+                const double all_ms = s->glm_mtp_trace_verify_ms +
+                    s->glm_mtp_trace_head_draft_ms + s->glm_mtp_trace_plain_ms;
+                fprintf(stderr,
+                        "ds4: GLM mtp: %" PRIu64 " verify cycles, %" PRIu64
+                        " drafts accepted (%.1f%%), %" PRIu64 " seed cycles; avg %.3f tokens/cycle; "
+                        "verify2 %.1f ms, head+draft %.1f ms, plain %.1f ms; "
+                        "effective %.1f t/s vs plain %.1f t/s\n",
+                        s->glm_mtp_trace_verify_cycles, s->glm_mtp_trace_accepted,
+                        s->glm_mtp_trace_verify_cycles
+                            ? 100.0 * (double)s->glm_mtp_trace_accepted /
+                                  (double)s->glm_mtp_trace_verify_cycles
+                            : 0.0,
+                        s->glm_mtp_trace_seed_cycles,
+                        (double)s->glm_mtp_trace_committed / (double)cycles,
+                        s->glm_mtp_trace_verify_cycles
+                            ? s->glm_mtp_trace_verify_ms /
+                                  (double)s->glm_mtp_trace_verify_cycles
+                            : 0.0,
+                        s->glm_mtp_trace_verify_cycles
+                            ? s->glm_mtp_trace_head_draft_ms /
+                                  (double)s->glm_mtp_trace_verify_cycles
+                            : 0.0,
+                        s->glm_mtp_trace_seed_cycles
+                            ? s->glm_mtp_trace_plain_ms /
+                                  (double)s->glm_mtp_trace_seed_cycles
+                            : 0.0,
+                        all_ms > 0.0
+                            ? 1000.0 * (double)s->glm_mtp_trace_committed / all_ms
+                            : 0.0,
+                        s->glm_mtp_trace_plain_ms > 0.0
+                            ? 1000.0 * (double)s->glm_mtp_trace_seed_cycles /
+                                  s->glm_mtp_trace_plain_ms
+                            : 0.0);
+            }
             glm_graph_free(&s->glm_graph);
         } else {
             metal_graph_free(&s->graph);
@@ -75927,6 +75966,7 @@ static int ds4_session_glm_spec_cycle_impl(
         pos + 2 > g->ctx_size ||
         (g->compact_cache_cap != 0 && pos + 1 >= g->compact_cache_cap)) {
         /* Plain step, then seed the first draft from g->cur. */
+        const double t_plain = timing ? now_sec() : 0.0;
         s->glm_spec_inside = 1;
         const int rc = ds4_session_eval_internal(s, first_token, false, err, errlen);
         s->glm_spec_inside = 0;
@@ -75942,6 +75982,11 @@ static int ds4_session_glm_spec_cycle_impl(
             s->glm_mtp_draft = d;
             s->glm_mtp_parent = n1;
             s->glm_mtp_have = 1;
+        }
+        if (timing) {
+            s->glm_mtp_trace_seed_cycles++;
+            s->glm_mtp_trace_committed += 1;
+            s->glm_mtp_trace_plain_ms += (now_sec() - t_plain) * 1000.0;
         }
         accepted[0] = first_token;
         return 1;
@@ -76204,6 +76249,11 @@ static int ds4_session_glm_spec_cycle_impl(
     }
     if (timing) {
         const double t2 = now_sec();
+        s->glm_mtp_trace_verify_cycles++;
+        s->glm_mtp_trace_accepted += accept ? 1u : 0u;
+        s->glm_mtp_trace_committed += (uint64_t)n_committed;
+        s->glm_mtp_trace_verify_ms += (t1 - t0) * 1000.0;
+        s->glm_mtp_trace_head_draft_ms += (t2 - t1) * 1000.0;
         char *dt = ds4_token_text(e, d, NULL);
         char *nt = ds4_token_text(e, n1, NULL);
         fprintf(stderr,
