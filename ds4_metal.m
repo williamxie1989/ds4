@@ -1023,6 +1023,8 @@ static uint32_t g_stream_expert_cache_free_slots[DS4_METAL_STREAM_EXPERT_CACHE_M
 static uint32_t g_stream_expert_cache_free_slot_count;
 static uint8_t g_stream_expert_cache_slab_slot_locked[DS4_METAL_STREAM_EXPERT_CACHE_MAX_ENTRIES];
 static uint32_t g_stream_expert_cache_mlock_budget_cap;
+/* Token epoch whose slab headroom has already been reserved. */
+static uint64_t g_stream_expert_cache_reserved_token_epoch;
 static uint8_t g_stream_expert_cache_mlock_relief_applied;
 static uint64_t g_stream_expert_cache_mlock_bytes;
 static uint64_t g_stream_expert_cache_mlock_fail_bytes;
@@ -14106,6 +14108,101 @@ static int ds4_gpu_stream_expert_slab_slot_buffers(
     return 1;
 }
 
+/*
+ * Create one more expert slab and return its index, or UINT32_MAX when the
+ * cache budget or the slab table is exhausted (or the allocation failed).
+ */
+static uint32_t ds4_gpu_stream_expert_cache_new_slab(uint64_t slot_bytes) {
+    if (slot_bytes == 0 ||
+        g_stream_expert_cache_slab_count >=
+            DS4_METAL_STREAM_EXPERT_CACHE_MAX_SLABS) {
+        return UINT32_MAX;
+    }
+    const uint32_t budget = ds4_gpu_stream_expert_cache_configured_budget();
+    if (budget != 0 && g_stream_expert_cache_slab_total_slots >= budget) {
+        return UINT32_MAX;
+    }
+    uint64_t target = ds4_gpu_stream_expert_slab_target_bytes();
+    uint64_t slots64 = target / slot_bytes;
+    if (slots64 == 0) slots64 = 1;
+    if (slots64 > UINT32_MAX) slots64 = UINT32_MAX;
+    uint32_t slots = (uint32_t)slots64;
+    if (budget != 0) {
+        const uint32_t remaining =
+            budget - g_stream_expert_cache_slab_total_slots;
+        if (slots > remaining) slots = remaining;
+    }
+    if (slots == 0) return UINT32_MAX;
+
+    id<MTLBuffer> slab_buffer = nil;
+    while (slots != 0) {
+        if ((uint64_t)slots <= UINT64_MAX / slot_bytes &&
+            (uint64_t)slots * slot_bytes <= (uint64_t)NSUIntegerMax) {
+            slab_buffer = ds4_gpu_stream_expert_alloc_slab_buffer(
+                    (uint64_t)slots * slot_bytes,
+                    @"ds4_stream_expert_slab");
+            if (slab_buffer) break;
+        }
+        slots /= 2u;
+    }
+    if (!slab_buffer || slots == 0) return UINT32_MAX;
+
+    const uint32_t slab = g_stream_expert_cache_slab_count++;
+    g_stream_expert_cache_slabs[slab] = slab_buffer;
+    g_stream_expert_cache_slab_start_slot[slab] =
+        g_stream_expert_cache_slab_total_slots;
+    g_stream_expert_cache_slab_slot_count[slab] = slots;
+    g_stream_expert_cache_slab_slots_used[slab] = 0;
+    g_stream_expert_cache_slab_total_slots += slots;
+    return slab;
+}
+
+/*
+ * The gated dispatch reaches expert weights through raw GPU addresses, so the
+ * encode helper has to tell Metal about them with use_slabs() -- and that is a
+ * snapshot of the slabs that exist when the dispatch is *encoded*.  Slabs are
+ * created lazily, and a slab created while the command buffer is *executing*
+ * is not in any snapshot, so the experts that land in it are dispatched with
+ * no resource marking at all and the GPU may read stale bytes.
+ *
+ * Growing the pool only at a token boundary keeps every slab a token can touch
+ * inside that token's snapshots: the previous token's command buffer has
+ * already completed when the next token starts, so the new slab is visible to
+ * every use_slabs() call the token makes.  Reserve a whole token's worst case
+ * (one expert per layer per selected slot) so nothing is created mid-token.
+ */
+static void ds4_gpu_stream_expert_cache_reserve_token_slots(
+        uint64_t gate_expert_bytes,
+        uint64_t down_expert_bytes) {
+    uint64_t slot_bytes = gate_expert_bytes * 2ull + down_expert_bytes;
+    if (slot_bytes == 0 || slot_bytes > (uint64_t)NSUIntegerMax) return;
+    const uint64_t page = (uint64_t)getpagesize();
+    if (page != 0) {
+        slot_bytes = round_up_u64(slot_bytes, page);
+        if (slot_bytes == 0 || slot_bytes > (uint64_t)NSUIntegerMax) return;
+    }
+    if (g_stream_expert_cache_slab_slot_bytes != 0 &&
+        g_stream_expert_cache_slab_slot_bytes != slot_bytes) {
+        return;
+    }
+    const uint64_t want =
+        (uint64_t)DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER *
+        (uint64_t)DS4_METAL_STREAM_EXPERT_CACHE_MAX_SELECTED;
+    for (;;) {
+        uint64_t used = 0;
+        for (uint32_t i = 0; i < g_stream_expert_cache_slab_count; i++) {
+            used += g_stream_expert_cache_slab_slots_used[i];
+        }
+        const uint64_t available =
+            (uint64_t)g_stream_expert_cache_slab_total_slots - used +
+            (uint64_t)g_stream_expert_cache_free_slot_count;
+        if (available >= want) return;
+        if (ds4_gpu_stream_expert_cache_new_slab(slot_bytes) == UINT32_MAX) {
+            return;
+        }
+    }
+}
+
 static int ds4_gpu_stream_expert_alloc_slab_slot(
         uint64_t gate_expert_bytes,
         uint64_t down_expert_bytes,
@@ -14150,52 +14247,21 @@ static int ds4_gpu_stream_expert_alloc_slab_slot(
                                                        down_inner);
     }
 
-    uint32_t slab = g_stream_expert_cache_slab_count;
-    if (slab != 0 &&
-        g_stream_expert_cache_slab_slots_used[slab - 1] <
-            g_stream_expert_cache_slab_slot_count[slab - 1]) {
-        slab--;
-    } else {
-        if (g_stream_expert_cache_slab_count >=
-            DS4_METAL_STREAM_EXPERT_CACHE_MAX_SLABS) {
-            return 0;
+    /* Prefer the newest slab that still has room.  Before the headroom
+     * reserve existed every older slab was full, so this is the same choice
+     * the single-slab check used to make; it only matters once a slab has
+     * been created ahead of its slots. */
+    uint32_t slab = UINT32_MAX;
+    for (uint32_t i = g_stream_expert_cache_slab_count; i-- > 0; ) {
+        if (g_stream_expert_cache_slab_slots_used[i] <
+            g_stream_expert_cache_slab_slot_count[i]) {
+            slab = i;
+            break;
         }
-        const uint32_t budget = ds4_gpu_stream_expert_cache_configured_budget();
-        if (budget != 0 && g_stream_expert_cache_slab_total_slots >= budget) {
-            return 0;
-        }
-        uint64_t target = ds4_gpu_stream_expert_slab_target_bytes();
-        uint64_t slots64 = target / slot_bytes;
-        if (slots64 == 0) slots64 = 1;
-        if (slots64 > UINT32_MAX) slots64 = UINT32_MAX;
-        uint32_t slots = (uint32_t)slots64;
-        if (budget != 0) {
-            const uint32_t remaining =
-                budget - g_stream_expert_cache_slab_total_slots;
-            if (slots > remaining) slots = remaining;
-        }
-        if (slots == 0) return 0;
-        id<MTLBuffer> slab_buffer = nil;
-        while (slots != 0) {
-            if ((uint64_t)slots <= UINT64_MAX / slot_bytes &&
-                (uint64_t)slots * slot_bytes <= (uint64_t)NSUIntegerMax) {
-                slab_buffer =
-                    ds4_gpu_stream_expert_alloc_slab_buffer(
-                            (uint64_t)slots * slot_bytes,
-                            @"ds4_stream_expert_slab");
-                if (slab_buffer) break;
-            }
-            slots /= 2u;
-        }
-        if (!slab_buffer || slots == 0) return 0;
-
-        slab = g_stream_expert_cache_slab_count++;
-        g_stream_expert_cache_slabs[slab] = slab_buffer;
-        g_stream_expert_cache_slab_start_slot[slab] =
-            g_stream_expert_cache_slab_total_slots;
-        g_stream_expert_cache_slab_slot_count[slab] = slots;
-        g_stream_expert_cache_slab_slots_used[slab] = 0;
-        g_stream_expert_cache_slab_total_slots += slots;
+    }
+    if (slab == UINT32_MAX) {
+        slab = ds4_gpu_stream_expert_cache_new_slab(slot_bytes);
+        if (slab == UINT32_MAX) return 0;
     }
 
     const uint32_t local_slot = g_stream_expert_cache_slab_slots_used[slab]++;
@@ -40833,6 +40899,13 @@ static bool ds4_gpu_v41_moe_gpu_binding_arm(
     slot->down_offset = down_offset;
     slot->gate_expert_bytes = gate_expert_bytes;
     slot->down_expert_bytes = down_expert_bytes;
+    if (g_stream_expert_cache_reserved_token_epoch !=
+        g_stream_expert_cache_decode_tokens) {
+        g_stream_expert_cache_reserved_token_epoch =
+            g_stream_expert_cache_decode_tokens;
+        ds4_gpu_stream_expert_cache_reserve_token_slots(gate_expert_bytes,
+                                                        down_expert_bytes);
+    }
     g_v41_binding_count++;
     const uint64_t seq = slot->seq;
     pthread_cond_signal(&g_v41_binding_work_cond);
