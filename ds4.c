@@ -40068,14 +40068,19 @@ static void glm_debug_dump_prefill_logits(const float *logits) {
 }
 
 static bool glm_graph_indexed_prefill_trace_enabled(void) {
-    return false;
+    return getenv("DS4_GLM_INDEXED_PREFILL_TRACE") != NULL;
 }
 
 static bool glm_graph_indexed_prefill_trace_all(void) {
-    return false;
+    return getenv("DS4_GLM_INDEXED_PREFILL_TRACE_ALL") != NULL;
 }
 
 static uint32_t glm_graph_indexed_prefill_trace_slow_ms(void) {
+    const char *v = getenv("DS4_GLM_INDEXED_PREFILL_TRACE_SLOW_MS");
+    if (v && *v) {
+        const long ms = atol(v);
+        if (ms >= 0) return (uint32_t)ms;
+    }
     return 100u;
 }
 
@@ -44129,6 +44134,10 @@ static uint32_t ds41_draft_block(ds41_gpu_graph *g, ds41_draft *d, const ds4_mod
         for (uint32_t k = 0; k < DS4_N_EMBD; k++) score += (double)proj[k] * x[(uint64_t)i * DS4_N_EMBD + k];
         for (uint32_t k = 0; k < rank; k++) score += (double)proj[DS4_N_EMBD + k] * embed[(uint64_t)i * rank + k];
         drafts[i] = out[i + 1u];
+        if (getenv("DS4_DSPARK_TRACE_DRAFT")) {
+            fprintf(stderr, "ds4: [draft] row=%u tok=%d emb0=%.6f markov0=%.6f proj0=%.6f score=%.6f\n",
+                    i, drafts[i], x[(uint64_t)i * DS4_N_EMBD], embed[(uint64_t)i * rank], proj[0], score);
+        }
         /* The sigmoid goes through libm via the dynamic symbol table: this
          * translation unit compiles with -ffast-math, which rewrites the
          * direct exp() call into a form that misbehaves at exp()'s domain
