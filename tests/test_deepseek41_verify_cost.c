@@ -214,6 +214,65 @@ done:
     return rc;
 }
 
+/* E0.3 (M3-7): registered-red contract arm. Batched append versus
+ * per-token stepping for rows {2,9,16,31,32,223,831}. Above eight rows the
+ * batched path rides the whole-layer mv family while stepping rides the
+ * fused tiny-pair scalar path, and at >=32 it rides mm-id (f16 mid) --
+ * DRIFT is the registered expectation for the mm-id band. Measured here:
+ * [9,31] came back bit-identical (the mv band is row-count independent,
+ * which is E0.1's mathematical basis for E1) while >=32 drifts ~2-3 logits
+ * across families. Every row reports its worst logit difference; this arm
+ * never fails the gate; it registers. */
+static int check_short_prefill_rows(const char *model, const char *prompt_path) {
+    ds4_engine *engine = NULL;
+    ds4_session *scalar = NULL, *batched = NULL;
+    ds4_tokens prompt = {0}, prefix = {0};
+    char err[256] = {0};
+    char *text = read_text(prompt_path);
+    int rc = 1, drifts = 0;
+    ds4_engine_options opt = {.model_path = model, .backend = DS4_BACKEND_METAL,
+        .context_size = 4096, .power_percent = 100,
+        .ssd_streaming = true,
+        .ssd_streaming_cache_bytes = ds41_test_streaming_cache_bytes()};
+    REQUIRE(text && ds4_engine_open(&engine, &opt) == 0);
+    ds4_tokenize_text(engine, text, &prompt);
+    REQUIRE(ds4_session_create(&scalar, engine, 4096) == 0);
+    REQUIRE(ds4_session_create(&batched, engine, 4096) == 0);
+    const uint32_t rows_list[] = {2, 9, 16, 31, 32, 223, 831};
+    const uint32_t start = 40;
+    for (size_t li = 0; li < sizeof(rows_list) / sizeof(rows_list[0]); li++) {
+        const uint32_t rows = rows_list[li];
+        REQUIRE((uint32_t)prompt.len >= start + rows);
+        prefix.len = 0;
+        for (uint32_t i = 0; i < start; i++) ds4_tokens_push(&prefix, prompt.v[i]);
+        ds4_session_invalidate(scalar); ds4_session_invalidate(batched);
+        REQUIRE(ds4_session_sync(scalar, &prefix, err, sizeof(err)) == 0);
+        REQUIRE(ds4_session_sync(batched, &prefix, err, sizeof(err)) == 0);
+        for (uint32_t i = 0; i < rows; i++) {
+            REQUIRE(ds4_session_eval(scalar, prompt.v[start + i], err, sizeof(err)) == 0);
+            ds4_tokens_push(&prefix, prompt.v[start + i]);
+        }
+        REQUIRE(ds4_session_sync(batched, &prefix, err, sizeof(err)) == 0);
+        double worst = 0;
+        for (uint32_t v = 0; v < DS4_N_VOCAB; v++)
+            worst = fmax(worst, fabs((double)scalar->logits[v] - batched->logits[v]));
+        if (worst > 0) drifts++;
+        fprintf(stderr, "E0.3 rows=%u batched-append vs step: max logit diff %.9g -> %s\n",
+                rows, worst, worst > 0 ? "REGISTERED-RED (contract does not exist above eight rows)"
+                                       : "IDENTICAL (contract widens to this row set)");
+    }
+    fprintf(stderr, "E0.3 registered-red summary: %d of %zu row sets drift\n",
+            drifts, sizeof(rows_list) / sizeof(rows_list[0]));
+    rc = 0;
+done:
+    if (err[0]) fprintf(stderr, "error: %s\n", err);
+    ds4_tokens_free(&prefix); ds4_tokens_free(&prompt);
+    ds4_session_free(batched); ds4_session_free(scalar);
+    ds4_engine_close(engine);
+    free(text);
+    return rc;
+}
+
 /* Measurement, not a check: what a verified row costs next to a decoded token. */
 static int time_verify(const char *model, const char *prompt_path) {
     ds4_engine *engine = NULL;
@@ -452,7 +511,7 @@ static int check_moe_bind_parity(const char *model) {
      * mm-id TensorOps (32..511), packed TensorOps mm-id (512..1024).
      * 511/512 straddle the packed switch; 831/1024 are the live sweep
      * append sizes and the selected-addr auto_max cap (HANDOFF-V41 13.4). */
-    const uint32_t row_sets[] = {2, 5, 8, 32, 256, 511, 512, 831, 1024};
+    const uint32_t row_sets[] = {2, 5, 8, 9, 16, 31, 32, 256, 511, 512, 831, 1024};
     int drifts = 0;
     for (size_t li = 0; li < sizeof(layers) / sizeof(layers[0]); li++) {
         const uint32_t il = layers[li];
@@ -569,6 +628,8 @@ int main(int argc, char **argv) {
         return check_short_prefill(argv[1], argv[3], false);
     if (argc == 4 && !strcmp(argv[2], "--short-prefill-ssd"))
         return check_short_prefill(argv[1], argv[3], true);
+    if (argc == 4 && !strcmp(argv[2], "--short-prefill-ssd-rows"))
+        return check_short_prefill_rows(argv[1], argv[3]);
     if (argc == 4 && !strcmp(argv[2], "--verify-parity"))
         return check_verify_parity(argv[1], argv[3], false);
     if (argc == 4 && !strcmp(argv[2], "--verify-parity-ssd"))
@@ -576,6 +637,6 @@ int main(int argc, char **argv) {
     if (argc == 3 && !strcmp(argv[2], "--moe-bind-parity"))
         return check_moe_bind_parity(argv[1]);
     fprintf(stderr, "usage: %s MODEL --verify-parity|--verify-parity-ssd"
-                    "|--short-prefill|--short-prefill-ssd PROMPT\n", argv[0]);
+                    "|--short-prefill|--short-prefill-ssd|--short-prefill-ssd-rows PROMPT\n", argv[0]);
     return 2;
 }
