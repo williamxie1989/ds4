@@ -11248,13 +11248,635 @@ int ds4_gpu_parallel_ffn_start_split(
     return 1;
 }
 
+/* ------------------------------------------------------------------ */
+/* M4-3 (G2f) NAX tensor-API >= 2 GiB addressing regression units.     */
+/*                                                                    */
+/* Upstream llama.cpp #28748 showed the M5 tensor-API failure mode: a  */
+/* tensor slice byte offset is int32, so any (slice - base) >= 2 GiB   */
+/* wraps and reads the wrong addresses.  Our NAX kernels avoid the    */
+/* language hazard by 64-bit-rebasing device pointers and keeping every */
+/* .slice() tile-local, but the audit conclusion must be pinned by a   */
+/* runnable vector per family (direct_rhs / mpp / packed / mla /       */
+/* indexer), because the production buffers ARE multi-GiB: the whole   */
+/* GGUF map, the expert blobs with >2 GiB per-expert strides, and the  */
+/* KV/index caches at long context.                                   */
+/*                                                                    */
+/* Every unit runs the REAL kernel twice (or once with two batches)    */
+/* over identical weights that sit 2 GiB + 64 KiB apart inside one     */
+/* backing buffer: once with the effective base/rebase offset below    */
+/* 2 GiB and once at or past it.  Same input bytes MUST produce        */
+/* bit-identical outputs; a 32-bit wrap lands on the padding and fails.*/
+/* Zero model loads.                                                  */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    id<MTLBuffer> buffer;
+    uint8_t *bytes;
+    uint64_t size;
+} ds4_nax_test_pool;
+
+static int ds4_nax_test_pool_alloc(ds4_nax_test_pool *pool, uint64_t bytes) {
+    pool->buffer = [g_device newBufferWithLength:(NSUInteger)bytes
+                                        options:MTLResourceStorageModeShared];
+    if (!pool->buffer) return 0;
+    pool->bytes = (uint8_t *)pool->buffer.contents;
+    pool->size = bytes;
+    return 1;
+}
+
+static void ds4_nax_test_pool_free(ds4_nax_test_pool *pool) {
+    pool->buffer = nil;
+    pool->bytes = NULL;
+    pool->size = 0;
+}
+
+static void ds4_nax_test_fill_pattern(uint8_t *p, uint64_t bytes,
+                                      uint32_t seed) {
+    uint32_t x = seed ? seed : 0x9E3779B9u;
+    for (uint64_t i = 0; i < bytes; i++) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        p[i] = (uint8_t)(x >> 24);
+    }
+}
+
+static int ds4_nax_test_cmp(const float *a, const float *b, uint64_t floats,
+                            const char *what) {
+    for (uint64_t i = 0; i < floats; i++) {
+        if (memcmp(&a[i], &b[i], sizeof(float)) != 0) {
+            fprintf(stderr, "ds4: nax 2GiB %s: output[%llu] %f != %f -- "
+                    "offset wrap / addressing drift above 2 GiB\n",
+                    what, (unsigned long long)i, a[i], b[i]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int ds4_nax_test_nonzero(const float *v, uint64_t floats) {
+    for (uint64_t i = 0; i < floats; i++)
+        if (v[i] != 0.0f) return 1;
+    return 0;
+}
+
+/* The 2 GiB boundary deliberately sits mid-copy: the second copy starts at
+ * 2 GiB + 64 KiB so both straddling sides of the int32 byte-offset hazard
+ * are exercised by the same dispatch. */
+#define DS4_NAX_TEST_GAP ((1ull << 31) + (64ull << 10))
+
+/* Family 1: direct_rhs (metal/dense.metal kernel_mul_mm_mpp_direct_rhs).
+ * One dispatch, weight batch stride AND activation batch stride >= 2 GiB
+ * inside one backing buffer: batch 0 rebases below the boundary, batch 1
+ * above.  Deterministic all-ones operands so the boundary batch is also
+ * absolutely correct (every output = K exactly). */
+static int ds4_nax_unit_direct_rhs(void) {
+    const char *what = "direct_rhs";
+    id<MTLComputePipelineState> pipe =
+        ds4_gpu_get_mul_mm_pipeline("kernel_mul_mm_f16_f32_mpp_direct_rhs",
+                                           false, false);
+    if (!pipe) {
+        fprintf(stderr, "ds4: nax 2GiB %s: kernel missing\n", what);
+        return 0;
+    }
+
+    const uint64_t K = 128, M = 128, N = 64;   /* in_dim, out_dim, tokens */
+    const uint64_t WBYTES = M * K * sizeof(uint16_t);
+    const uint64_t ABYTES = K * N * sizeof(float);   /* T1 = float */
+    const uint64_t ACT0 = DS4_NAX_TEST_GAP + WBYTES;   /* batch-0 acts base */
+    const uint64_t total = ACT0 + DS4_NAX_TEST_GAP + ABYTES;
+
+    ds4_nax_test_pool pool;
+    if (!ds4_nax_test_pool_alloc(&pool, total)) {
+        fprintf(stderr, "ds4: nax 2GiB %s: %llu MiB pool alloc failed\n",
+                what, (unsigned long long)(total >> 20));
+        return 0;
+    }
+    memset(pool.bytes, 0, total);
+    uint16_t *w0 = (uint16_t *)pool.bytes;
+    uint16_t *w1 = (uint16_t *)(pool.bytes + DS4_NAX_TEST_GAP);
+    float *a0 = (float *)(pool.bytes + ACT0);
+    float *a1 = (float *)(pool.bytes + ACT0 + DS4_NAX_TEST_GAP);
+    for (uint64_t i = 0; i < WBYTES / 2; i++) { w0[i] = 0x3C00; w1[i] = 0x3C00; }
+    for (uint64_t i = 0; i < ABYTES / 4; i++) { a0[i] = 1.0f; a1[i] = 1.0f; }
+
+    id<MTLBuffer> out = [g_device newBufferWithLength:2 * M * N * sizeof(float)
+                                            options:MTLResourceStorageModeShared];
+    memset(out.contents, 0, 2 * M * N * sizeof(float));
+
+    ds4_gpu_mul_mm_args args;
+    memset(&args, 0, sizeof(args));
+    args.ne00 = (int32_t)K;      args.ne02 = 1;
+    args.nb01 = K * sizeof(uint16_t);
+    args.nb02 = DS4_NAX_TEST_GAP;             /* weight batch stride */
+    args.nb03 = DS4_NAX_TEST_GAP;
+    args.ne12 = 2;                            /* two rhs batches */
+    args.nb10 = sizeof(float);
+    args.nb11 = K * sizeof(float);
+    args.nb12 = DS4_NAX_TEST_GAP;             /* act batch stride */
+    args.nb13 = DS4_NAX_TEST_GAP;
+    args.ne0 = (int32_t)M;       args.ne1 = (int32_t)N;
+    args.r2 = 1;                 args.r3 = 1;
+
+    int ok = 1;
+    id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:pipe];
+    [enc setBytes:&args length:sizeof(args) atIndex:0];
+    [enc setBuffer:pool.buffer offset:0 atIndex:1];   /* srcA weights */
+    [enc setBuffer:pool.buffer offset:(NSUInteger)ACT0 atIndex:2]; /* srcB acts */
+    [enc setBuffer:out offset:0 atIndex:3];
+    [enc setThreadgroupMemoryLength:2u * 64u * 32u * sizeof(uint16_t) atIndex:0];
+    [enc dispatchThreadgroups:MTLSizeMake(N / 32, M / 64, 2)
+         threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+    [enc endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    if (cb.error != nil) {
+        fprintf(stderr, "ds4: nax 2GiB %s dispatch failed: %s\n", what,
+                cb.error.localizedDescription.UTF8String);
+        ok = 0;
+    }
+    if (ok) {
+        const float *o = (const float *)out.contents;
+        const uint64_t per = M * N;
+        for (uint64_t i = 0; i < per; i++) {
+            /* every output = K ones summed on the tensor unit = 128.0f */
+            if (memcmp(&o[i], &o[per + i], sizeof(float)) != 0 ||
+                o[i] != (float)K) {
+                fprintf(stderr, "ds4: nax 2GiB %s: out[%llu]=%f out[%llu]=%f "
+                        "want %.1f -- batch rebase broken at >= 2 GiB\n",
+                        what, (unsigned long long)i, o[i],
+                        (unsigned long long)(per + i), o[per + i], (float)K);
+                ok = 0;
+                break;
+            }
+        }
+    }
+    ds4_nax_test_pool_free(&pool);
+    fprintf(stderr, "ds4: nax 2GiB direct_rhs (dual >=2GiB batch strides): %s\n",
+            ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+/* Family 2: mpp (metal/moe.metal kernel_mul_mm_id_mpp).  Two experts with
+ * identical IQ2_XXS weight bytes separated by a >= 2 GiB nb02 stride: the
+ * offset0 = (uint64)(im - tp_base)*nb02 rebase must land on the identical
+ * copy, so both dispatches produce bit-identical outputs. */
+static int ds4_nax_unit_mpp(void) {
+    const char *what = "mpp";
+    id<MTLComputePipelineState> pipe =
+        ds4_gpu_get_mul_mm_id_pipeline("kernel_mul_mm_id_iq2_xxs_f32_mpp",
+                                            false);
+    if (!pipe) {
+        fprintf(stderr, "ds4: nax 2GiB %s: kernel missing\n", what);
+        return 0;
+    }
+
+    const uint64_t K = 256;        /* 1 iq2_xxs block per row */
+    const uint64_t ROWB = 66;      /* block_iq2_xxs footprint */
+    const uint64_t MROWS = 64;     /* args.ne0 == NR0 */
+    const uint64_t WH = MROWS * ROWB;
+    const uint64_t total = DS4_NAX_TEST_GAP + WH;
+
+    ds4_nax_test_pool pool;
+    if (!ds4_nax_test_pool_alloc(&pool, total)) {
+        fprintf(stderr, "ds4: nax 2GiB %s: %llu MiB pool alloc failed\n",
+                what, (unsigned long long)(total >> 20));
+        return 0;
+    }
+    ds4_nax_test_fill_pattern(pool.bytes, total, 0xC0FFEEu);
+    memcpy(pool.bytes + DS4_NAX_TEST_GAP, pool.bytes, WH); /* expert 1 == 0 */
+
+    ds4_gpu_mul_mm_id_args args;
+    memset(&args, 0, sizeof(args));
+    args.ne00 = (int32_t)K;      args.ne02 = 2;
+    args.nb01 = ROWB;            args.nb02 = DS4_NAX_TEST_GAP;
+    args.nb03 = 0;
+    args.ne11 = 1;
+    args.nb10 = sizeof(float);   args.nb11 = K * sizeof(float);
+    args.nb12 = K * sizeof(float); args.nb13 = K * sizeof(float);
+    args.ne20 = 1;               args.ne21 = 32;
+    args.ne0 = (int32_t)MROWS;   args.ne1 = 1;
+    args.r2 = 1;                 args.r3 = 1;
+    args.tp_world = 1;           args.tp_expert_base = 0;
+
+    uint32_t htpe[2] = { 32, 32 };            /* rows per expert */
+    int32_t ids[64];                          /* ids[im*32 + r] = token 0 */
+    for (int i = 0; i < 64; i++) ids[i] = 0;
+    float acts[256];
+    for (int i = 0; i < 256; i++) acts[i] = 1.0f;
+
+    id<MTLBuffer> work0 = [g_device newBufferWithLength:16
+                                              options:MTLResourceStorageModeShared];
+    id<MTLBuffer> work1 = [g_device newBufferWithLength:16
+                                              options:MTLResourceStorageModeShared];
+    { uint32_t *w0 = (uint32_t *)work0.contents, *w1 = (uint32_t *)work1.contents;
+      w0[0] = 1; w0[1] = 0; w0[2] = 0; w0[3] = 0;      /* item (expert 0, r1 0) */
+      w1[0] = 1; w1[1] = 1; w1[2] = 0; w1[3] = 0; }   /* item (expert 1, r1 0) */
+    id<MTLBuffer> outs = [g_device newBufferWithLength:2 * MROWS * sizeof(float)
+                                             options:MTLResourceStorageModeShared];
+    memset(outs.contents, 0, 2 * MROWS * sizeof(float));
+    id<MTLBuffer> htb = [g_device newBufferWithBytes:htpe length:sizeof(htpe)
+                                            options:MTLResourceStorageModeShared];
+    id<MTLBuffer> idb = [g_device newBufferWithBytes:ids length:sizeof(ids)
+                                            options:MTLResourceStorageModeShared];
+    id<MTLBuffer> actb = [g_device newBufferWithBytes:acts length:sizeof(acts)
+                                            options:MTLResourceStorageModeShared];
+
+    int ok = 1;
+    for (int leg = 0; leg < 2 && ok; leg++) {
+        id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+        [enc setComputePipelineState:pipe];
+        [enc setBytes:&args length:sizeof(args) atIndex:0];
+        [enc setBuffer:pool.buffer offset:0 atIndex:1];
+        [enc setBuffer:actb offset:0 atIndex:2];
+        [enc setBuffer:htb offset:0 atIndex:3];
+        [enc setBuffer:idb offset:0 atIndex:4];
+        [enc setBuffer:outs offset:(NSUInteger)(leg * MROWS * sizeof(float))
+               atIndex:5];
+        [enc setBuffer:(leg ? work1 : work0) offset:0 atIndex:6];
+        [enc setThreadgroupMemoryLength:8192 atIndex:0];
+        [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+             threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        [enc endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+        if (cb.error != nil) {
+            fprintf(stderr, "ds4: nax 2GiB %s leg %d failed: %s\n", what, leg,
+                    cb.error.localizedDescription.UTF8String);
+            ok = 0;
+        }
+    }
+    if (ok) {
+        const float *o = (const float *)outs.contents;
+        ok = ds4_nax_test_nonzero(o, MROWS) &&
+             ds4_nax_test_cmp(o, o + MROWS, MROWS, what);
+    }
+    ds4_nax_test_pool_free(&pool);
+    fprintf(stderr, "ds4: nax 2GiB mpp (expert nb02 >= 2 GiB): %s\n",
+            ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+/* Family 3: packed cached (metal/moe.metal kernel_mul_mm_id_mpp_packed,
+ * EXPERT_ADDRESSES form -- the V4.1 streaming gather path).  The expert
+ * weight pair sits >= 2 GiB apart and reaches the kernel ONLY through the
+ * 64-bit address table, exactly like the streaming expert cache. */
+static int ds4_nax_unit_packed(void) {
+    const char *what = "packed";
+    id<MTLComputePipelineState> pipe =
+        ds4_gpu_get_pipeline("kernel_mul_mm_id_iq2_xxs_mpp_packed_cached");
+    if (!pipe) {
+        fprintf(stderr, "ds4: nax 2GiB %s: kernel missing\n", what);
+        return 0;
+    }
+
+    const uint64_t K = 256, ROWB = 66, MROWS = 64;
+    const uint64_t WH = MROWS * ROWB;
+    const uint64_t total = DS4_NAX_TEST_GAP + WH;
+
+    ds4_nax_test_pool pool;
+    if (!ds4_nax_test_pool_alloc(&pool, total)) {
+        fprintf(stderr, "ds4: nax 2GiB %s: %llu MiB pool alloc failed\n",
+                what, (unsigned long long)(total >> 20));
+        return 0;
+    }
+    ds4_nax_test_fill_pattern(pool.bytes, total, 0xBEEF01u);
+    memcpy(pool.bytes + DS4_NAX_TEST_GAP, pool.bytes, WH);
+
+    /* src1 for packed: u32 offset table padded to 32 entries + f16 rows. */
+    const uint32_t HDR = 32;
+    const uint64_t ABYTES = K * sizeof(uint16_t);
+    uint8_t *src1_bytes = (uint8_t *)calloc(HDR * sizeof(uint32_t) + ABYTES, 1);
+    uint32_t *offs = (uint32_t *)src1_bytes;
+    offs[0] = 0; offs[1] = 0;
+    uint16_t *arows = (uint16_t *)(src1_bytes + HDR * sizeof(uint32_t));
+    for (uint64_t i = 0; i < K; i++) arows[i] = 0x3C00; /* acts = 1.0f */
+
+    uint64_t addr_table[2];
+    if (@available(macOS 13.0, *)) {
+        addr_table[0] = (uint64_t)[pool.buffer gpuAddress];
+        addr_table[1] = addr_table[0] + DS4_NAX_TEST_GAP;
+    } else {
+        fprintf(stderr, "ds4: nax 2GiB %s: gpuAddress unavailable\n", what);
+        ds4_nax_test_pool_free(&pool);
+        return 0;
+    }
+
+    ds4_gpu_mul_mm_id_args args;
+    memset(&args, 0, sizeof(args));
+    args.ne00 = (int32_t)K;      args.ne02 = 2;
+    args.ne0 = (int32_t)MROWS;   args.ne1 = 1;
+    args.ne20 = 1;               args.ne21 = 1;
+    args.nb01 = ROWB;            args.nb02 = DS4_NAX_TEST_GAP;
+    args.tp_world = 1;           args.tp_expert_base = 0;
+
+    uint32_t counts[2] = { 1, 1 };
+    int32_t ids[2] = { 0, 0 };
+
+    id<MTLBuffer> src0b = [g_device newBufferWithBytes:addr_table
+                                               length:sizeof(addr_table)
+                                              options:MTLResourceStorageModeShared];
+    id<MTLBuffer> src1b = [g_device newBufferWithBytes:src1_bytes
+                                               length:HDR * sizeof(uint32_t) + ABYTES
+                                              options:MTLResourceStorageModeShared];
+    id<MTLBuffer> cntb = [g_device newBufferWithBytes:counts length:sizeof(counts)
+                                            options:MTLResourceStorageModeShared];
+    id<MTLBuffer> idb = [g_device newBufferWithBytes:ids length:sizeof(ids)
+                                            options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outs = [g_device newBufferWithLength:2 * MROWS * sizeof(float)
+                                             options:MTLResourceStorageModeShared];
+    memset(outs.contents, 0, 2 * MROWS * sizeof(float));
+    id<MTLBuffer> work0 = [g_device newBufferWithLength:16
+                                              options:MTLResourceStorageModeShared];
+    id<MTLBuffer> work1 = [g_device newBufferWithLength:16
+                                              options:MTLResourceStorageModeShared];
+    { uint32_t *w = (uint32_t *)work0.contents; w[0] = 1; w[1] = 0; w[2] = 0; w[3] = 0;
+      w = (uint32_t *)work1.contents; w[0] = 1; w[1] = 1; w[2] = 0; w[3] = 0; }
+
+    int ok = 1;
+    for (int leg = 0; leg < 2 && ok; leg++) {
+        id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+        [enc setComputePipelineState:pipe];
+        [enc setBytes:&args length:sizeof(args) atIndex:0];
+        [enc setBuffer:src0b offset:0 atIndex:1];
+        [enc setBuffer:src1b offset:0 atIndex:2];
+        [enc setBuffer:cntb offset:0 atIndex:3];
+        [enc setBuffer:idb offset:0 atIndex:4];
+        [enc setBuffer:outs offset:(NSUInteger)(leg * MROWS * sizeof(float))
+               atIndex:5];
+        [enc setBuffer:(leg ? work1 : work0) offset:0 atIndex:6];
+        /* Reads through the address table bypass buffer bindings; the
+         * encoder must declare the backing pool, exactly like the
+         * production streaming-gather dispatch. */
+        [enc useResource:pool.buffer usage:MTLResourceUsageRead];
+        [enc setThreadgroupMemoryLength:(64u * 32u + 64u * 32u) * sizeof(float)
+               atIndex:0];
+        [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+             threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        [enc endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+        if (cb.error != nil) {
+            fprintf(stderr, "ds4: nax 2GiB %s leg %d failed: %s\n", what, leg,
+                    cb.error.localizedDescription.UTF8String);
+            ok = 0;
+        }
+    }
+    if (ok) {
+        const float *o = (const float *)outs.contents;
+        ok = ds4_nax_test_nonzero(o, MROWS) &&
+             ds4_nax_test_cmp(o, o + MROWS, MROWS, what);
+    }
+    free(src1_bytes);
+    ds4_nax_test_pool_free(&pool);
+    fprintf(stderr, "ds4: nax 2GiB packed cached (expert address >= 2 GiB): %s\n",
+            ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+/* Family 4: mla (metal/dsv4_misc.metal GLM absorbed-MLA NAX).  The KV
+ * latent-cache rows a token selects sit >= 2 GiB apart; identical row
+ * content must yield bit-identical attention outputs. */
+static int ds4_nax_unit_mla(void) {
+    const char *what = "mla";
+    id<MTLComputePipelineState> pipe =
+        ds4_gpu_get_pipeline(
+            "kernel_glm_attention_indexed_batch_lora_group8_nax");
+    if (!pipe) {
+        fprintf(stderr, "ds4: nax 2GiB %s: kernel missing\n", what);
+        return 0;
+    }
+
+    const uint64_t ROWB = 512 * sizeof(uint16_t);     /* 512-dim half row */
+    const uint64_t ROW_GAP = DS4_NAX_TEST_GAP / ROWB; /* >= 2 GiB row delta */
+    const uint64_t NTOK = 32, NHEAD = 64, NSEL = 32;
+    const uint64_t LOW = 1025, HIGH = LOW + ROW_GAP;
+    const uint64_t total = (HIGH + NSEL + 8) * ROWB;
+    const uint64_t OUTFLOATS = NTOK * NHEAD * 512;
+
+    ds4_nax_test_pool pool;
+    if (!ds4_nax_test_pool_alloc(&pool, total)) {
+        fprintf(stderr, "ds4: nax 2GiB %s: %llu MiB pool alloc failed\n",
+                what, (unsigned long long)(total >> 20));
+        return 0;
+    }
+    ds4_nax_test_fill_pattern(pool.bytes, total, 0x5EEDu);
+    /* rows LOW..LOW+31 and HIGH..HIGH+31 carry identical half(1.0) */
+    for (uint64_t r = 0; r < NSEL; r++) {
+        uint16_t *rl = (uint16_t *)(pool.bytes + (LOW + r) * ROWB);
+        uint16_t *rh = (uint16_t *)(pool.bytes + (HIGH + r) * ROWB);
+        for (uint64_t i = 0; i < 512; i++) { rl[i] = 0x3C00; rh[i] = 0x3C00; }
+    }
+
+    ds4_gpu_glm_attention_indexed_batch_args args;
+    memset(&args, 0, sizeof(args));
+    args.n_tokens = (uint32_t)NTOK;
+    args.n_selected = (uint32_t)NSEL;
+    args.cache_cap = (uint32_t)(HIGH + NSEL + 64);
+    args.cache_f16 = 1;
+    args.n_head = (uint32_t)NHEAD;
+    args.kv_lora_dim = 512;
+    args.qk_nope = 256;
+    args.qk_rope = 0;
+    args.value_dim = 512;
+    args.n_ctx_orig = 4096;
+    args.value_row_bytes = (uint32_t)ROWB;
+    args.pos0 = 0;
+    args.scale = 1.0f;
+    args.attn_factor = 1.0f;
+
+    float *qk_low = (float *)malloc((size_t)OUTFLOATS * sizeof(float));
+    for (uint64_t i = 0; i < OUTFLOATS; i++) qk_low[i] = 1.0f;
+    uint32_t *selb = (uint32_t *)malloc((size_t)NTOK * NSEL * sizeof(uint32_t));
+    float *ref = (float *)malloc((size_t)OUTFLOATS * sizeof(float));
+
+    id<MTLBuffer> lowb = [g_device newBufferWithBytes:qk_low
+                                              length:(NSUInteger)OUTFLOATS * sizeof(float)
+                                             options:MTLResourceStorageModeShared];
+    id<MTLBuffer> selbb = [g_device newBufferWithLength:(NSUInteger)NTOK * NSEL * sizeof(uint32_t)
+                                              options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outs = [g_device newBufferWithLength:(NSUInteger)OUTFLOATS * sizeof(float)
+                                             options:MTLResourceStorageModeShared];
+    id<MTLBuffer> qb = [g_device newBufferWithLength:256
+                                            options:MTLResourceStorageModeShared];
+    id<MTLBuffer> ropeb = [g_device newBufferWithLength:256
+                                              options:MTLResourceStorageModeShared];
+
+    int ok = 1;
+    for (int leg = 0; leg < 2 && ok; leg++) {
+        const uint64_t base = leg ? HIGH : LOW;
+        for (uint64_t t = 0; t < NTOK; t++)
+            for (uint64_t s = 0; s < NSEL; s++)
+                selb[t * NSEL + s] = (uint32_t)(base + s);
+        memcpy(selbb.contents, selb, (size_t)NTOK * NSEL * sizeof(uint32_t));
+        memset(outs.contents, 0, (size_t)OUTFLOATS * sizeof(float));
+        id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+        [enc setComputePipelineState:pipe];
+        [enc setBytes:&args length:sizeof(args) atIndex:0];
+        [enc setBuffer:qb offset:0 atIndex:1];
+        [enc setBuffer:lowb offset:0 atIndex:2];
+        [enc setBuffer:pool.buffer offset:0 atIndex:3];
+        [enc setBuffer:ropeb offset:0 atIndex:4];
+        [enc setBuffer:selbb offset:0 atIndex:5];
+        [enc setBuffer:outs offset:0 atIndex:6];
+        [enc setThreadgroupMemoryLength:4u * 8u * 32u * sizeof(float) atIndex:0];
+        [enc dispatchThreadgroups:MTLSizeMake(4, NTOK, 1)
+             threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        [enc endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+        if (cb.error != nil) {
+            fprintf(stderr, "ds4: nax 2GiB %s leg %d failed: %s\n", what, leg,
+                    cb.error.localizedDescription.UTF8String);
+            ok = 0;
+        }
+        if (ok && leg == 0)
+            memcpy(ref, outs.contents, (size_t)OUTFLOATS * sizeof(float));
+    }
+    if (ok) {
+        ok = ds4_nax_test_nonzero(ref, 4096) &&
+             ds4_nax_test_cmp(ref, (const float *)outs.contents,
+                              OUTFLOATS, what);
+    }
+    free(qk_low); free(selb); free(ref);
+    ds4_nax_test_pool_free(&pool);
+    fprintf(stderr, "ds4: nax 2GiB mla (KV row select >= 2 GiB): %s\n",
+            ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+/* Family 5: indexer (metal/dsv4_misc.metal kernel_dsv4_indexer_scores_nax).
+ * The compressed-index row stride is 128 MiB, so column 16 lands exactly at
+ * the 2 GiB mark; every comp row carries the identical 128-float vector and
+ * the identical query, so column 0 and column 16 scores must match bit for
+ * bit. */
+static int ds4_nax_unit_indexer(void) {
+    const char *what = "indexer";
+    id<MTLComputePipelineState> pipe =
+        ds4_gpu_get_pipeline("kernel_dsv4_indexer_scores_nax");
+    if (!pipe) {
+        fprintf(stderr, "ds4: nax 2GiB %s: kernel missing\n", what);
+        return 0;
+    }
+
+    const uint64_t STRIDE = 128ull << 20;
+    const uint32_t NCOMP = 17, NTOK = 16, NHEAD = 4;
+    const uint64_t total = (uint64_t)(NCOMP - 1) * STRIDE + 512;
+
+    ds4_nax_test_pool pool;
+    if (!ds4_nax_test_pool_alloc(&pool, total)) {
+        fprintf(stderr, "ds4: nax 2GiB %s: %llu MiB pool alloc failed\n",
+                what, (unsigned long long)(total >> 20));
+        return 0;
+    }
+    memset(pool.bytes, 0, total);
+    for (uint32_t c = 0; c < NCOMP; c++) {
+        float *row = (float *)(pool.bytes + (uint64_t)c * STRIDE);
+        for (int i = 0; i < 128; i++) row[i] = 1.0f;
+    }
+
+    ds4_gpu_dsv4_indexer_scores_fused_args args;
+    memset(&args, 0, sizeof(args));
+    args.n_comp = NCOMP;   args.n_tokens = NTOK;
+    args.n_head = NHEAD;   args.head_dim = 128;
+    args.pos0 = 1000;      args.ratio = 1;
+    args.q_token_stride = NHEAD * 128 * sizeof(float);
+    args.q_head_stride = 128 * sizeof(float);
+    args.weights_token_stride = 16 * sizeof(float);
+    args.index_row_stride = STRIDE;
+    args.score_token_stride = 64 * sizeof(float);
+    args.scale = 1.0f;
+
+    float *qbytes = (float *)malloc((size_t)(NTOK * NHEAD * 128) * sizeof(float));
+    for (size_t i = 0; i < (size_t)(NTOK * NHEAD * 128); i++) qbytes[i] = 1.0f;
+    float wbytes[256];
+    memset(wbytes, 0, sizeof(wbytes));
+    for (uint32_t t = 0; t < NTOK; t++)
+        for (uint32_t h = 0; h < NHEAD; h++) wbytes[t * 16 + h] = 1.0f;
+
+    id<MTLBuffer> qb = [g_device newBufferWithBytes:qbytes
+                                           length:(NSUInteger)(NTOK * NHEAD * 128) * sizeof(float)
+                                          options:MTLResourceStorageModeShared];
+    id<MTLBuffer> wb = [g_device newBufferWithBytes:wbytes length:sizeof(wbytes)
+                                          options:MTLResourceStorageModeShared];
+    id<MTLBuffer> scb = [g_device newBufferWithLength:(NSUInteger)NTOK * 64 * sizeof(float)
+                                            options:MTLResourceStorageModeShared];
+    memset(scb.contents, 0, (size_t)NTOK * 64 * sizeof(float));
+
+    int ok = 1;
+    id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:pipe];
+    [enc setBytes:&args length:sizeof(args) atIndex:0];
+    [enc setBuffer:qb offset:0 atIndex:1];
+    [enc setBuffer:wb offset:0 atIndex:2];
+    [enc setBuffer:pool.buffer offset:0 atIndex:3];
+    [enc setBuffer:scb offset:0 atIndex:4];
+    [enc setThreadgroupMemoryLength:(2u * 32u * 32u * sizeof(uint16_t) +
+                                     32u * 128u * sizeof(uint16_t) +
+                                     32u * 32u * sizeof(float)) atIndex:0];
+    [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+         threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+    [enc endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    if (cb.error != nil) {
+        fprintf(stderr, "ds4: nax 2GiB %s dispatch failed: %s\n", what,
+                cb.error.localizedDescription.UTF8String);
+        ok = 0;
+    }
+    if (ok) {
+        const float *s = (const float *)scb.contents;
+        for (uint32_t t = 0; t < NTOK && ok; t++) {
+            const float c0 = s[t * 64 + 0], c16 = s[t * 64 + 16];
+            if (c0 <= 0.0f || memcmp(&c0, &c16, sizeof(float)) != 0) {
+                fprintf(stderr, "ds4: nax 2GiB %s: token %u score[0]=%f "
+                        "score[16]=%f (row at exactly 2 GiB) mismatch\n",
+                        what, t, c0, c16);
+                ok = 0;
+            }
+        }
+    }
+    free(qbytes);
+    ds4_nax_test_pool_free(&pool);
+    fprintf(stderr, "ds4: nax 2GiB indexer (comp row stride >= 2 GiB): %s\n",
+            ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+/* Driver entry used by tests/test_metal_nax_tensor_units.c.  Returns the
+ * number of failed units; a machine without the tensor API skips everything
+ * (returns 0 with a printed note) because the units guard an M5 tensor-API
+ * hazard that does not exist there. */
+int ds4_gpu_test_nax_2gib_units(void) {
+    if (!ds4_gpu_init()) {
+        fprintf(stderr, "ds4: nax 2GiB units: gpu init failed\n");
+        return 1;
+    }
+    if (!g_metal4_tensor_api_enabled) {
+        fprintf(stderr, "ds4: nax 2GiB units: tensor API unavailable on this "
+                "device -- skipped (units guard an M5 tensor-API hazard)\n");
+        return 0;
+    }
+    int fails = 0;
+    fails += !ds4_nax_unit_direct_rhs();
+    fails += !ds4_nax_unit_mpp();
+    fails += !ds4_nax_unit_packed();
+    fails += !ds4_nax_unit_mla();
+    fails += !ds4_nax_unit_indexer();
+    fprintf(stderr, "ds4: nax 2GiB addressing units: %d failed\n", fails);
+    return fails;
+}
+
 static void ds4_gpu_encode_parallel_q8_down(
         id<MTLComputeCommandEncoder> enc) {
     [enc setComputePipelineState:g_parallel_q8_pipeline];
     [enc setBytes:&g_parallel_q8_args
            length:sizeof(g_parallel_q8_args)
-          atIndex:0];
-    if (g_parallel_split_active) {
+          atIndex:0];    if (g_parallel_split_active) {
         [enc setBytes:&g_parallel_split_args
                length:sizeof(g_parallel_split_args)
               atIndex:1];
