@@ -19,8 +19,8 @@
 # Usage:
 #   SESSION=/path/session.jsonl[.zst] [PORT=8055] [V41=gguf/...] \
 #   [CACHE_EXPERTS=6959  (SIMULATION ONLY -- the server always uses its
-     auto budget; force the server's own cache with
-     --ssd-streaming-cache-experts instead)] [LAYERS=40] \
+#     auto budget; force the server's own cache with
+#     --ssd-streaming-cache-experts instead)] [LAYERS=40] \
 #     speed-bench/M3/m3-1/run_calibration.sh
 # Outputs: speed-bench/M3/m3-1/run-<stamp>/  (+ notes.md)
 set -u
