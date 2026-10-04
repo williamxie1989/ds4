@@ -78,7 +78,7 @@
 
 | 工作项 | 文档证据 | 裁决 |
 |---|---|---|
-| V4.1 streaming + DSpark/MTP（含 128G 机器开 MTP） | `V41_STREAMING_ENGRAM_SPEED_PLAN.md` §9：盈亏平衡需 avg_accept≈2.96，实测 1.33–1.91，verify 固定 93 ms/轮 | **放弃**：流式 V4.1 生产走普通 decode；候选 A 已提交 `c7c2b90`（env `DS4_METAL_V41_STREAM_GATHER_SPEC_ROWS` 默认关），作为 E1 [2,32) 低行批量的准入种子保留，翻默认前须过 E0.1 |
+| V4.1 streaming + DSpark/MTP（含 128G 机器开 MTP） | `V41_STREAMING_ENGRAM_SPEED_PLAN.md` §9：盈亏平衡需 avg_accept≈2.96，实测 1.33–1.91，verify 固定 93 ms/轮 | **放弃**：流式 V4.1 生产走普通 decode；候选 A 已提交 `c7c2b90`（env `DS4_METAL_V41_STREAM_GATHER_SPEC_ROWS` 默认关），作为 E1 [2,32) 低行批量的准入种子保留，翻默认前须过 E0.1；M0-4 窗 A/B 已关账（速度中性、[4,8) 行 logits 逐字节等） |
 | GLM top-8 packed 门臂（M0-2 关账） | 原主树 WIP `DS4_METAL_ENABLE_GLM53_ROUTED_MPP_PACKED` | **删臂**（PF-2 packed 已判负；几何 pin 的 packed 对 GLM 顶-8 在 ~57 rows/expert 摊不平 pack 流量的假设未获翻案证据）。臂从未入 git，M0-2 关账后不再携带，勿再从工作区记忆重建 |
 | GLM-5.3 开 MTP 提速 | `GLM53_SPEEDUP_NEXT_PLAN.md` DC-1：17k ctx 实测 effective 27.5 vs plain 32.3 t/s（−15%），且越长越亏 | **保持默认关闭**；链式起草/draft head 减半作为前置 P0，但"开 MTP"本身已裁决 |
 | P1 Metal row-batch prefill | `HANDOFF-V41-STREAMING-SMALL-PREFILL.md` §4：只值 1.4×，comparator 判 DRIFT | **否决** |
@@ -99,7 +99,7 @@
 
 | 工作 | 载体 | 状态 |
 |---|---|---|
-| 主工作区未提交改动（M0-2 关账 @2026-10-05） | `--mtp-timing` GLM 三段结算 = **G4a 留、补完并入** `f5c9902`；indexed prefill / DSpark draft trace env = `959a596`；`SPEC_ROWS` env → 见 D 节关账行；`GLM53_ROUTED_MPP_PACKED` → 见 D 节删臂行 | 主树 `git status` 干净；A/B 侧只剩 `SPEC_ROWS` 一臂，搭 M0-4 窗跑 |
+| 主工作区未提交改动（M0-2 关账 @2026-10-05） | `--mtp-timing` GLM 三段结算 = **G4a 留、补完并入** `f5c9902`；indexed prefill / DSpark draft trace env = `959a596`；`SPEC_ROWS` env → 见 D 节关账行；`GLM53_ROUTED_MPP_PACKED` → 见 D 节删臂行 | 主树 `git status` 干净；SPEC_ROWS A/B 已随 M0-4 窗关账（中性+logits 等位，维持默认关） |
 | p42-attn-glue（M0-3 定夺 @2026-10-05） | 分支 `p42-attn-glue` @`8392281`（WIP archive），worktree 已弃 | **弃臂存档，不合入**：位等价复核实测（M5 Max，带 `DS4_GPU_TEST_V41_FUSIONS` 强开）matvec_bf16 对 Q8_0 5120→1280 逐字节不等、MoE 融合臂 probs 契约同红；M3-Ultra-only admission 即为本险设，位契约优先于 ≈中性。证据 `speed-bench/M0/m0-3/`，M3 Ultra 上位验证通过前勿重试 |
 | p3-io-diag | worktree `~/ds4-io-diag` | 7 行诊断补丁，可留可弃 |
 | PF-6 上游 PR 移植 | 分支 `pf6-upstream`（基于 origin/main `0aaea5a`，提交 `71268a1`，已推 fork）；worktree `/tmp/pf6-pr-base`（重启即失，重建见杂项） | PR 分支自测 41k +5.2%（364.1→382.8）、锚点确认（f32 router 0 调用、cvt=42、上游 wrapper 无门控故 M3/M5 默认生效）；**已开 [antirez/ds4#1177](https://github.com/antirez/ds4/pull/1177)（OPEN）**，质量数字引用 `d09ca3b` 实测并注明测量树 |
@@ -112,6 +112,7 @@
 
 ### 杂项处置（2026-10 定案）
 
+- **M0-4 基线复核窗（2026-10-05，停产品独占，用户批准）**：14/14 腿绿；KPI 表全部复核成立（ITERATION_PLAN §1 新增 M0 复核列 + `speed-bench/M0/m0-4/notes.md`）。SPEC_ROWS A/B 关账：decode 与 [4,8) 行 append 均中性，step4/13 + step8/10 frontier logits 逐字节等（`m0-4/parity/*.sha256`）→ 维持默认关作 E1 种子。GLM MTP 首账 effective −19.8%（G4a 结算行）。方法学两教训（腿间门用组合可用量、swap 解析）已入 notes。
 - **M0-5 上游复核（2026-10-05）**：`git fetch origin` 后 origin/main 仍 `0aaea5a`，`git cherry` 68 片全部未吸收；#1177/#1178 均 OPEN、零 review 零评论；本文件引用的全部 SHA（含 `cardi-upstream 5805843/4e48bb5`、`pf6-upstream 71268a1`）仍有效，无需刷新。窗口前照例复查。
 - 一次性噪声已入 `.git/info/exclude`（纯本地、不随任何 PR 携带）：`pic.jpeg`、`start.md`/`start.txt`（server 启动备忘）、`tests/*.o.tmp`、`tests/test_metal_rewind`（构建残留）、`.codegraph/`、`.cursor/`
 - 本文件与 `AGENTS.md` 已纳入 git 跟踪。**PR 纪律**：PR 分支一律从上游 `origin/main` 切、只 cherry-pick 目标修复提交；不 merge 本地 main、不 `git add -A`——docs commit 不在 PR 范围即不会携带

@@ -1,0 +1,47 @@
+13:50:26 gate ok swap==M free_spec=105G
+=== LEG a1_off start 13:50:26 ===
+13:51:59 gate ok swap=2609.25M free_spec=83G
+=== LEG a1_off start 13:51:59 ===
+=== LEG a1_off rc=0 end 13:55:42 ===
+13:56:07 gate ok swap=2609.31M free_spec=82G
+=== LEG b1_on start 13:56:07 ===
+=== LEG b1_on rc=0 end 13:59:49 ===
+14:00:15 gate ok swap=2609.31M free_spec=83G
+=== LEG b2_on start 14:00:15 ===
+=== LEG b2_on rc=0 end 14:03:54 ===
+14:04:19 gate ok swap=2609.31M free_spec=82G
+=== LEG a2_off start 14:04:19 ===
+=== LEG a2_off rc=0 end 14:07:51 ===
+14:08:16 gate ok swap=2609.31M free_spec=82G
+=== LEG w831_cold start 14:08:16 ===
+=== LEG w831_cold rc=0 end 14:08:56 ===
+14:09:21 gate ok swap=2609.31M free_spec=83G
+=== LEG w831_warm start 14:09:21 ===
+=== LEG w831_warm rc=0 end 14:10:00 ===
+14:10:25 gate ok swap=2609.31M free_spec=83G
+=== LEG w1524 start 14:10:25 ===
+=== LEG w1524 rc=0 end 14:11:08 ===
+14:11:33 gate ok swap=2609.31M free_spec=84G
+=== LEG s4_off start 14:11:33 ===
+=== LEG s4_off rc=0 end 14:11:58 ===
+14:12:23 gate ok swap=2609.31M free_spec=80G
+=== LEG s4_on start 14:12:23 ===
+=== LEG s4_on rc=0 end 14:12:48 ===
+14:13:14 gate ok swap=2609.31M free_spec=79G
+=== LEG s8_off start 14:13:14 ===
+=== LEG s8_off rc=0 end 14:13:40 ===
+14:14:05 gate ok swap=2609.31M free_spec=79G
+=== LEG s8_on start 14:14:05 ===
+=== LEG s8_on rc=0 end 14:14:31 ===
+14:14:56 gate ok swap=2609.31M free_spec=79G
+=== LEG g1 start 14:14:56 ===
+=== LEG g1 rc=0 end 14:16:37 ===
+ABORT: free+speculative 5 GiB < 20 GiB
+14:18:26 gate ok swap=2609.88M avail=102G
+=== LEG g2 start 14:18:26 ===
+=== LEG g2 rc=0 end 14:19:50 ===
+14:20:15 gate ok swap=2609.88M avail=102G
+=== LEG m1_smoke start 14:20:15 ===
+=== LEG m1_smoke rc=0 end 14:20:30 ===
+14:20:55 gate ok swap=2609.88M avail=99G
+=== RESUME DONE 14:20:55 ===
