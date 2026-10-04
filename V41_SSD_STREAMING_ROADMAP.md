@@ -83,7 +83,7 @@ GLM MTP / #1127 layer overlap。证据链见 LOCAL_INVENTORY §D。
 | p42-attn-glue worktree | ≈中性（≥8K +2%），全部未提交 | 一个窗口定夺：合入取位等价，或弃 |
 | 主树 WIP（`STREAM_GATHER_SPEC_ROWS`/`GLM53_ROUTED_MPP_PACKED`/`--mtp-timing`） | A/B 未定 | 一次空窗跑完 A/B 并关账 |
 | `tests/test_glm53_router_shared.c` 小补丁 | 未提交 | 随手提交 |
-| E0.3 契约卫生（streaming 版 check_short_prefill 登记红灯） | ~1 h | 挂任何 gate 轮顺路做 |
+| E0.3 契约卫生（streaming 版 `check_short_prefill` 登记红灯） | **已做并实测**（2026-10-04 窗，HANDOFF §15.6） | 新红灯 [9,31] bind 轴待裁决，E1 按纪律停线 |
 
 ---
 
@@ -191,7 +191,7 @@ GLM MTP / #1127 layer overlap。证据链见 LOCAL_INVENTORY §D。
   prepare 的 spans 改 suffix-aware（decoder_suffix 生效时 layer 20–39 用收缩行数决定 gather miss 集）。
   只影响 ≥4096 宽步；粗账 = wide sweep I/O 省三到四成，TTFT(8192) 预期 −15~25%。落点：`decoder_suffix` 段 ×
   `metal_graph_stream_prefill_layer_pagein_start` 的 spans 选择；数值不动，dump 门照过。
-- **E0.3**：streaming 版 `check_short_prefill` 红灯登记（契约卫生，挂任意 gate 轮顺路）。
+- **E0.3**：streaming 版 `check_short_prefill` 红灯登记（契约卫生）——已落（2026-10-04）：新臂 `--short-prefill-ssd-rows` + bind-parity 行集补 9/16/31；实测见 HANDOFF §15.6。
 
 ### R5 · 读路径：expert-contiguous 布局重排（新，先微测本说话）
 
