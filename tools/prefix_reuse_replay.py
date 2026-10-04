@@ -14,9 +14,44 @@ Pure stdlib; no model loads on this machine.
 """
 import argparse
 import json
+import os
+import shutil
 import sys
 import time
 import urllib.request
+
+
+def snapshot_unix_ms(snapshot_file):
+    """Read the '# snapshot_unix_ms' header (written microseconds after the
+    counters were copied under lock) or None."""
+    try:
+        with open(snapshot_file, 'r', encoding='utf-8') as f:
+            for _ in range(8):
+                line = f.readline()
+                if not line:
+                    break
+                if line.startswith('# snapshot_unix_ms'):
+                    return int(line.split()[2])
+    except OSError:
+        pass
+    return None
+
+
+def wait_snapshot_after(snapshot_file, done_wall, timeout):
+    """Wait for an engine snapshot whose counter copy happened after
+    done_wall (the moment a replayed step's response returned; every routed
+    selection of that step was recorded before the response, so a snapshot
+    copied afterwards includes the whole step).  Returns the snapshot path.
+    The engine writes tmp+rename, so the file is never half-visible."""
+    deadline = time.time() + timeout
+    done_ms = done_wall * 1000.0
+    while time.time() < deadline:
+        ms = snapshot_unix_ms(snapshot_file)
+        if ms is not None and ms >= done_ms:
+            return snapshot_file
+        time.sleep(0.1)
+    raise TimeoutError('snapshot %s not republished after step within %ds'
+                       % (snapshot_file, timeout))
 
 def blocks_text(blocks):
     if isinstance(blocks, str):
@@ -142,12 +177,21 @@ def replay(args, tools, steps, flat, seq_to_idx, prune_seqs, shadowed_map):
         except Exception as e:
             print('step %d: REQUEST FAILED: %s' % (si, e)); break
         dt = time.time() - t0
+        snap_ms = None
+        if args.snapshot_file and args.snapshot_dir:
+            wait_snapshot_after(args.snapshot_file, time.time(),
+                                args.snapshot_timeout)
+            snap_ms = snapshot_unix_ms(args.snapshot_file)
+            os.makedirs(args.snapshot_dir, exist_ok=True)
+            dst = os.path.join(args.snapshot_dir, 'turn_%03d.txt' % (si + 1))
+            shutil.copyfile(args.snapshot_file, dst)
         u = resp.get('usage', {})
         prompt = u.get('prompt_tokens') or u.get('input_tokens') or 0
         cached = extract_cached(u)
         ratio = (cached / prompt) if (cached is not None and prompt) else None
         report.append({'step': si, 'msgs': len(msgs), 'prompt': prompt,
-                       'cached': cached, 'ratio': ratio, 'secs': round(dt, 1)})
+                       'cached': cached, 'ratio': ratio, 'secs': round(dt, 1),
+                       'snap_ms': snap_ms})
         print('step %3d  msgs=%4d  prompt=%7s  cached=%7s  ratio=%s  %5.1fs' % (
             si, len(msgs), prompt, cached,
             ('%.4f' % ratio) if ratio is not None else 'n/a', dt), flush=True)
@@ -192,6 +236,15 @@ def main():
     ap.add_argument('--apply-prunes', action='store_true')
     ap.add_argument('--timeout', type=int, default=1800)
     ap.add_argument('--out', default='/tmp/reuse_replay_report.json')
+    ap.add_argument('--snapshot-file', default='',
+                    help='engine selected-hotlist snapshot path '
+                         '(DS4_MOE_RECORD_SELECTED_HOTLIST_SNAPSHOT); after '
+                         'each step, wait for the first snapshot copied '
+                         'after the step ended and archive it under '
+                         '--snapshot-dir as turn_NNN.txt (cumulative, for '
+                         'tools/hotlist_v2_from_turns.py per-turn deltas)')
+    ap.add_argument('--snapshot-dir', default='')
+    ap.add_argument('--snapshot-timeout', type=int, default=60)
     args = ap.parse_args()
     if args.baseline:
         baseline(args, args.session)
