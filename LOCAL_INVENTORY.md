@@ -40,7 +40,7 @@
 | #985 (Rick Ratmansky) | 归一化 tool replay 跨轮保住 KV cache | `b8e4474` | 10-02 前缀复用批次 |
 | #727 (LEFBE) | transient metadata block 剥离后保住 live KV（issue #364，#378 的返工） | `bfbf557`, `ba80b4b` | 同上 |
 
-## B. 本地实现提交（23 个，含从自己 feat 分支重新落地）
+## B. 本地实现提交（24 个，含从自己 feat 分支重新落地）
 
 | 提交 | 主题 | 性质 |
 |---|---|---|
@@ -58,6 +58,7 @@
 | `e4488c1` `3b2abc4` | 录制 session 前缀复用 A/B 回放器 + compaction prunes 修正 | 本地（同上主线） |
 | `d09ca3b` | GLM-5.3 prefill router 走调优 BF16 tensor-unit matmul（M5 +7.3%） | 本地（依赖 `9bc0bd7` 的 NAX 门放开） |
 | `4c95017` | 本台账 + AGENTS.md 维护规则入库 | 台账 |
+| `db90539` | Metal decode-graph 骨架（M1-1/M1-2）：keyed LRU/poison/param buffer/日志锚全量入库，执行层占位（本机无回放基底），env 默认关，含 `tests/test_metal_graph_capture` 零模型单元验收 | 本地（ITERATION_PLAN M1，处置见 D） |
 
 ## C. 本地工作 → 依赖的 cherry-pick PR（与 main 的差异所在）
 
@@ -114,6 +115,7 @@
 
 - **M0-4 基线复核窗（2026-10-05，停产品独占，用户批准）**：14/14 腿绿；KPI 表全部复核成立（ITERATION_PLAN §1 新增 M0 复核列 + `speed-bench/M0/m0-4/notes.md`）。SPEC_ROWS A/B 关账：decode 与 [4,8) 行 append 均中性，step4/13 + step8/10 frontier logits 逐字节等（`m0-4/parity/*.sha256`）→ 维持默认关作 E1 种子。GLM MTP 首账 effective −19.8%（G4a 结算行）。方法学两教训（腿间门用组合可用量、swap 解析）已入 notes。
 - **M0-5 上游复核（2026-10-05）**：`git fetch origin` 后 origin/main 仍 `0aaea5a`，`git cherry` 68 片全部未吸收；#1177/#1178 均 OPEN、零 review 零评论；本文件引用的全部 SHA（含 `cardi-upstream 5805843/4e48bb5`、`pf6-upstream 71268a1`）仍有效，无需刷新。窗口前照例复查。
+- **M1-1/M1-2 落账 + macOS 26.5.1 Metal 捕获基底关账（2026-10-05，无窗口、零模型加载）**：M1-1 原方案（MTLGraph `captureScopeWithCommandBuffer:`）经三重取证在 macOS 26.5.1 (25F80)/Xcode SDK 26.5 上不存在（SDK 全目录零 graph 头、活跃 `AGXG17XFamilyCommandBuffer` 全继承链零 capture/replay selector、dyld 共享缓存 selector 字符串零命中、Apple 文档 404）；p42-attn-glue 分支亦无历史 capture 代码。用户裁决改道 MTLIndirectCommandBuffer，实现完成时以 7 变体裸 Metal 探针（A–G：concurrent/legacy、shared/private、threads/threadgroups、serial/concurrent encoder、inherit/绑定 组合）实测驱动黑洞：**任何带绑定的 CPU 录制（`indirectComputeCommandAtIndex` + `setComputePipelineState:`）直接 segfault 于 `AGXG17XFamilyIndirectComputeCommand setComputePipelineState:`（lldb 栈确认）**，唯一不崩的 inherit 形态继承 pipeline/buffer 不生效、dispatch 静默蒸发。**裁决（用户）：M1 捕获路线搁置**，骨架入库（`db90539`，default off，`tests/test_metal_graph_capture` 全绿），M1-3/1-4/1-5 窗口与 GLM ≥35 t/s 出口线作废重定（ITERATION_PLAN §1/§3 已注）。复活路径 = ds4_metal.m 三处 "M2-3 SUBSTRATE HOOK"（begin 建录制缓冲 / proxy recordDispatch 落命令 / execute_entry 执行），**动手前重跑 `git stash` 无关的探针矩阵**：/tmp 探针文件重启即失，重建要点=本条描述 + 崩溃点符号，每次 macOS 升级后先探后用。V4.1 侧 decode graphs（V4.1 islands 共用 supported()）同步搁置——env 关闭下 islands 恒 eager，无行为变化。**别把它当 bug 修**：`ds4_dg_execute_entry` 返回 NO 是裁决形态不是遗漏。
 - 一次性噪声已入 `.git/info/exclude`（纯本地、不随任何 PR 携带）：`pic.jpeg`、`start.md`/`start.txt`（server 启动备忘）、`tests/*.o.tmp`、`tests/test_metal_rewind`（构建残留）、`.codegraph/`、`.cursor/`
 - 本文件与 `AGENTS.md` 已纳入 git 跟踪。**PR 纪律**：PR 分支一律从上游 `origin/main` 切、只 cherry-pick 目标修复提交；不 merge 本地 main、不 `git add -A`——docs commit 不在 PR 范围即不会携带
 - `/tmp/ds4-main`、`/tmp/pf6-pr-base` 对照 worktree：重启即失，需按 BASELINE §13.2 重建流程
