@@ -34,6 +34,10 @@ int main(void) {
         }
     }
     require(ds4_gpu_init(),"GPU initialization");
+    /* The fused path is gated behind tuning availability; without the test
+     * flag this expects engagement only where the runtime gate happens to
+     * be open (M3 Ultra / NAX hosts), and fails everywhere else. */
+    ds4_gpu_test_set_flags(DS4_GPU_TEST_GLM53_PREFILL);
     require(ds4_gpu_set_model_map(model,BYTES),"model registration");
     const uint64_t sizes[]={EXPERTS*4,USED*4,USED*4,EXPERTS*4,4,MID*4};
     ds4_gpu_tensor *out[6];
@@ -126,6 +130,7 @@ int main(void) {
     require(ds4_gpu_glm53_router_shared_exact(out[0],out[1],out[2],out[3],out[4],out[5],
         model,BYTES,ROUTER,BIAS,GATE,UP,x,1.0f,10.0f)==0,"rollback refusal");
     for (int i=0;i<6;i++) { ds4_gpu_tensor_free(out[i]);free(expected[i]);free(observed[i]); }
+    ds4_gpu_test_set_flags(0);
     ds4_gpu_tensor_free(x);ds4_gpu_cleanup();munmap(model,BYTES);
     puts("GLM router/shared exact: PASS (240 poisoned draws, failure recovery, counter reuse)");
     return 0;
