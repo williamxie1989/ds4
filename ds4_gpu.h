@@ -3535,6 +3535,23 @@ int  ds4_gpu_decode_graph_end(const ds4_decode_graph_key *key);
 void ds4_gpu_decode_graph_abort(const ds4_decode_graph_key *key);
 void ds4_gpu_decode_graphs_invalidate(void);
 
+/* Per-key fixed-address param buffer (M1-1 foundation; islands adopt it for
+ * dynamic scalars in M2-3).  Captured kernels read this buffer, so host
+ * writes are visible on the next replay with no recapture.  The pointer is
+ * valid while the entry lives (until eviction / retirement / invalidate).
+ * Returns 0 when no entry owns `key`.  Metal backend; other backends do not
+ * implement it (declared so shared code can guard on
+ * ds4_gpu_decode_graphs_supported()). */
+int ds4_gpu_decode_graph_param_map(const ds4_decode_graph_key *key,
+                                   void                      **ptr_out,
+                                   uint64_t                   *size_out);
+/* Captures / replays / capture failures / LRU evictions since process start
+ * (Metal backend diagnostics; used by the acceptance test and M1-3+ logs). */
+void ds4_gpu_decode_graph_stats(uint64_t *captures,
+                                uint64_t *replays,
+                                uint64_t *captures_failed,
+                                uint64_t *evictions);
+
 /* Qwen3.8-Flash-Next kernels (metal/qwen4.metal).  Weights are model-map
  * offsets; f32 transients unless noted.  Layouts: residual [T][hc*E],
  * GDN qkv [T][2*Hk*D + Hv*D] with tiled value heads, GDN state [Hv][D][D]

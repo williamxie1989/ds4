@@ -163,12 +163,9 @@ static uint32_t metal_graph_cuda_tp_output_tiers_for_head(
  * we cannot reference ds4_tensor_range there — those stubs are guarded
  * by !DS4_NO_GPU below. */
 #if defined(__APPLE__) && !defined(DS4_NO_GPU)
-/* Decode-island graph capture is CUDA-only; Metal decodes eagerly. */
-int ds4_gpu_decode_graphs_supported(void) { return 0; }
-int ds4_gpu_decode_graph_begin(const ds4_decode_graph_key *key) { (void)key; return -1; }
-int ds4_gpu_decode_graph_end(const ds4_decode_graph_key *key) { (void)key; return -1; }
-void ds4_gpu_decode_graph_abort(const ds4_decode_graph_key *key) { (void)key; }
-void ds4_gpu_decode_graphs_invalidate(void) {}
+/* Decode-island graph capture is implemented for Metal in ds4_metal.m
+ * (M1-1: MTLIndirectCommandBuffer recording, env DS4_METAL_DECODE_GRAPHS
+ * default off; see the decode-graph section there for the OS-API history). */
 int ds4_gpu_set_current_device(int logical_tier) { (void)logical_tier; return -1; }
 int ds4_gpu_set_current_device_fenced(int logical_tier) { (void)logical_tier; return -1; }
 void ds4_gpu_enable_q8_dequant_gemm(void) {}
@@ -58551,7 +58548,82 @@ glm53_attention_done:
         DS4_GLM_FT_STAGE("FFN");
         if (ok && g->glm53) {
             bool graph_ok = false;
-#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
+#if !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
+            /* ==================================================================
+             * M1-2 review notes -- GLM FFN-tail island under keyed capture.
+             * The Metal backend now implements the ds4_gpu_decode_graph_*
+             * contract (M1-1, ds4_metal.m: ICB recording, env
+             * DS4_METAL_DECODE_GRAPHS, default OFF), so the gate includes
+             * Apple; ds4_gpu_decode_graphs_supported() keeps every backend
+             * eager until its env is armed.  Correctness argument, keyed
+             * semantics included:
+             *
+             * 1. Key identity.  The key pins the four hc/norm buffers whose
+             *    MTLBuffer identities the recorded dispatches bake in:
+             *    hc_cur (output of the pre-tail stages), hc_after_attn,
+             *    hc_next (island output), ffn_norm (input).  It also pins il.
+             *    g->hc_cur/hc_next swap each layer (mHC double buffer), so
+             *    with an ODD layer count the per-layer entry buffers flip
+             *    parity every token: each layer then owns two stable keys
+             *    (one per parity), each replayable; with an EVEN layer count
+             *    each layer owns one.  Both cases are bit-safe and bound
+             *    the capture population at 2 x layers -- this is the design
+             *    absorbing "key churn", not a bug.  A key only goes stale
+             *    when the graph buffers are reallocated, and every such path
+             *    already calls ds4_gpu_decode_graphs_invalidate().
+             *
+             * 2. No per-token scalars in the tail.  pos is threaded down
+             *    this chain but only into stage/expert-profile diagnostics
+             *    (glm_graph_profile_stage, glm_graph_matmul_*_profiled_*,
+             *    glm_graph_profile_router_selection -- the last one also
+             *    ends the batch for a GPU readback).  All of them are
+             *    already excluded by the gate below (stage_profile,
+             *    g_expert_profile.active, debug dump prefix).  The FFN-tail
+             *    kernel arguments are buffer bindings plus frozen constants
+             *    (dims, eps, swiglu clamp), so a replay of a capture equals
+             *    the eager encode byte-for-byte.  If a future change routes
+             *    a per-token scalar (pos, scale, logit bias) into a tail
+             *    kernel argument, it must move to the entry param buffer
+             *    (ds4_gpu_decode_graph_param_map) instead of baking -- that
+             *    adoption is M2-3 work.
+             *
+             * 3. Routing stays on the GPU.  The router writes
+             *    router_selected/router_weights on-device and the MoE
+             *    kernels read those buffers (weights reached via
+             *    bound-resident expert buffers); nothing in the tail reads
+             *    a routing decision on the host, so per-token expert
+             *    changes flow through the recorded dispatches unchanged.
+             *
+             * 4. Failure is eager, never approximate.  ds4_gpu_decode_graph_
+             *    end() returning -1 means NO captured work executed, so the
+             *    retry re-encodes the island eagerly here; a poisoned
+             *    capture (batch rotated mid-island -- first mine) lands in
+             *    the same path.  begin()==1 already executed the island via
+             *    replay, so returning true without encoding is complete.
+             *    mHC parity: after a replayed or captured tail the caller
+             *    still swaps hc_cur/hc_next (tail_ok==true), which is what
+             *    keeps point 1's parity argument true across tokens.
+             *
+             * 5. Observability (acceptance anchors, ds4_metal.m):
+             *    "decode graph [il=N island=1]: captured (...)",
+             *    "... replayed n=K (first hit and every 4096)",
+             *    "... capture failed (...): retired", "... capture aborted",
+             *    "... evicted (LRU)".  M1-3 windows count replays through
+             *    ds4_gpu_decode_graph_stats().
+             *
+             * 6. SUBSTRATE STATUS (ruling, LOCAL_INVENTORY.md section D):
+             *    macOS 26.5.1 on this M5 Max has no usable record-then-
+             *    replay substrate (MTLGraph removed from the OS; ICB
+             *    recording segfaults inside the AGX driver on every bind
+             *    variant, silent no-op otherwise -- probes in the ledger).
+             *    The Metal backend therefore runs as a full SKELETON: this
+             *    gate and the capture machinery engage, but every capture
+             *    retires to eager (end() == -1), so decode is byte-exact
+             *    by construction and this call site costs one proxy pass
+             *    per key's first token, then pure eager.  Points 1-4 above
+             *    are the standing correctness review for the day M2-3
+             *    lands a substrate and replays go live here.
+             * ================================================================== */
             graph_ok = !g->placement && g->tp_world <= 1 &&
                        !g->ssd_streaming && !g->imatrix &&
                        g->directional_steering_ffn_scale == 0.0f &&
