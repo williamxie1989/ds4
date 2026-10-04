@@ -18,7 +18,9 @@
 #
 # Usage:
 #   SESSION=/path/session.jsonl[.zst] [PORT=8055] [V41=gguf/...] \
-#   [CACHE_EXPERTS=6959] [LAYERS=40] \
+#   [CACHE_EXPERTS=6959  (SIMULATION ONLY -- the server always uses its
+     auto budget; force the server's own cache with
+     --ssd-streaming-cache-experts instead)] [LAYERS=40] \
 #     speed-bench/M3/m3-1/run_calibration.sh
 # Outputs: speed-bench/M3/m3-1/run-<stamp>/  (+ notes.md)
 set -u
@@ -174,7 +176,7 @@ python3 tools/hotlist_v2_calibrate.py --files-from "$RUN/files.txt" \
     echo "- replay: tools/prefix_reuse_replay.py --replay --snapshot-file ... (max_tokens=1)"
     echo "- engine env: DS4_MOE_RECORD_SELECTED_HOTLIST=$RUN/hotlist_final.txt"
     echo "  DS4_MOE_RECORD_SELECTED_HOTLIST_SNAPSHOT=$RUN/snapshots/current.txt (500 ms)"
-    echo "- cache experts: $CACHE_EXPERTS (verify against server log line above);"
+    echo "- cache experts: $CACHE_EXPERTS (simulator only; server budget = log line above);"
     echo "  layers: $LAYERS"
     echo "- turn snapshots: $N"
     echo "- server rc / replay rc: see window.log; swap+process watchdog armed"
