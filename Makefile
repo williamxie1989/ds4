@@ -744,6 +744,12 @@ tests/test_metal_graph_capture: tests/test_metal_graph_capture.c ds4_metal.o ds4
 .PHONY: test-metal-graph-capture
 test-metal-graph-capture: tests/test_metal_graph_capture
 	./tests/test_metal_graph_capture
+
+tests/test_metal_nax_tensor_units: tests/test_metal_nax_tensor_units.c ds4_metal.o ds4_image.o ds4_gpu.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -I. $< ds4_metal.o ds4_image.o -o $@ $(METAL_LDLIBS)
+.PHONY: test-metal-nax-tensor-units
+test-metal-nax-tensor-units: tests/test_metal_nax_tensor_units
+	./tests/test_metal_nax_tensor_units
 endif
 
 ifeq ($(UNAME_S),Darwin)
