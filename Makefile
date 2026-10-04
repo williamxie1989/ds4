@@ -970,6 +970,12 @@ test-glm53-hc-pre-repeat: tests/test_glm53_hc_pre_repeat
 	./tests/test_glm53_hc_pre_repeat 1 0
 	./tests/test_glm53_hc_pre_repeat 0 1
 	./tests/test_glm53_hc_pre_repeat 1 1
+
+tests/test_metal_graph_capture: tests/test_metal_graph_capture.c ds4_metal.o ds4_image.o ds4_gpu.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -I. $< ds4_metal.o ds4_image.o -o $@ $(METAL_LDLIBS)
+.PHONY: test-metal-graph-capture
+test-metal-graph-capture: tests/test_metal_graph_capture
+	./tests/test_metal_graph_capture
 endif
 
 ifeq ($(UNAME_S),Darwin)
@@ -1412,6 +1418,7 @@ test: ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test test-session-
 	tests/test_layer_pack tests/test_engine_mgpu_placement tests/test_gpu_args \
 	tests/test_deepseek4_vision_image tests/test_image_decode tests/test_prompt_prefix $(SAMPLING_TEST) $(GLM53_KDA_DEFAULT_TEST) \
 	$(DEEPSEEK41_EXACT_DEFAULT_TESTS) \
+	$(if $(filter Darwin,$(UNAME_S)),tests/test_metal_graph_capture) \
 	ds4 ds4-server ds4-bench ds4-agent
 	./ds4-eval --validate-cases
 	./ds4-eval --self-test-extractors
@@ -1427,6 +1434,7 @@ test: ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test test-session-
 	./tests/test_image_decode
 	@if [ -n "$(GLM53_KDA_DEFAULT_TEST)" ]; then ./$(GLM53_KDA_TEST); fi
 	@for t in $(DEEPSEEK41_EXACT_DEFAULT_TESTS); do ./$$t || exit 1; done
+	@if [ "$(UNAME_S)" = "Darwin" ]; then ./tests/test_metal_graph_capture; fi
 
 dspark-acceptance: ds4
 	DS4_DSPARK_MODEL="$(DS4_DSPARK_MODEL)" \
@@ -1494,6 +1502,7 @@ clean:
 	rm -f tests/test_deepseek41_metal
 	rm -f tests/test_deepseek41_q4_tail
 	rm -f tests/test_glm53_router_shared tests/test_glm53_topk_fast tests/test_glm53_q8_inputs
+	rm -f tests/test_metal_graph_capture
 	rm -f tests/test_deepseek41_cuda
 	rm -f tests/test_cuda_q8_rows
 	rm -f tests/test_cuda_q8_pair
