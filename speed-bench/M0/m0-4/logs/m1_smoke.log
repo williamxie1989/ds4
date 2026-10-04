@@ -1,0 +1,172 @@
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal model views created in 2.399 ms, residency requested in 458.788 ms, warmup 3.785 ms (mapped 92026.06 MiB from offset 9.07 MiB)
+ds4: Metal mapped mmaped model as 2 overlapping shared buffers
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.37 GiB (raw 0.00 + compressed 0.37) + buffers 2.98 GiB + resident model 89.87 GiB = 93.21 GiB planned
+ds4: memory detail: ctx=32768 prefill_cap=2048 raw_kv_rows=0 compressed_kv_rows=32768 backend=metal
+ds4: memory: KV 0.37 GiB (raw 0.00 + compressed 0.37) + buffers 2.98 GiB = 3.34 GiB context
+ds4: memory detail: ctx=32768 prefill_cap=2048 raw_kv_rows=0 compressed_kv_rows=32768 backend=metal
+ds4: GLM session ctx=32768 (model max=1048576); prefill/work cap=4096; dense attention limit=2051
+ds4: GLM graph using compact DSA KV only; expanded full-attention KV cache is skipped
+ds4: GLM graph allocating compact DSA cache: rows=32768 logical_ctx=32768 kv_layers=45 indexer_layers=11 f16 0.37 GiB
+ds4: GLM compact indexed prefill chunk=2048 score_rows=2048 score_scratch=64.00 MiB
+processing 1877 input tokens: 1877/1877 (100.0%)
+Theds4: glm mtp cycle: verify2 60.3 ms, head+draft 36.6 ms, reject (draft 1943 ' message' vs true 702 ' has')
+ userds4: glm mtp cycle: verify2 49.5 ms, head+draft 34.3 ms, reject (draft 8453 ' posted' vs true 3267 ' past')
+ has postedds4: glm mtp cycle: verify2 48.3 ms, head+draft 33.5 ms, reject (draft 1467 ' text' vs true 7167 ' beginning')
+ theds4: glm mtp cycle: verify2 46.5 ms, head+draft 6.6 ms, ACCEPT (draft 315 ' of' vs true 315 ' of')
+ beginning of Mands4: glm mtp cycle: verify2 47.7 ms, head+draft 6.3 ms, ACCEPT (draft 20737 'oni' vs true 20737 'oni')
+zonids4: glm mtp cycle: verify2 46.7 ms, head+draft 6.5 ms, ACCEPT (draft 330 ' "' vs true 330 ' "')
+'s "ds4: glm mtp cycle: verify2 46.4 ms, head+draft 6.1 ms, ACCEPT (draft 17557 ' Prom' vs true 17557 ' Prom')
+I Promds4: glm mtp cycle: verify2 46.6 ms, head+draft 6.2 ms, ACCEPT (draft 328 ' S' vs true 328 ' S')
+essi Sds4: glm mtp cycle: verify2 46.6 ms, head+draft 6.2 ms, ACCEPT (draft 1 '"' vs true 1 '"')
+posi"ds4: glm mtp cycle: verify2 47.1 ms, head+draft 35.2 ms, reject (draft 40 'I' vs true 785 'The')
+ (ds4: glm mtp cycle: verify2 46.9 ms, head+draft 33.9 ms, reject (draft 330 ' "' vs true 425 ' B')
+Theds4: glm mtp cycle: verify2 47.1 ms, head+draft 6.5 ms, ACCEPT (draft 8803 'etro' vs true 8803 'etro')
+ Betrods4: glm mtp cycle: verify2 47.1 ms, head+draft 6.1 ms, ACCEPT (draft 8 ')' vs true 8 ')')
+thed)ds4: glm mtp cycle: verify2 47.1 ms, head+draft 6.3 ms, ACCEPT (draft 279 ' the' vs true 279 ' the')
+ — the introductionds4: glm mtp cycle: verify2 46.5 ms, head+draft 33.7 ms, reject (draft 13 '.' vs true 2619 ' There')
+.ds4: glm mtp cycle: verify2 46.4 ms, head+draft 6.5 ms, ACCEPT (draft 594 ''s' vs true 594 ''s')
+ There'sds4: glm mtp cycle: verify2 45.3 ms, head+draft 6.6 ms, ACCEPT (draft 11459 ' explicit' vs true 11459 ' explicit')
+ no explicitds4: glm mtp cycle: verify2 46.8 ms, head+draft 33.6 ms, reject (draft 476 ' or' vs true 13 '.')
+ questionds4: glm mtp cycle: verify2 46.9 ms, head+draft 6.0 ms, ACCEPT (draft 2379 ' They' vs true 2379 ' They')
+. They'veds4: glm mtp cycle: verify2 45.7 ms, head+draft 6.2 ms, ACCEPT (draft 3267 ' past' vs true 3267 ' past')
+ just pastds4: glm mtp cycle: verify2 46.5 ms, head+draft 6.2 ms, ACCEPT (draft 1467 ' text' vs true 1467 ' text')
+ed textds4: glm mtp cycle: verify2 46.5 ms, head+draft 33.8 ms, reject (draft 3555 ' What' vs true 358 ' I')
+.ds4: glm mtp cycle: verify2 45.7 ms, head+draft 6.2 ms, ACCEPT (draft 1265 ' should' vs true 1265 ' should')
+ I shouldds4: glm mtp cycle: verify2 44.4 ms, head+draft 6.4 ms, ACCEPT (draft 1492 ' help' vs true 1492 ' help')
+ respond helpds4: glm mtp cycle: verify2 46.7 ms, head+draft 6.5 ms, ACCEPT (draft 1959 ' —' vs true 1959 ' —')
+fully —ds4: glm mtp cycle: verify2 45.8 ms, head+draft 34.0 ms, reject (draft 2548 ' ask' vs true 61644 ' summarize')
+ perhapsds4: glm mtp cycle: verify2 46.5 ms, head+draft 6.2 ms, ACCEPT (draft 11 ',' vs true 11 ',')
+ summarize,ds4: glm mtp cycle: verify2 46.2 ms, head+draft 6.4 ms, ACCEPT (draft 11 ',' vs true 11 ',')
+ explain, askds4: glm mtp cycle: verify2 46.3 ms, head+draft 6.5 ms, ACCEPT (draft 807 ' they' vs true 807 ' they')
+ what theyds4: glm mtp cycle: verify2 46.5 ms, head+draft 6.4 ms, ACCEPT (draft 1075 ' like' vs true 1075 ' like')
+'d likeds4: glm mtp cycle: verify2 46.1 ms, head+draft 6.0 ms, ACCEPT (draft 576 ' The' vs true 576 ' The')
+. Theds4: glm mtp cycle: verify2 44.9 ms, head+draft 6.4 ms, ACCEPT (draft 374 ' is' vs true 374 ' is')
+ text is inds4: glm mtp cycle: verify2 44.3 ms, head+draft 6.1 ms, ACCEPT (draft 11 ',' vs true 11 ',')
+ Italian,ds4: glm mtp cycle: verify2 45.7 ms, head+draft 34.2 ms, reject (draft 358 ' I' vs true 5889 ' respond')
+ sods4: glm mtp cycle: verify2 46.6 ms, head+draft 6.4 ms, ACCEPT (draft 304 ' in' vs true 304 ' in')
+ respond inds4: glm mtp cycle: verify2 44.6 ms, head+draft 32.7 ms, reject (draft 382 '.
+
+' vs true 4658 ' probably')
+ Italian.ds4: glm mtp cycle: verify2 45.8 ms, head+draft 33.7 ms, reject (draft 25 ':' vs true 39 'H')
+
+ds4: glm mtp cycle: verify2 46.6 ms, head+draft 6.3 ms, ACCEPT (draft 2143 'ai' vs true 2143 'ai')
+Haids4: glm mtp cycle: verify2 46.7 ms, head+draft 33.7 ms, reject (draft 3625 ' inc' vs true 15408 'iso')
+ condivds4: glm mtp cycle: verify2 46.3 ms, head+draft 34.2 ms, reject (draft 3815 ' il' vs true 326 ' l')
+isods4: glm mtp cycle: verify2 46.6 ms, head+draft 6.3 ms, ACCEPT (draft 6 ''' vs true 6 ''')
+ l'ds4: glm mtp cycle: verify2 47.0 ms, head+draft 6.1 ms, ACCEPT (draft 1072 'Int' vs true 1072 'Int')
+**Intds4: glm mtp cycle: verify2 47.2 ms, head+draft 6.3 ms, ACCEPT (draft 29554 'zione' vs true 29554 'zione')
+roduzione deglids4: glm mtp cycle: verify2 46.0 ms, head+draft 6.5 ms, ACCEPT (draft 40 'I' vs true 40 'I')
+ *Ids4: glm mtp cycle: verify2 46.8 ms, head+draft 6.3 ms, ACCEPT (draft 130752 'essi' vs true 130752 'essi')
+ Promessids4: glm mtp cycle: verify2 47.0 ms, head+draft 6.5 ms, ACCEPT (draft 128060 'posi' vs true 128060 'posi')
+ Sposi*ds4: glm mtp cycle: verify2 45.5 ms, head+draft 33.7 ms, reject (draft 334 '**' vs true 69265 ' Aless')
+ dids4: glm mtp cycle: verify2 47.1 ms, head+draft 34.0 ms, reject (draft 69265 ' Aless' vs true 41488 'andro')
+ Alessds4: glm mtp cycle: verify2 47.0 ms, head+draft 6.2 ms, ACCEPT (draft 2363 ' Man' vs true 2363 ' Man')
+andro Mands4: glm mtp cycle: verify2 46.7 ms, head+draft 5.9 ms, ACCEPT (draft 20737 'oni' vs true 20737 'oni')
+zonids4: glm mtp cycle: verify2 47.4 ms, head+draft 34.3 ms, reject (draft 320 ' (' vs true 1959 ' —')
+**ds4: glm mtp cycle: verify2 46.9 ms, head+draft 34.6 ms, reject (draft 11 ',' vs true 23828 ' uno')
+ —ds4: glm mtp cycle: verify2 47.5 ms, head+draft 6.5 ms, ACCEPT (draft 21753 ' dei' vs true 21753 ' dei')
+ uno dei passds4: glm mtp cycle: verify2 47.5 ms, head+draft 6.4 ms, ACCEPT (draft 22704 ' più' vs true 22704 ' più')
+aggi piùds4: glm mtp cycle: verify2 47.9 ms, head+draft 6.3 ms, ACCEPT (draft 461 'ri' vs true 461 'ri')
+ celebrids4: glm mtp cycle: verify2 47.5 ms, head+draft 33.8 ms, reject (draft 15218 ' della' vs true 4081 ' gen')
+ eds4: glm mtp cycle: verify2 47.5 ms, head+draft 6.2 ms, ACCEPT (draft 80407 'iali' vs true 80407 'iali')
+ genialids4: glm mtp cycle: verify2 47.7 ms, head+draft 34.4 ms, reject (draft 15218 ' della' vs true 6524 ' letter')
+ dellads4: glm mtp cycle: verify2 47.5 ms, head+draft 33.9 ms, reject (draft 64 'a' vs true 24227 'atura')
+ letterds4: glm mtp cycle: verify2 47.9 ms, head+draft 6.3 ms, ACCEPT (draft 87627 ' italiana' vs true 87627 ' italiana')
+atura italianads4: glm mtp cycle: verify2 47.3 ms, head+draft 34.0 ms, reject (draft 15553 ' Come' vs true 18842 ' Pos')
+. Comeds4: glm mtp cycle: verify2 47.2 ms, head+draft 6.4 ms, ACCEPT (draft 16377 ' ai' vs true 16377 ' ai')
+ posso aids4: glm mtp cycle: verify2 47.0 ms, head+draft 6.2 ms, ACCEPT (draft 67049 'arti' vs true 67049 'arti')
+utartids4: glm mtp cycle: verify2 47.3 ms, head+draft 34.0 ms, reject (draft 18842 ' Pos' vs true 87629 ' Nel')
+?ds4: glm mtp cycle: verify2 48.3 ms, head+draft 6.3 ms, ACCEPT (draft 80315 ' frat' vs true 80315 ' frat')
+ Nel fratds4: glm mtp cycle: verify2 46.8 ms, head+draft 6.1 ms, ACCEPT (draft 78 'o' vs true 78 'o')
+tempods4: glm mtp cycle: verify2 47.3 ms, head+draft 6.3 ms, ACCEPT (draft 32758 ' ecc' vs true 32758 ' ecc')
+, eccds4: glm mtp cycle: verify2 47.2 ms, head+draft 33.8 ms, reject (draft 650 ' un' vs true 5093 ' una')
+o alcuneds4: glm mtp cycle: verify2 46.8 ms, head+draft 34.3 ms, reject (draft 127961 ' utili' vs true 913 ' su')
+ note utilids4: glm mtp cycle: verify2 47.6 ms, head+draft 33.9 ms, reject (draft 1447 ':
+
+' vs true 33299 ' questo')
+ suds4: glm mtp cycle: verify2 47.6 ms, head+draft 34.4 ms, reject (draft 1447 ':
+
+' vs true 145032 ' testo')
+ questods4: glm mtp cycle: verify2 47.5 ms, head+draft 6.3 ms, ACCEPT (draft 1447 ':
+
+' vs true 1447 ':
+
+')
+ testo:
+
+ds4: glm mtp cycle: verify2 47.6 ms, head+draft 33.8 ms, reject (draft 7543 ' Il' vs true 356 ' C')
+##ds4: glm mtp cycle: verify2 46.9 ms, head+draft 6.7 ms, ACCEPT (draft 11977 'osa' vs true 11977 'osa')
+ Cosads4: glm mtp cycle: verify2 47.5 ms, head+draft 34.2 ms, reject (draft 304 ' in' vs true 1029 ' acc')
+ stads4: glm mtp cycle: verify2 46.9 ms, head+draft 33.3 ms, reject (draft 64 'a' vs true 329 'ad')
+ accds4: glm mtp cycle: verify2 47.2 ms, head+draft 6.3 ms, ACCEPT (draft 8690 'endo' vs true 8690 'endo')
+adendo quids4: glm mtp cycle: verify2 46.9 ms, head+draft 34.1 ms, reject (draft 16 '1' vs true 1658 'Man')
+
+
+ds4: glm mtp cycle: verify2 47.0 ms, head+draft 6.5 ms, ACCEPT (draft 89 'z' vs true 89 'z')
+Manzds4: glm mtp cycle: verify2 46.2 ms, head+draft 6.2 ms, ACCEPT (draft 993 ' ad' vs true 993 ' ad')
+oni adds4: glm mtp cycle: verify2 46.3 ms, head+draft 33.5 ms, reject (draft 3070 ' **' vs true 650 ' un')
+otta una **ds4: glm mtp cycle: verify2 46.6 ms, head+draft 6.4 ms, ACCEPT (draft 29554 'zione' vs true 29554 'zione')
+finzione letterds4: glm mtp cycle: verify2 47.3 ms, head+draft 6.4 ms, ACCEPT (draft 334 '**' vs true 334 '**')
+aria** a piùds4: glm mtp cycle: verify2 48.0 ms, head+draft 6.5 ms, ACCEPT (draft 20465 'elli' vs true 20465 'elli')
+ livellids4: glm mtp cycle: verify2 47.2 ms, head+draft 6.1 ms, ACCEPT (draft 16 '1' vs true 16 '1')
+:
+
+1ds4: glm mtp cycle: verify2 46.6 ms, head+draft 6.4 ms, ACCEPT (draft 3070 ' **' vs true 3070 ' **')
+. **ds4: glm mtp cycle: verify2 46.8 ms, head+draft 33.7 ms, reject (draft 330 ' "' vs true 883 ' man')
+Il "ds4: glm mtp cycle: verify2 47.1 ms, head+draft 6.2 ms, ACCEPT (draft 23404 'osc' vs true 23404 'osc')
+manoscds4: glm mtp cycle: verify2 46.5 ms, head+draft 5.9 ms, ACCEPT (draft 983 'to' vs true 983 'to')
+ritto anonds4: glm mtp cycle: verify2 48.9 ms, head+draft 34.2 ms, reject (draft 511 ' se' vs true 1 '"')
+imods4: glm mtp cycle: verify2 48.4 ms, head+draft 6.3 ms, ACCEPT (draft 94713 '**:' vs true 94713 '**:')
+"**:ds4: glm mtp cycle: verify2 48.6 ms, head+draft 6.5 ms, ACCEPT (draft 89 'z' vs true 89 'z')
+ Manzds4: glm mtp cycle: verify2 47.6 ms, head+draft 6.1 ms, ACCEPT (draft 282 ' f' vs true 282 ' f')
+oni fds4: glm mtp cycle: verify2 53.6 ms, head+draft 6.4 ms, ACCEPT (draft 1853 ' di' vs true 1853 ' di')
+inge di avere rinds4: glm mtp cycle: verify2 52.4 ms, head+draft 6.2 ms, ACCEPT (draft 1535 'uto' vs true 1535 'uto')
+venutods4: glm mtp cycle: verify2 53.3 ms, head+draft 35.1 ms, reject (draft 511 ' se' vs true 3078 ' aut')
+ unds4: glm mtp cycle: verify2 52.0 ms, head+draft 34.6 ms, reject (draft 299 'ro' vs true 90381 'ogra')
+ autds4: glm mtp cycle: verify2 51.4 ms, head+draft 6.5 ms, ACCEPT (draft 824 'fo' vs true 824 'fo')
+ografods4: glm mtp cycle: verify2 51.8 ms, head+draft 34.6 ms, reject (draft 292 'ic' vs true 1168 'cent')
+ seds4: glm mtp cycle: verify2 51.6 ms, head+draft 33.9 ms, reject (draft 78 'o' vs true 93046 'esco')
+centds4: glm mtp cycle: verify2 52.2 ms, head+draft 35.0 ms, reject (draft 11 ',' vs true 320 ' (')
+esco,ds4: glm mtp cycle: verify2 52.0 ms, head+draft 6.3 ms, ACCEPT (draft 983 'to' vs true 983 'to')
+ scrittods4: glm mtp cycle: verify2 51.3 ms, head+draft 6.5 ms, ACCEPT (draft 650 ' un' vs true 650 ' un')
+ da unds4: glm mtp cycle: verify2 52.0 ms, head+draft 6.2 ms, ACCEPT (draft 11361 'imo' vs true 11361 'imo')
+ anonimo lunds4: glm mtp cycle: verify2 50.2 ms, head+draft 33.3 ms, reject (draft 2367 'ese' vs true 1103 'ian')
+igds4: glm mtp cycle: verify2 49.6 ms, head+draft 6.3 ms, ACCEPT (draft 2367 'ese' vs true 2367 'ese')
+ianese attds4: glm mtp cycle: verify2 48.9 ms, head+draft 6.0 ms, ACCEPT (draft 452 ' al' vs true 452 ' al')
+orno alds4: glm mtp cycle: verify2 50.0 ms, head+draft 6.1 ms, ACCEPT (draft 123903 '162' vs true 123903 '162')
+ 162ds4: glm mtp cycle: verify2 48.9 ms, head+draft 6.3 ms, ACCEPT (draft 12 '-' vs true 12 '-')
+0-164ds4: glm mtp cycle: verify2 49.3 ms, head+draft 6.4 ms, ACCEPT (draft 11 ',' vs true 11 ',')
+0,ds4: glm mtp cycle: verify2 49.8 ms, head+draft 33.3 ms, reject (draft 1853 ' di' vs true 8968 ' rac')
+ cheds4: glm mtp cycle: verify2 49.3 ms, head+draft 33.2 ms, reject (draft 139372 ' narra' vs true 772 'cont')
+ racds4: glm mtp cycle: verify2 49.2 ms, head+draft 6.2 ms, ACCEPT (draft 64 'a' vs true 64 'a')
+conta ids4: glm mtp cycle: verify2 48.8 ms, head+draft 6.1 ms, ACCEPT (draft 30829 'atti' vs true 30829 'atti')
+ fattids4: glm mtp cycle: verify2 50.0 ms, head+draft 33.4 ms, reject (draft 330 ' "' vs true 13766 ' Ren')
+ dids4: glm mtp cycle: verify2 49.8 ms, head+draft 33.3 ms, reject (draft 1709 ' que' vs true 12732 'zo')
+ Rends4: glm mtp cycle: verify2 49.5 ms, head+draft 33.4 ms, reject (draft 11 ',' vs true 384 ' e')
+zods4: glm mtp cycle: verify2 49.9 ms, head+draft 6.7 ms, ACCEPT (draft 78537 ' Lucia' vs true 78537 ' Lucia')
+ e Luciads4: glm mtp cycle: verify2 51.5 ms, head+draft 34.9 ms, reject (draft 7543 ' Il' vs true 444 ' L')
+. Lads4: glm mtp cycle: verify2 51.6 ms, head+draft 6.7 ms, ACCEPT (draft 19501 ' parte' vs true 19501 ' parte')
+ prima parteds4: glm mtp cycle: verify2 52.1 ms, head+draft 34.7 ms, reject (draft 6 ''' vs true 54161 ''int')
+ dellds4: glm mtp cycle: verify2 52.6 ms, head+draft 6.3 ms, ACCEPT (draft 4550 'rodu' vs true 4550 'rodu')
+'introduds4: glm mtp cycle: verify2 52.8 ms, head+draft 6.4 ms, ACCEPT (draft 320 ' (' vs true 320 ' (')
+zione (quds4: glm mtp cycle: verify2 52.2 ms, head+draft 6.4 ms, ACCEPT (draft 304 ' in' vs true 304 ' in')
+ella inds4: glm mtp cycle: verify2 52.2 ms, head+draft 6.4 ms, ACCEPT (draft 6496 'ivo' vs true 6496 'ivo')
+ corsivo)ds4: glm mtp cycle: verify2 52.8 ms, head+draft 35.1 ms, reject (draft 3815 ' il' vs true 65430 ' proprio')
+ èds4: glm mtp cycle: verify2 52.7 ms, head+draft 34.9 ms, reject (draft 650 ' un' vs true 1187 ' la')
+ proprio un *pds4: glm mtp cycle: verify2 53.4 ms, head+draft 33.9 ms, reject (draft 9 '*' vs true 383 'he')
+asticds4: glm mtp cycle: verify2 51.8 ms, head+draft 6.1 ms, ACCEPT (draft 9 '*' vs true 9 '*')
+he*ds4: glm mtp cycle: verify2 51.7 ms, head+draft 6.1 ms, ACCEPT (draft 147006 ' stile' vs true 147006 ' stile')
+ dello stile seds4: glm mtp cycle: verify2 51.7 ms, head+draft 35.3 ms, reject (draft 78 'o' vs true 93046 'esco')
+centds4: glm mtp cycle: verify2 51.8 ms, head+draft 6.4 ms, ACCEPT (draft 25 ':' vs true 25 ':')
+esco:ds4: glm mtp cycle: verify2 52.9 ms, head+draft 34.9 ms, reject (draft 573 'ip' vs true 7066 'ett')
+ concds4: glm mtp cycle: verify2 53.1 ms, head+draft 34.7 ms, reject (draft 2142 'ism' vs true 6591 'ini')
+ettds4: glm mtp cycle: verify2 52.2 ms, head+draft 6.6 ms, ACCEPT (draft 11 ',' vs true 11 ',')
+ini,ds4: glm mtp cycle: verify2 53.1 ms, head+draft 34.8 ms, reject (draft 11 ',' vs true 1324 'fore')
+ metads4: glm mtp cycle: verify2 53.1 ms, head+draft 6.3 ms, ACCEPT (draft 3619 ' bar' vs true 3619 ' bar')
+fore bar
+ds4: prefill: 475.10 t/s, generation: 24.82 t/s
+ds4: GLM mtp: 137 verify cycles, 83 drafts accepted (60.6%), 36 seed cycles; avg 1.480 tokens/cycle; verify2 48.4 ms, head+draft 17.3 ms, plain 31.9 ms; effective 25.2 t/s vs plain 31.4 t/s
