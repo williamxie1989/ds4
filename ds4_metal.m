@@ -15,6 +15,7 @@
 #include <limits.h>
 #include <time.h>
 #include <pthread.h>
+#include <signal.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/sysctl.h>
@@ -1999,6 +2000,165 @@ bad_line:
     return 1;
 }
 
+/* M3-1 (R2a-1) calibration aid: periodic snapshots of the selected-id
+ * hotlist counters, so an offline replay harness can turn the cumulative
+ * (layer, expert) counts into per-turn deltas by diffing snapshots taken
+ * around each replayed turn. This is a pure observer: the counters already
+ * exist, inference results never read them, and with
+ * DS4_MOE_RECORD_SELECTED_HOTLIST_SNAPSHOT unset no state, thread, lock
+ * contention or extra branch is added to the record path. Requires
+ * DS4_MOE_RECORD_SELECTED_HOTLIST to be set (the snapshot writes out the
+ * same counter table that env feeds). Snapshot files carry the v1 hotlist
+ * format plus "# snapshot_seq/unix_ms" header lines, written tmp+rename. */
+static pthread_mutex_t g_moe_selected_hotlist_snapshot_mu =
+    PTHREAD_MUTEX_INITIALIZER;
+static int g_moe_selected_hotlist_snapshot_active;
+static volatile sig_atomic_t g_moe_selected_hotlist_snapshot_stop;
+static pthread_t g_moe_selected_hotlist_snapshot_thread;
+static int g_moe_selected_hotlist_snapshot_thread_started;
+static char *g_moe_selected_hotlist_snapshot_path;
+static long g_moe_selected_hotlist_snapshot_interval_ms = 500;
+static uint64_t g_moe_selected_hotlist_snapshot_seq;
+
+static uint64_t ds4_gpu_moe_selected_hotlist_snapshot_unix_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
+}
+
+/* Write one snapshot of the counter table to path.tmp, then rename over
+ * path so the harness never observes a half-written file. Only ever called
+ * from the dumper thread and from the exit hook after the thread stopped. */
+static void ds4_gpu_moe_selected_hotlist_snapshot_write(const char *path) {
+    const size_t tmp_cap = strlen(path) + 8;
+    char *tmp = malloc(tmp_cap);
+    if (!tmp) return;
+    snprintf(tmp, tmp_cap, "%s.tmp", path);
+
+    /* Copy under the lock, write outside it: the table is a small fixed
+     * array and the record path shares this lock, so the critical section
+     * stays at copy cost instead of file I/O cost. */
+    static uint64_t counts_copy[DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER]
+                               [DS4_METAL_STREAM_EXPERT_CACHE_MAX_EXPERT];
+    uint64_t records, selections, seq;
+    pthread_mutex_lock(&g_moe_selected_hotlist_snapshot_mu);
+    memcpy(counts_copy,
+           g_moe_selected_hotlist_counts,
+           sizeof(counts_copy));
+    records = g_moe_selected_hotlist_records;
+    selections = g_moe_selected_hotlist_selections;
+    seq = ++g_moe_selected_hotlist_snapshot_seq;
+    pthread_mutex_unlock(&g_moe_selected_hotlist_snapshot_mu);
+
+    FILE *fp = fopen(tmp, "wb");
+    if (!fp) {
+        fprintf(stderr,
+                "ds4: failed to open selected hotlist snapshot %s: %s\n",
+                tmp,
+                strerror(errno));
+        free(tmp);
+        return;
+    }
+    fprintf(fp,
+            "# ds4 selected-id hotlist v1\n"
+            "# layer_records %" PRIu64 "\n"
+            "# selections %" PRIu64 "\n"
+            "# snapshot_seq %" PRIu64 "\n"
+            "# snapshot_unix_ms %" PRIu64 "\n"
+            "# columns: layer expert hits weight\n",
+            records,
+            selections,
+            seq,
+            ds4_gpu_moe_selected_hotlist_snapshot_unix_ms());
+    for (uint32_t layer = 0;
+         layer < DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER;
+         layer++) {
+        for (uint32_t expert = 0;
+             expert < DS4_METAL_STREAM_EXPERT_CACHE_MAX_EXPERT;
+             expert++) {
+            const uint64_t hits = counts_copy[layer][expert];
+            if (hits == 0) continue;
+            fprintf(fp,
+                    "%u %u %" PRIu64 " 0\n",
+                    layer,
+                    expert,
+                    hits);
+        }
+    }
+    if (fclose(fp) != 0 || rename(tmp, path) != 0) {
+        fprintf(stderr,
+                "ds4: failed to publish selected hotlist snapshot %s: %s\n",
+                path,
+                strerror(errno));
+    }
+    unlink(tmp);
+    free(tmp);
+}
+
+static void *ds4_gpu_moe_selected_hotlist_snapshot_thread_main(void *arg) {
+    (void)arg;
+    while (!g_moe_selected_hotlist_snapshot_stop) {
+        ds4_gpu_moe_selected_hotlist_snapshot_write(
+            g_moe_selected_hotlist_snapshot_path);
+        const long step_ms = 50;
+        for (long slept = 0;
+             slept < g_moe_selected_hotlist_snapshot_interval_ms &&
+             !g_moe_selected_hotlist_snapshot_stop;
+             slept += step_ms) {
+            struct timespec ts = {.tv_sec = 0, .tv_nsec = step_ms * 1000000l};
+            nanosleep(&ts, NULL);
+        }
+    }
+    return NULL;
+}
+
+static void ds4_gpu_moe_selected_hotlist_snapshot_stop_and_flush(void) {
+    if (g_moe_selected_hotlist_snapshot_thread_started) {
+        g_moe_selected_hotlist_snapshot_stop = 1;
+        pthread_join(g_moe_selected_hotlist_snapshot_thread, NULL);
+        g_moe_selected_hotlist_snapshot_thread_started = 0;
+    }
+    if (g_moe_selected_hotlist_snapshot_path) {
+        ds4_gpu_moe_selected_hotlist_snapshot_write(
+            g_moe_selected_hotlist_snapshot_path);
+    }
+}
+
+static void ds4_gpu_moe_selected_hotlist_snapshot_init(void) {
+    const char *path = getenv("DS4_MOE_RECORD_SELECTED_HOTLIST_SNAPSHOT");
+    if (!path || !path[0]) return;
+    const char *ms = getenv("DS4_MOE_RECORD_SELECTED_HOTLIST_SNAPSHOT_MS");
+    if (ms && ms[0]) {
+        char *end = NULL;
+        const long v = strtol(ms, &end, 10);
+        if (end != ms && *end == '\0') {
+            g_moe_selected_hotlist_snapshot_interval_ms =
+                v < 50 ? 50 : (v > 60000 ? 60000 : v);
+        }
+    }
+    g_moe_selected_hotlist_snapshot_path = strdup(path);
+    if (!g_moe_selected_hotlist_snapshot_path) return;
+    g_moe_selected_hotlist_snapshot_active = 1;
+    if (pthread_create(&g_moe_selected_hotlist_snapshot_thread,
+                       NULL,
+                       ds4_gpu_moe_selected_hotlist_snapshot_thread_main,
+                       NULL) != 0) {
+        fprintf(stderr,
+                "ds4: failed to start selected hotlist snapshot thread "
+                "(snapshot writing disabled)\n");
+        g_moe_selected_hotlist_snapshot_active = 0;
+        free(g_moe_selected_hotlist_snapshot_path);
+        g_moe_selected_hotlist_snapshot_path = NULL;
+        return;
+    }
+    g_moe_selected_hotlist_snapshot_thread_started = 1;
+    atexit(ds4_gpu_moe_selected_hotlist_snapshot_stop_and_flush);
+    fprintf(stderr,
+            "ds4: selected-id hotlist snapshots every %ldms to %s\n",
+            g_moe_selected_hotlist_snapshot_interval_ms,
+            path);
+}
+
 static void ds4_gpu_moe_selected_hotlist_close(void) {
     const char *path = getenv("DS4_MOE_RECORD_SELECTED_HOTLIST");
     if (!g_moe_selected_hotlist_initialized || !path || !path[0]) return;
@@ -2081,10 +2241,18 @@ static int ds4_gpu_moe_selected_hotlist_record(
     if (!g_moe_selected_hotlist_initialized) {
         g_moe_selected_hotlist_initialized = 1;
         if (!ds4_gpu_moe_selected_hotlist_load_existing(path)) return 0;
+        /* Registered before the close hook so at exit the close hook runs
+         * first and the snapshot stop+flush hook writes a final complete
+         * snapshot afterwards. */
+        ds4_gpu_moe_selected_hotlist_snapshot_init();
         atexit(ds4_gpu_moe_selected_hotlist_close);
     }
     if (layer >= DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER) return 1;
 
+    const bool snapshot_locked = g_moe_selected_hotlist_snapshot_active;
+    if (snapshot_locked) {
+        pthread_mutex_lock(&g_moe_selected_hotlist_snapshot_mu);
+    }
     g_moe_selected_hotlist_records++;
     for (uint32_t i = 0; i < n_selected; i++) {
         if (selected_ids[i] < 0) continue;
@@ -2095,6 +2263,9 @@ static int ds4_gpu_moe_selected_hotlist_record(
         }
         g_moe_selected_hotlist_counts[layer][expert]++;
         g_moe_selected_hotlist_selections++;
+    }
+    if (snapshot_locked) {
+        pthread_mutex_unlock(&g_moe_selected_hotlist_snapshot_mu);
     }
     return 1;
 }
