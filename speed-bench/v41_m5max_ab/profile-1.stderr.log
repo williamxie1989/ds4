@@ -1,0 +1,99 @@
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 107.52 GiB working set
+ds4:   using 75% total for model + cached experts: 81.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 7727 (71.63 GiB)
+ds4: metal SSD streaming cache target 71.63 GiB; effective 71.63 GiB = 7.12 GiB prefill headroom + 64.51 GiB dynamic cache (6959 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 64.51 GiB + prefill expert reserve 7.12 GiB = 93.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 43.959, logits 0.015, between steps 0.028
+ds4: V4.1 decode host profile, per step: 2386.2 compute encodes, 187.1 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 43.388, logits 0.021, between steps 0.043
+ds4: V4.1 decode host profile, per step: 1447.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 44.666, logits 0.020, between steps 0.037
+ds4: V4.1 decode host profile, per step: 1448.6 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 43.757, logits 0.020, between steps 0.036
+ds4: V4.1 decode host profile, per step: 1447.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 44.281, logits 0.021, between steps 0.035
+ds4: V4.1 decode host profile, per step: 1448.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 45.956, logits 0.016, between steps 0.032
+ds4: V4.1 decode host profile, per step: 1448.0 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 43.323, logits 0.022, between steps 0.036
+ds4: V4.1 decode host profile, per step: 1448.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 42.641, logits 0.017, between steps 0.033
+ds4: V4.1 decode host profile, per step: 1447.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 43.438, logits 0.020, between steps 172.218
+ds4: V4.1 decode host profile, per step: 2234.3 compute encodes, 187.8 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 44.348, logits 0.018, between steps 0.033
+ds4: V4.1 decode host profile, per step: 1455.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 42.623, logits 0.019, between steps 0.036
+ds4: V4.1 decode host profile, per step: 1456.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 41.622, logits 0.014, between steps 0.028
+ds4: V4.1 decode host profile, per step: 1455.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 40.515, logits 0.021, between steps 0.037
+ds4: V4.1 decode host profile, per step: 1456.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 39.842, logits 0.022, between steps 0.043
+ds4: V4.1 decode host profile, per step: 1455.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 39.672, logits 0.020, between steps 0.035
+ds4: V4.1 decode host profile, per step: 1456.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 38.450, logits 0.008, between steps 0.020
+ds4: V4.1 decode host profile, per step: 1455.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.007, layers 47.722, logits 0.016, between steps 296.619
+ds4: V4.1 decode host profile, per step: 2390.3 compute encodes, 293.2 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 45.420, logits 0.021, between steps 0.040
+ds4: V4.1 decode host profile, per step: 1465.0 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 45.555, logits 0.021, between steps 0.035
+ds4: V4.1 decode host profile, per step: 1465.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 45.296, logits 0.013, between steps 0.030
+ds4: V4.1 decode host profile, per step: 1464.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 44.801, logits 0.022, between steps 0.037
+ds4: V4.1 decode host profile, per step: 1465.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 44.689, logits 0.017, between steps 0.033
+ds4: V4.1 decode host profile, per step: 1464.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 43.984, logits 0.019, between steps 0.035
+ds4: V4.1 decode host profile, per step: 1465.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 45.082, logits 0.018, between steps 0.033
+ds4: V4.1 decode host profile, per step: 1465.0 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.007, layers 49.502, logits 0.016, between steps 374.639
+ds4: V4.1 decode host profile, per step: 2605.2 compute encodes, 293.3 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.006, layers 45.264, logits 0.019, between steps 0.039
+ds4: V4.1 decode host profile, per step: 1474.0 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 44.434, logits 0.022, between steps 0.040
+ds4: V4.1 decode host profile, per step: 1474.6 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 43.559, logits 0.022, between steps 0.040
+ds4: V4.1 decode host profile, per step: 1473.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 42.752, logits 0.021, between steps 0.039
+ds4: V4.1 decode host profile, per step: 1474.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 42.750, logits 0.020, between steps 0.038
+ds4: V4.1 decode host profile, per step: 1473.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 43.226, logits 0.020, between steps 0.035
+ds4: V4.1 decode host profile, per step: 1474.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 41.502, logits 0.021, between steps 0.037
+ds4: V4.1 decode host profile, per step: 1473.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.006, layers 50.182, logits 0.019, between steps 502.547
+ds4: V4.1 decode host profile, per step: 2997.0 compute encodes, 293.6 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.005, layers 46.930, logits 0.018, between steps 0.040
+ds4: V4.1 decode host profile, per step: 1483.1 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 45.630, logits 0.020, between steps 0.039
+ds4: V4.1 decode host profile, per step: 1483.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 45.843, logits 0.023, between steps 0.041
+ds4: V4.1 decode host profile, per step: 1482.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 45.309, logits 0.022, between steps 0.041
+ds4: V4.1 decode host profile, per step: 1483.6 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 44.849, logits 0.021, between steps 0.039
+ds4: V4.1 decode host profile, per step: 1482.9 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 44.696, logits 0.021, between steps 0.042
+ds4: V4.1 decode host profile, per step: 1483.5 compute encodes, 89.0 blit copies
+ds4: V4.1 decode host profile, mean ms over 64 steps: hash+engram 0.004, layers 44.039, logits 0.022, between steps 0.044
+ds4: V4.1 decode host profile, per step: 1482.9 compute encodes, 89.0 blit copies

@@ -1,0 +1,7 @@
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal model views created in 0.058 ms, residency requested in 0.684 ms, warmup 4.716 ms (mapped 43.38 MiB from offset 0.00 MiB)
+ds4: Metal mapped mmaped model as 1 overlapping shared buffers
+tests/test_deepseek41_metal.c:512: ds4_gpu_dsv41_matvec_bf16(shared[1], model, mapped, down_off, DS4_V41_WEIGHT_Q8_0, FF, D, mid[1]) == 1
+ds4: Metal cleanup discarded 24 live tensor handles
