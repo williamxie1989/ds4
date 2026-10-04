@@ -330,7 +330,7 @@ static int time_stages(const char *model, const char *prompt_path) {
                 const uint32_t il = stage == 6 ? 0 : (uint32_t)i;
                 const ds4_layer_weights *l = &w->layer[il];
                 switch (stage) {
-                case 0: ok = ds41_attention_project(g, m, l); break;
+                case 0: ok = ds41_attention_project(g, m, l, il); break;
                 case 1: ok = ds41_attention(g, m, l, il, true); break;
                 case 2: ok = ds41_attention_output(g, m, l, true); break;
                 case 3: ok = ds41_shared_mid(g, m, l) &&
