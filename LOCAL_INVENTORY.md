@@ -78,7 +78,8 @@
 
 | 工作项 | 文档证据 | 裁决 |
 |---|---|---|
-| V4.1 streaming + DSpark/MTP（含 128G 机器开 MTP） | `V41_STREAMING_ENGRAM_SPEED_PLAN.md` §9：盈亏平衡需 avg_accept≈2.96，实测 1.33–1.91，verify 固定 93 ms/轮 | **放弃**：流式 V4.1 生产走普通 decode；候选 A 仅以 env `DS4_METAL_V41_STREAM_GATHER_SPEC_ROWS`（工作区未提交）实验性存在 |
+| V4.1 streaming + DSpark/MTP（含 128G 机器开 MTP） | `V41_STREAMING_ENGRAM_SPEED_PLAN.md` §9：盈亏平衡需 avg_accept≈2.96，实测 1.33–1.91，verify 固定 93 ms/轮 | **放弃**：流式 V4.1 生产走普通 decode；候选 A 已提交 `c7c2b90`（env `DS4_METAL_V41_STREAM_GATHER_SPEC_ROWS` 默认关），作为 E1 [2,32) 低行批量的准入种子保留，翻默认前须过 E0.1 |
+| GLM top-8 packed 门臂（M0-2 关账） | 原主树 WIP `DS4_METAL_ENABLE_GLM53_ROUTED_MPP_PACKED` | **删臂**（PF-2 packed 已判负；几何 pin 的 packed 对 GLM 顶-8 在 ~57 rows/expert 摊不平 pack 流量的假设未获翻案证据）。臂从未入 git，M0-2 关账后不再携带，勿再从工作区记忆重建 |
 | GLM-5.3 开 MTP 提速 | `GLM53_SPEEDUP_NEXT_PLAN.md` DC-1：17k ctx 实测 effective 27.5 vs plain 32.3 t/s（−15%），且越长越亏 | **保持默认关闭**；链式起草/draft head 减半作为前置 P0，但"开 MTP"本身已裁决 |
 | P1 Metal row-batch prefill | `HANDOFF-V41-STREAMING-SMALL-PREFILL.md` §4：只值 1.4×，comparator 判 DRIFT | **否决** |
 | P0f2：gather 窗口 >2048 | HANDOFF §14.7：2605 行两臂完全平手 | **负结果，帽维持 2048，"别再往上调"** |
@@ -98,10 +99,9 @@
 
 | 工作 | 载体 | 状态 |
 |---|---|---|
-| 主工作区未提交改动 | `ds4.c`/`ds4_metal.m`：`DS4_METAL_V41_STREAM_GATHER_SPEC_ROWS`（MTP A 候选实验）+ `DS4_METAL_ENABLE_GLM53_ROUTED_MPP_PACKED`（GLM top-8 packed 门，待 prefill A/B）+ `--mtp-timing` 统计 + indexed prefill trace env | BASELINE §13.2 明示 **WIP 勿动**，A/B 未定 |
-| p42-attn-glue | worktree `~/ds4-attn-glue`，全部未提交 | 实测 ≈中性，**等用户 review 决定合/弃** |
+| 主工作区未提交改动（M0-2 关账 @2026-10-05） | `--mtp-timing` GLM 三段结算 = **G4a 留、补完并入** `f5c9902`；indexed prefill / DSpark draft trace env = `959a596`；`SPEC_ROWS` env → 见 D 节关账行；`GLM53_ROUTED_MPP_PACKED` → 见 D 节删臂行 | 主树 `git status` 干净；A/B 侧只剩 `SPEC_ROWS` 一臂，搭 M0-4 窗跑 |
+| p42-attn-glue（M0-3 定夺 @2026-10-05） | 分支 `p42-attn-glue` @`8392281`（WIP archive），worktree 已弃 | **弃臂存档，不合入**：位等价复核实测（M5 Max，带 `DS4_GPU_TEST_V41_FUSIONS` 强开）matvec_bf16 对 Q8_0 5120→1280 逐字节不等、MoE 融合臂 probs 契约同红；M3-Ultra-only admission 即为本险设，位契约优先于 ≈中性。证据 `speed-bench/M0/m0-3/`，M3 Ultra 上位验证通过前勿重试 |
 | p3-io-diag | worktree `~/ds4-io-diag` | 7 行诊断补丁，可留可弃 |
-| `tests/test_glm53_router_shared.c` 未提交补丁 | 测试补 `ds4_gpu_test_set_flags` | 小修，可随手提交 |
 | PF-6 上游 PR 移植 | 分支 `pf6-upstream`（基于 origin/main `0aaea5a`，提交 `71268a1`，已推 fork）；worktree `/tmp/pf6-pr-base`（重启即失，重建见杂项） | PR 分支自测 41k +5.2%（364.1→382.8）、锚点确认（f32 router 0 调用、cvt=42、上游 wrapper 无门控故 M3/M5 默认生效）；**已开 [antirez/ds4#1177](https://github.com/antirez/ds4/pull/1177)（OPEN）**，质量数字引用 `d09ca3b` 实测并注明测量树 |
 
 ### 本地保留但**未取用**的上游 PR（评审存档，非依赖）
@@ -112,6 +112,7 @@
 
 ### 杂项处置（2026-10 定案）
 
+- **M0-5 上游复核（2026-10-05）**：`git fetch origin` 后 origin/main 仍 `0aaea5a`，`git cherry` 68 片全部未吸收；#1177/#1178 均 OPEN、零 review 零评论；本文件引用的全部 SHA（含 `cardi-upstream 5805843/4e48bb5`、`pf6-upstream 71268a1`）仍有效，无需刷新。窗口前照例复查。
 - 一次性噪声已入 `.git/info/exclude`（纯本地、不随任何 PR 携带）：`pic.jpeg`、`start.md`/`start.txt`（server 启动备忘）、`tests/*.o.tmp`、`tests/test_metal_rewind`（构建残留）、`.codegraph/`、`.cursor/`
 - 本文件与 `AGENTS.md` 已纳入 git 跟踪。**PR 纪律**：PR 分支一律从上游 `origin/main` 切、只 cherry-pick 目标修复提交；不 merge 本地 main、不 `git add -A`——docs commit 不在 PR 范围即不会携带
 - `/tmp/ds4-main`、`/tmp/pf6-pr-base` 对照 worktree：重启即失，需按 BASELINE §13.2 重建流程
@@ -125,7 +126,7 @@
 | `stash@{0}`/`{1}`/`{2}` | 0/1 = `9bc0bd7`、`ff5b4e0` 的已应用残留；2 = `ds4.c` +4 `vocab_size` 缺失回退 129280（unsloth GGUF 适配，未入 main） | **2026-10-04 用户裁决全部丢弃**，`git stash clear`；patch 备份在 `.git/LOCAL_BACKUPS/stashes-2026-10-04.patch`，日后要捡回 vocab 回退从这里取 |
 | card H 实现（`~/ds4-cardh`，**`5573d62` @ `p4-cardh-early-load`**，基线 3b2abc4，ds4.c +63 行） | `DS4_METAL_ENABLE_V41_MOE_EARLY_LOAD` 门控（默认关）：router 后 GPU 事件 + worker 线程读 6 id/预暂存 pread，与共享专家编码重叠，`set_selected_override` 免逐层回读；`.cardh-ab/` 产物未入库 | **2026-10-04 关账：bit-exact 全过（CLI 贪心 A/B 逐字节一致、logprob ON==OFF、dspark 两测 ON==OFF、专家缓存 4/4），但速度负结果**：ABBA 2×(2K,32K)×512tok steady OFF 23.83/22.54 vs ON 23.51/22.48（−1.3%/−0.3%，组内噪声 4%）。此前"layer 0 failed"是旧二进制未重编 + flush 轮换 CB 后无条件 begin 的 bug，均已修；parity 0.36 漂移证实为存量流式行为（env OFF 相同）。14.6 的"19ms=可重叠 GPU 等待"假设证伪（GPU 30% 忙，等待近零返回；真主犯是主线程 CPU 簿记量）。裁决见 BASELINE §15；**不合入、勿重试此形态** |
 | card I / I-1 实现（`~/ds4-cardi`，**`376687e` @ `p4-cardI-graph-capture`**，基线 d3a6ab6，ds4_metal.m +595/−67，ds4.c/头文件/内核零改动） | `DS4_METAL_ENABLE_V41_MOE_GPU_BINDING` 门控（默认关，单卡+streaming+单 token）：routed MoE 走现成 addr-table 入口吃 GPU 侧 `g->selected` ids，新 service 线程等 CB 的 ids 事件后自主读 ids、装载缺失、标 inflight、回填 6 槽并 prune，CB 等 ready 事件再 dispatch——主线程每层不再回读；`.cardi-ab/` 产物未入库 | **2026-10-04 I-1 收账：bit-exact 全过 + 正向小收益**。CLI 贪心 A/B 逐字节一致（默认 env，含 masked 族）、logprob ON/OFF 全日志 0 差异、dspark 两测 ON==OFF、专家缓存四模式全过；ABBA 2×(2K,32K)×512tok OFF 22.44/21.82 → ON 23.17/22.40（**+3.2% / +2.7%**，四比较点全不重叠）。两条入档硬知识：①service 线程标 inflight 必须用 arm 时抓的 CB 序列而非环境序列（否则 drain 窗口=无保护→同命令三代输出且零日志）；②经地址表取权重的 dispatch 必须 `useResource` 标到槽 buffer（绑定模式改为标 19 个 slab，标上即 3/3 复现）——**I-2 的 capture 形态必须带上这个标记**。另补存量隐患：`take_reusable_batch` 的 batch-reuse 分支缺 `on_service_thread()` 守卫（四处 wait_inflight 中唯一没有的）。PR 基线（origin/main `0aaea5a` + `5805843`/`4e48bb5`）单独实测：gate1 逐字节一致、logprob ON==OFF、专家缓存四模式过，ABBA OFF 18.11/17.03 → ON 18.48/17.54（**+2.0%/+3.0%**，PR 树没带 fork 的 decode 融合线所以绝对值低）——已推 fork `cardi-upstream` 并开 **[antirez/ds4#1178](https://github.com/antirez/ds4/pull/1178)**（+599/−68 单文件，零 cherry-pick 依赖：流式缓存 `9ba160a`/地址表内核/服务线程标记 `519c4d8` 全在上游）。裁决见 BASELINE §17；**在途，I-2 判定 go，env 保持默认关** |
-| 未跟踪工具脚本 ~1.2k 行 | `gguf-tools/deepseek41_dspark_convert.py`(349)、`speed-bench/{build_dspark_support_gguf.py(228), jigsaw_to_ds4_dspark.py(211), mtp_ledger_replay.py(160)}` = DSpark/MTP 资产管道；`speed-bench/{v41_m5max_streaming_ab.sh(66), v41_m5max_server_probe.sh(50)}` + `v41_m5max_ab/` 实测数据 = 基线方案台架 | DSpark 四件套随 MTP 线裁决转**封存备查**（≥256G 机重开时要用）；v41 台架服务在途工作，建议随下批提交入库。注意 `ds4-attn-glue`/`ds4-io-diag`/`/tmp/ds4-main` 里各有一份 `v41_m5max_streaming_ab.sh`/`v41_m5max_ab/` 拷贝，清理时别认错本尊 |
+| 未跟踪工具脚本 ~1.2k 行（M0-6 关账 @2026-10-05，`3571118`/`40daf5e`） | `gguf-tools/deepseek41_dspark_convert.py`(349)、`speed-bench/{build_dspark_support_gguf.py(228), jigsaw_to_ds4_dspark.py(211), mtp_ledger_replay.py(160)}` = DSpark/MTP 资产管道；`speed-bench/{v41_m5max_streaming_ab.sh(66), v41_m5max_server_probe.sh(50)}` + `v41_m5max_ab/` 实测数据 = 基线方案台架 | 全部已入库 main：DSpark 四件套随 MTP 线裁决**封存备查**（≥256G 机重开时要用）；v41 台架 + CSV 为本尊（`ds4-io-diag` 等处仍是拷贝，清理时别认错） |
 
-另：`CLAUDE.md` 是 5 月分叉时的旧孪生文档（未跟踪，内容=上游版 AGENTS.md，无新章节），待办：同步 AGENTS.md 新章节或删掉以 AGENTS.md 为单一事实源。
+另：`CLAUDE.md` 旧孪生文档已于 M0-6（`40daf5e`）改为指针，AGENTS.md 为单一事实源；`tests/test_glm53_router_shared.c` 的测试旗标小补丁已随 M0-1 入 main（`6d8fdee`）。
 
