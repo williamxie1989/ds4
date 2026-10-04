@@ -25,6 +25,17 @@
 
 > 逐位契约是高于一切速度指标的门槛：**任何指标改善若伴随 bit-exact 门破防且未经书面裁定，视为该里程碑未完成。**
 
+> **M1 重锚（2026-10-05，用户裁定）**：M1 出口线 GLM ≥35 t/s 的前提是 Metal 存在
+> 可用的录制→回放基底。实测否定该前提：macOS 26.5.1 已从 SDK/运行时/共享缓存整体
+> 移除 MTLGraph（`captureScopeWithCommandBuffer:` 家族）；改道 MTLIndirectCommandBuffer
+> 后经七种正交组合探针（`/tmp/icb_probe2.m`，裸 Metal）验证在 M5 Max AGX 驱动上同样
+> 不可用——带绑定的 CPU 录制路径全部 segfault 于
+> `AGXG17XFamilyIndirectComputeCommand setComputePipelineState:`，唯一不崩的 inherit
+> 形态静默不执行。裁决：**M1 捕获路线搁置**——M1-1/M1-2 以全骨架形态入库（default off、
+> 单元验收全绿、M2-3 SUBSTRATE HOOK 三处标注），M1-3/M1-4/M1-5 的窗口与 ≥35 出口线
+> **作废重定**：待 Apple 驱动回归可用（M2-3 起每次 macOS 升级重跑探针）再以实测 ABBA
+> 重锚；在此之前 M1 依赖度低的条目（M3、M4 非捕获项、R 系列）提前。
+
 ---
 
 ## 2. 执行窗口规程（所有加载类步骤的统一前置，逐条打勾）
@@ -77,6 +88,15 @@ LOCAL_INVENTORY 对应行更新 + KPI 表回填。**缺一不算完成。**
 | M1-4 [W] | GLM FFN-tail 速度门 | ABBA ×2（短 ctx + 12k，`ds4-bench`）；同时采 `DS4_METAL_*TIMELINE` 看空隙是否收窄 | 并入 M1-3 窗 | 中性以上（±2% 内）即收下地基；收益计 M1-5 |
 | M1-5 [O→W] | GLM 扩整层岛 | 把 KDA/attention/router/LM-head 段逐段包岛（keyed），从 FFN-tail 扩到每层 2–3 岛（piecewise 形态，vLLM 同构）；每加一岛单独 ABBA | 编码 2–3 天 + 窗 ×2（分两腿） | **GLM decode ≥35 t/s @12k（+10%）** 为 M1 出口；<+5% 时先归因（空隙残余 vs host 编码），不许直接续加岛 |
 | M1-6 [W] | 审计旁刀（搭车） | G2f 之"≥2 GiB offset 单测"在 GLM 大 buffer 上实测执行 | 并入任一窗 | 全绿或按 S11 先例修复入账 |
+
+> **M1 处置（2026-10-05 落账，见 §1 重锚注）**：M1-1/M1-2 已完成入库——Metal 侧
+> decode-graph 全骨架（keyed LRU 64、capture 探针经代理编码器验证可录面并继承 poison
+> 纪律、per-key param buffer、日志锚、env `DS4_METAL_DECODE_GRAPHS` 默认关），执行层
+> `ds4_dg_execute_entry` 为占位（本机无基底，凡 capture 一律退役走 eager，逐位天然
+> 一致）；`tests/test_metal_graph_capture` 单元验收全绿。M1-3/M1-4 的 replay 位一致
+> 与 ABBA 目标**随基底搁置**（无 replay 可验）；M1-5 整层岛同样搁置。三处
+> "M2-3 SUBSTRATE HOOK" 注释给出基底回归时的完整复活路径。M1-6 与捕获无关，随时可
+> 并入其他窗口。
 
 **M1 出口门**：GLM decode +≥10%、bit-exact 全绿、图缓存有淘汰/失效路径的测试覆盖。
 **止损线**：若 MTLGraph 与 `MTLSharedEvent`/异步 flush 的相互作用无法稳定（OOM 类或 capture 失败率>0），退到"非 MTLGraph 的大 CB 合并编码"形态并如实降级记录（收益预期改 ±5%），M2 决策点重开。

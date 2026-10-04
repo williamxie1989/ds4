@@ -1426,9 +1426,23 @@ static void ds4_gpu_encoder_count_arm(void) {
     if (getenv("DS4_METAL_ENCODER_COUNT")) atexit(ds4_gpu_encoder_count_print);
 }
 
+/* Decode-graph capture (ds4_gpu.h): set while a capture is in flight, in
+ * which case the batch compute encoder is replaced by the recording proxy
+ * from the decode-graph section further down.  Forward-declared here because
+ * the encoder handoff below is the capture's interception point. */
+static id g_dg_capture;
+static id g_dg_capture_proxy;
+
 static id<MTLComputeCommandEncoder> ds4_gpu_compute_encoder(id<MTLCommandBuffer> cb) {
     g_encoder_count++;
     ds4_gpu_encoder_count_arm();
+    if (g_dg_capture && cb == g_batch_cb) {
+        /* A capture is in flight: the island records into the ICB proxy and
+         * the batch command buffer itself receives no work until the capture
+         * ends (where the recorded island is replayed through
+         * executeCommandsInBuffer:withRange:). */
+        return (id<MTLComputeCommandEncoder>)g_dg_capture_proxy;
+    }
     if (g_batch_cb && cb == g_batch_cb) {
         g_batch_has_work = YES;
         if (g_timeline_enabled && g_timeline_batch) {
@@ -9803,6 +9817,822 @@ int ds4_gpu_begin_commands(void) {
     return g_batch_cb != nil;
 }
 
+/*
+ * ============================================================================
+ * Decode-island capture graphs (Metal backend)
+ * ============================================================================
+ *
+ * ds4_gpu.h declares the backend-agnostic decode-island capture API
+ * (ds4_gpu_decode_graph_begin/end/abort/invalidate); ds4_cuda.cu implements
+ * it with cudaStream graph capture.  macOS 26 removed the MTLGraph /
+ * -[MTLCommandBuffer captureScopeWithCommandBuffer:] family that earlier
+ * drafts of the Q4 plan targeted (the SDK ships no graph headers and the
+ * live AGX command-buffer classes respond to none of the capture
+ * selectors), so this backend records each island into an
+ * MTLIndirectCommandBuffer through a proxy encoder -- handed out where the
+ * batch encoder would be -- and replays it with
+ * executeCommandsInBuffer:withRange: on the shared batch encoder.
+ *
+ * Contract (identical to the CUDA backend, see ds4_gpu.h):
+ *   begin():  1 = the island already ran via replay -- skip encoding it
+ *             0 = a capture is in flight -- encode the island, then call end()
+ *            -1 = run the island eagerly (disabled / retired / unsupported)
+ *   end():    0 = capture recorded AND executed for this token
+ *            -1 = capture failed; the key is retired (mirrors the CUDA
+ *                 state 3), the caller must re-encode the island eagerly
+ *                 (no captured work ever executed)
+ *   abort():  drop the in-flight capture; unlike an end() failure the key
+ *             stays eligible for a later recapture (the M1 acceptance asks
+ *             for abort -> recapture; captured-but-aborted work never ran).
+ *
+ * First-mine discipline (V41_M5MAX_BASELINE_SPEED_PLAN.md 17.4): a capture
+ * may only start inside an open command batch (ds4_gpu_commands_active),
+ * and any batch rotation mid-capture (ds4_gpu_flush_commands /
+ * ds4_gpu_end_commands) poisons the capture -- end() then reports -1, the
+ * key is retired, and the island runs eagerly, byte-identical.  A captured
+ * dispatch never executes eagerly, so a poisoned capture leaves no GPU side
+ * effects to unwind.
+ *
+ * Per-token dynamic scalars must not be baked into a capture.  Each entry
+ * owns a fixed-address 8 KiB param buffer (shared storage) that captured
+ * kernels read; host updates are visible to the next replay with no
+ * recapture (ds4_gpu_decode_graph_param_map).  Islands that still pass
+ * per-token values through setBytes freeze them at capture time -- the
+ * ds4.c island gates keep those out (see the M1-2 review notes at the GLM
+ * FFN-tail call site).
+ *
+ * Record semantics: every recorded command carries setBarrier, so an ICB
+ * executes its kernels strictly in recorded order -- the same serialization
+ * an eager batch compute encoder gives the island chain.  Encoder state
+ * (pipeline, bind table, threadgroup memory) snapshots into each command,
+ * so replay never depends on encoder state at execute time.
+ *
+ * Environment: DS4_METAL_DECODE_GRAPHS=1|on|yes|true enables the feature;
+ * default OFF.  Mutually exclusive with the encoder-timeline diagnostic
+ * (DS4_METAL_ENCODER_TIMELINE): with the timeline armed this backend
+ * reports itself unsupported so the islands stay eager.
+ *
+ * SUBSTRATE STATUS (ruling 2026-12, this session): the OS was verified to
+ * offer NO usable record-then-replay substrate on M5 Max / macOS 26.5.1.
+ * MTLGraph (captureScopeWithCommandBuffer:, MTLGraph, MTLGraphExecutable)
+ * is gone from the SDK headers, the runtime class hierarchy, and the dyld
+ * shared cache.  MTLIndirectCommandBuffer -- the substrate chosen after
+ * that finding -- was then probe-verified unusable on this driver: any
+ * recorded-bind path (indirectComputeCommandAtIndex +
+ * setComputePipelineState:) segfaults inside
+ * AGXG17XFamilyIndirectComputeCommand setComputePipelineState: for every
+ * descriptor variant (concurrent/legacy, shared/private, threads/
+ * threadgroups, serial/concurrent encoders), and the only non-crashing
+ * inherit-buffers variant silently drops the dispatch (the executed
+ * kernel never runs).  Consequence: this module is wired as a FULL
+ * SKELETON -- key table, LRU, capture probe through the proxy encoder
+ * (validating the recordable surface), poison discipline, per-key param
+ * buffer, log anchors -- while ds4_dg_execute_entry() is a placeholder
+ * that reports no substrate: every well-formed capture retires to eager
+ * with end() == -1, so islands always run byte-exactly once, eagerly.
+ * M2-3 flips on replay by replacing ds4_dg_execute_entry, the ICB
+ * creation in ds4_gpu_decode_graph_begin, and the command recording in
+ * Ds4IcbProxyEncoder recordDispatch (each marked "M2-3 SUBSTRATE HOOK").
+ * Evidence and ruling: LOCAL_INVENTORY.md section D.
+ */
+
+#include <stdarg.h>
+#include <strings.h>
+
+#define DS4_DG_CAPACITY            64u
+#define DS4_DG_PARAM_BYTES      8192u
+#define DS4_DG_STAGING_BYTES  (256u * 1024u)
+#define DS4_DG_MAX_ICB_COMMANDS 1024u
+#define DS4_DG_MAX_BIND_SLOTS     64u
+#define DS4_DG_MAX_TG_SLOTS        8u
+#define DS4_DG_REPLAY_LOG_EVERY 4096ull
+
+typedef enum {
+    DS4_DG_FREE = 0,       /* slot holds no capture                     */
+    DS4_DG_READY = 1,      /* ICB recorded, replayable                  */
+    DS4_DG_DEAD = 2,       /* capture failed (end/poison): key retired  */
+    DS4_DG_CAPTURING = 3,  /* begin() returned 0, end/abort pending     */
+} ds4_dg_state;
+
+@interface Ds4DecodeGraphEntry : NSObject {
+@public
+    ds4_decode_graph_key key;
+    ds4_dg_state state;
+    uint32_t cmd_count;
+    uint64_t replays;
+    uint64_t last_use;
+    id<MTLIndirectCommandBuffer> icb;
+    id<MTLBuffer> staging;
+    id<MTLBuffer> param;
+    NSMutableArray<id<MTLResource>> *used_res;
+    NSMutableArray<NSNumber *> *used_usage;
+}
+@end
+
+@implementation Ds4DecodeGraphEntry
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        memset(&key, 0, sizeof(key));
+        used_res = [NSMutableArray new];
+        used_usage = [NSMutableArray new];
+    }
+    return self;
+}
+@end
+
+/* Recording state fed by Ds4IcbProxyEncoder.  The bind table mirrors an
+ * MTLComputeCommandEncoder's persistent state: setBuffer/setBytes apply to
+ * this dispatch and every later one until overwritten; each recorded
+ * command snapshots the full table. */
+@interface Ds4DecodeGraphCapture : NSObject {
+@public
+    Ds4DecodeGraphEntry *entry;
+    id<MTLIndirectCommandBuffer> icb;    /* == entry->icb recording handle */
+    id<MTLBuffer> staging;
+    NSUInteger staging_len;
+    uint32_t cmd_count;
+    BOOL poisoned;
+    NSString *poison_reason;
+    id<MTLComputePipelineState> pipeline;
+    NSMutableArray<id> *bind_buf;        /* id<MTLBuffer> or NSNull       */
+    NSMutableArray<NSNumber *> *bind_off;
+    NSMutableArray<NSData *> *bind_bytes;/* NSData or NSNull (never both) */
+    NSMutableArray<NSNumber *> *bind_slot;
+    NSUInteger tg_len[DS4_DG_MAX_TG_SLOTS];
+}
+@end
+
+@implementation Ds4DecodeGraphCapture
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        bind_buf = [NSMutableArray arrayWithCapacity:DS4_DG_MAX_BIND_SLOTS];
+        bind_off = [NSMutableArray arrayWithCapacity:DS4_DG_MAX_BIND_SLOTS];
+        bind_bytes = [NSMutableArray arrayWithCapacity:DS4_DG_MAX_BIND_SLOTS];
+        bind_slot = [NSMutableArray arrayWithCapacity:DS4_DG_MAX_BIND_SLOTS];
+        for (NSUInteger i = 0; i < DS4_DG_MAX_BIND_SLOTS; i++) {
+            [bind_buf addObject:(id)[NSNull null]];
+            [bind_off addObject:@0];
+            [bind_bytes addObject:(id)[NSNull null]];
+            [bind_slot addObject:@0];
+        }
+    }
+    return self;
+}
+@end
+
+static Ds4DecodeGraphEntry *g_dg_entries[DS4_DG_CAPACITY];
+static Ds4DecodeGraphCapture *g_dg_capture_live;   /* mirrored into id g_dg_capture */
+static uint64_t g_dg_clock;
+static uint64_t g_dg_stat_captures;
+static uint64_t g_dg_stat_replays;
+static uint64_t g_dg_stat_failed;
+static uint64_t g_dg_stat_evictions;
+static int g_dg_supported_cached = -1;
+static BOOL g_dg_quiet_retire_logged;
+static int g_dg_test_override = -1;
+
+static void ds4_dg_log(const ds4_decode_graph_key *key, const char *fmt, ...) {
+    va_list ap;
+    fprintf(stderr, "ds4: decode graph [il=%u island=%u variant=%u]: ",
+            key ? key->il : 0u, key ? key->island : 0u, key ? key->variant : 0u);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+}
+
+static void ds4_dg_poison(Ds4DecodeGraphCapture *cap, NSString *reason) {
+    if (!cap || cap->poisoned) return;
+    cap->poisoned = YES;
+    cap->poison_reason = reason;
+}
+
+/* Batch-rotation hook (first mine): a flush/end inside an island invalidates
+ * the capture; end() retires the key and the island retries eagerly. */
+static void ds4_dg_note_batch_rotated(const char *where) {
+    if (!g_dg_capture) return;
+    Ds4DecodeGraphCapture *cap = (Ds4DecodeGraphCapture *)g_dg_capture;
+    ds4_dg_poison(cap,
+                  [NSString stringWithFormat:@"batch rotated mid-capture (%s)",
+                                             where ? where : "unknown"]);
+}
+
+/* --------------------------------------------------------------------------
+ * Proxy encoder: answers the compute-encoder message surface with ICB
+ * command recording.  Anything outside the recorded surface poisons the
+ * capture (fail-closed): the safest response to an island encoding through a
+ * path the graph cannot represent is to lose the capture, never to fake it.
+ * ------------------------------------------------------------------------ */
+@interface Ds4IcbProxyEncoder : NSObject
+- (instancetype)initWithCapture:(Ds4DecodeGraphCapture *)cap;
+@end
+
+@implementation Ds4IcbProxyEncoder {
+    __weak Ds4DecodeGraphCapture *_cap;
+}
+
+- (instancetype)initWithCapture:(Ds4DecodeGraphCapture *)cap {
+    self = [super init];
+    if (self) _cap = cap;
+    return self;
+}
+
+- (void)noteUnsupported:(SEL)sel {
+    Ds4DecodeGraphCapture *cap = _cap;
+    if (cap) {
+        ds4_dg_poison(cap, [NSString stringWithFormat:
+            @"unrecordable encoder selector %s", sel_getName(sel)]);
+    }
+}
+
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)sel {
+    NSMethodSignature *sig = [super methodSignatureForSelector:sel];
+    if (!sig) sig = [NSMethodSignature signatureWithObjCTypes:"v@:"];
+    return sig;
+}
+
+- (void)forwardInvocation:(NSInvocation *)invocation {
+    [self noteUnsupported:invocation.selector];
+}
+
+- (void)setComputePipelineState:(id<MTLComputePipelineState>)state {
+    Ds4DecodeGraphCapture *cap = _cap;
+    if (!cap || cap->poisoned) return;
+    cap->pipeline = state;
+}
+
+- (void)setBuffer:(id<MTLBuffer>)buffer
+           offset:(NSUInteger)offset
+          atIndex:(NSUInteger)index {
+    Ds4DecodeGraphCapture *cap = _cap;
+    if (!cap || cap->poisoned) return;
+    if (index >= DS4_DG_MAX_BIND_SLOTS) {
+        ds4_dg_poison(cap, @"bind index beyond recorded surface");
+        return;
+    }
+    if (buffer) {
+        cap->bind_buf[index] = buffer;
+        cap->bind_off[index] = @(offset);
+        cap->bind_bytes[index] = (id)[NSNull null];
+    } else {
+        cap->bind_buf[index] = (id)[NSNull null];
+        cap->bind_off[index] = @0;
+        cap->bind_bytes[index] = (id)[NSNull null];
+    }
+}
+
+- (void)setBytes:(const void *)bytes
+          length:(NSUInteger)length
+         atIndex:(NSUInteger)index {
+    Ds4DecodeGraphCapture *cap = _cap;
+    if (!cap || cap->poisoned) return;
+    if (index >= DS4_DG_MAX_BIND_SLOTS) {
+        ds4_dg_poison(cap, @"bind index beyond recorded surface");
+        return;
+    }
+    NSUInteger slot = (cap->staging_len + 15u) & ~(NSUInteger)15u;
+    if (length == 0 || !cap->staging ||
+        slot + length > DS4_DG_STAGING_BYTES) {
+        ds4_dg_poison(cap, @"setBytes staging exhausted");
+        return;
+    }
+    memcpy((uint8_t *)[cap->staging contents] + slot, bytes, length);
+    cap->staging_len = slot + length;
+    cap->bind_buf[index] = (id)[NSNull null];
+    cap->bind_bytes[index] = [NSData dataWithBytes:bytes length:length];
+    cap->bind_slot[index] = @(slot);
+}
+
+- (void)setThreadgroupMemoryLength:(NSUInteger)length
+                            atIndex:(NSUInteger)index {
+    Ds4DecodeGraphCapture *cap = _cap;
+    if (!cap || cap->poisoned) return;
+    if (index >= DS4_DG_MAX_TG_SLOTS) {
+        ds4_dg_poison(cap, @"threadgroup memory index beyond recorded surface");
+        return;
+    }
+    cap->tg_len[index] = length;
+}
+
+- (void)useResource:(id<MTLResource>)resource
+              usage:(MTLResourceUsage)usage {
+    Ds4DecodeGraphCapture *cap = _cap;
+    if (!cap || cap->poisoned || !resource) return;
+    Ds4DecodeGraphEntry *e = cap->entry;
+    NSUInteger at = [e->used_res indexOfObjectIdenticalTo:resource];
+    if (at == NSNotFound) {
+        [e->used_res addObject:resource];
+        [e->used_usage addObject:@((NSUInteger)usage)];
+        return;
+    }
+    e->used_usage[at] = @([e->used_usage[at] unsignedIntegerValue] | (NSUInteger)usage);
+}
+
+- (void)useResources:(const id<MTLResource> __nonnull[__nonnull])resources
+               count:(NSUInteger)count
+               usage:(MTLResourceUsage)usage {
+    for (NSUInteger i = 0; i < count; i++) {
+        [self useResource:resources[i] usage:usage];
+    }
+}
+
+- (void)memoryBarrierWithResources:(const id<MTLResource> __nonnull[__nonnull])resources
+                             count:(NSUInteger)count {
+    /* Barriers between recorded kernels are implicit: every recorded command
+     * carries setBarrier (see recordDispatch).  The eager encoder asked for a
+     * device-visible ordering; the ICB gives it strictly. */
+    (void)resources;
+    (void)count;
+}
+
+- (void)endEncoding {
+    /* Captured encoders never close: the proxy ends the capture from
+     * ds4_gpu_decode_graph_end().  Inline endEncoding calls are the normal
+     * per-dispatch pattern (ds4_gpu_end_compute_encoder) and must be no-ops
+     * here. */
+}
+
+- (void)recordDispatch:(BOOL)threadgroups
+                  grid:(MTLSize)grid
+   threadsPerThreadgroup:(MTLSize)tpg {
+    Ds4DecodeGraphCapture *cap = _cap;
+    if (!cap || cap->poisoned) return;
+    if (!cap->pipeline) {
+        ds4_dg_poison(cap, @"dispatch recorded without a pipeline state");
+        return;
+    }
+    if (grid.width == 0 || grid.height == 0 || grid.depth == 0 ||
+        tpg.width == 0 || tpg.height == 0 || tpg.depth == 0) {
+        ds4_dg_poison(cap, @"zero-size dispatch grid");
+        return;
+    }
+    if (cap->cmd_count >= DS4_DG_MAX_ICB_COMMANDS) {
+        ds4_dg_poison(cap, @"capture command limit exceeded");
+        return;
+    }
+    /* M2-3 SUBSTRATE HOOK: snapshot the encoder state into a recorded
+     * command here (pipeline, the bind table with setBytes slots into the
+     * staging buffer, threadgroup memory, setBarrier, and the dispatch in
+     * the threads/threadgroups form matching `threadgroups` with grids
+     * `grid`/`tpg`).  Until a substrate exists the capture validates the
+     * recordable surface and counts the dispatch; the per-command
+     * serialization semantics above apply verbatim once recording is back. */
+    (void)threadgroups;
+    (void)grid;
+    (void)tpg;
+    cap->cmd_count++;
+}
+
+- (void)dispatchThreads:(MTLSize)threadsPerGrid
+    threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
+    [self recordDispatch:NO grid:threadsPerGrid
+     threadsPerThreadgroup:threadsPerThreadgroup];
+}
+
+- (void)dispatchThreadgroups:(MTLSize)threadsPerGrid
+       threadsPerThreadgroup:(MTLSize)threadsPerThreadgroup {
+    [self recordDispatch:YES grid:threadsPerGrid
+     threadsPerThreadgroup:threadsPerThreadgroup];
+}
+
+@end
+
+/* --------------------------------------------------------------------------
+ * Entry table and lifecycle
+ * ------------------------------------------------------------------------ */
+
+static void ds4_dg_entry_reset(Ds4DecodeGraphEntry *e) {
+    memset(&e->key, 0, sizeof(e->key));
+    e->state = DS4_DG_FREE;
+    e->cmd_count = 0;
+    e->replays = 0;
+    e->last_use = 0;
+    e->icb = nil;
+    e->staging = nil;
+    e->param = nil;
+    [e->used_res removeAllObjects];
+    [e->used_usage removeAllObjects];
+}
+
+static void ds4_dg_capture_release(void) {
+    g_dg_capture = nil;
+    g_dg_capture_live = nil;
+    g_dg_capture_proxy = nil;
+}
+
+/* M2-3 SUBSTRATE HOOK: replay the recorded island so the token that
+ * recorded (or keyed-hit) it executes the island from the capture.  The
+ * macOS 26.5.1 M5 driver offers no substrate that survives recording
+ * (see the module header); while this returns NO every capture retires to
+ * the eager path and no replay ever runs.  When a usable substrate lands,
+ * this executes the entry's recorded command range on the batch encoder
+ * (useResource marking for the entry's bound resources included) and the
+ * ICB creation + command recording hooks come back with it. */
+static BOOL ds4_dg_execute_entry(Ds4DecodeGraphEntry *e) {
+    (void)e;
+    return NO;
+}
+
+void ds4_gpu_decode_graphs_invalidate(void) {
+    if (g_dg_capture) {
+        Ds4DecodeGraphCapture *cap = (Ds4DecodeGraphCapture *)g_dg_capture;
+        ds4_dg_capture_release();
+        ds4_dg_entry_reset(cap->entry);
+    }
+    uint32_t live = 0;
+    for (uint32_t i = 0; i < DS4_DG_CAPACITY; i++) {
+        Ds4DecodeGraphEntry *e = g_dg_entries[i];
+        if (e && e->state != DS4_DG_FREE) {
+            ds4_dg_entry_reset(e);
+            live++;
+        }
+    }
+    if (live != 0) {
+        fprintf(stderr, "ds4: decode graph invalidate: dropped %u entries\n",
+                live);
+    }
+}
+
+int ds4_gpu_decode_graphs_supported(void) {
+    if (g_dg_test_override >= 0) return g_dg_test_override;
+    if (g_dg_supported_cached < 0) {
+        int on = 0;
+        const char *s = getenv("DS4_METAL_DECODE_GRAPHS");
+        if (s && *s &&
+            (strcasecmp(s, "1") == 0 || strcasecmp(s, "on") == 0 ||
+             strcasecmp(s, "yes") == 0 || strcasecmp(s, "true") == 0)) {
+            on = 1;
+        }
+        if (on && getenv("DS4_METAL_ENCODER_TIMELINE")) {
+            fprintf(stderr, "ds4: DS4_METAL_DECODE_GRAPHS ignored while the "
+                            "encoder timeline diagnostic is armed\n");
+            on = 0;
+        }
+        if (on) {
+            fprintf(stderr,
+                    "ds4: Metal decode graphs enabled (DS4_METAL_DECODE_GRAPHS=%s, "
+                    "capacity=%u; replay substrate unavailable on this OS -- "
+                    "captures probe and retire to eager)\n",
+                    s, DS4_DG_CAPACITY);
+        }
+        g_dg_supported_cached = on;
+    }
+    return g_dg_supported_cached;
+}
+
+int ds4_gpu_decode_graph_begin(const ds4_decode_graph_key *key) {
+    if (!key || !ds4_gpu_decode_graphs_supported()) return -1;
+    if (!g_initialized) return -1;
+    /* First mine: never start a capture with no batch command buffer -- a
+     * missing batch means the island path rotates command buffers. */
+    if (!ds4_gpu_commands_active()) return -1;
+    if (g_dg_capture) {
+        /* A previous begin() never reached end()/abort() -- that island's
+         * encode path diverged.  Self-heal: fail that capture (its island
+         * will not be replayed), stay eager, and surface the event. */
+        Ds4DecodeGraphCapture *stale = (Ds4DecodeGraphCapture *)g_dg_capture;
+        ds4_dg_log(&stale->entry->key,
+                   "begin() with a capture still open (programmer error): failing it");
+        Ds4DecodeGraphEntry *e = stale->entry;
+        ds4_dg_capture_release();
+        e->state = DS4_DG_DEAD;
+        g_dg_stat_failed++;
+        return -1;
+    }
+
+    /* READY hit would replay here (M2-3 SUBSTRATE HOOK: call
+     * ds4_dg_execute_entry, count the replay, return 1).  With the
+     * substrate placeholder no entry ever reaches READY, so the table
+     * below only classifies keys as capturable or retired. */
+
+    /* Dead key: the failed capture stays retired until the next invalidate()
+     * (mirrors CUDA state 3; silently recapturing a key whose island broke
+     * the capture contract every token would only hide bugs). */
+    for (uint32_t i = 0; i < DS4_DG_CAPACITY; i++) {
+        Ds4DecodeGraphEntry *e = g_dg_entries[i];
+        if (e && e->state == DS4_DG_DEAD &&
+            memcmp(&e->key, key, sizeof(*key)) == 0) {
+            return -1;
+        }
+    }
+
+    int slot = -1;
+    int lru = -1;
+    uint64_t lru_ts = UINT64_MAX;
+    int dead = -1;
+    uint64_t dead_ts = UINT64_MAX;
+    for (uint32_t i = 0; i < DS4_DG_CAPACITY; i++) {
+        Ds4DecodeGraphEntry *e = g_dg_entries[i];
+        if (!e) {
+            g_dg_entries[i] = e = [Ds4DecodeGraphEntry new];
+        }
+        if (e->state == DS4_DG_FREE) {
+            slot = (int)i;
+            break;
+        }
+        if (e->state == DS4_DG_READY && e->last_use < lru_ts) {
+            lru_ts = e->last_use;
+            lru = (int)i;
+        }
+        if (e->state == DS4_DG_DEAD && e->last_use < dead_ts) {
+            dead_ts = e->last_use;
+            dead = (int)i;
+        }
+    }
+    if (slot < 0 && lru >= 0) {
+        Ds4DecodeGraphEntry *e = g_dg_entries[lru];
+        ds4_dg_log(&e->key, "evicted (LRU) after %llu replays",
+                   (unsigned long long)e->replays);
+        ds4_dg_entry_reset(e);
+        g_dg_stat_evictions++;
+        slot = lru;
+    }
+    if (slot < 0 && dead >= 0) {
+        /* Retired keys never replay; once the whole table has retired,
+         * the oldest retirement gives its slot back so fresh keys stay
+         * probeable instead of the table locking up. */
+        Ds4DecodeGraphEntry *e = g_dg_entries[dead];
+        ds4_dg_log(&e->key, "retired entry reclaimed (LRU) to admit a new key");
+        ds4_dg_entry_reset(e);
+        g_dg_stat_evictions++;
+        slot = dead;
+    }
+    if (slot < 0) return -1;  /* all slots mid-capture: eager */
+
+    Ds4DecodeGraphEntry *e = g_dg_entries[slot];
+    @autoreleasepool {
+        /* M2-3 SUBSTRATE HOOK: create the recorded-command buffer here
+         * (an MTLIndirectCommandBuffer once a driver variant survives
+         * recording, or whatever replaces it) and hand it to the proxy
+         * through cap->icb / e->icb.  With no substrate the capture only
+         * validates the recordable surface and tallies dispatches. */
+        id<MTLBuffer> staging =
+            [g_device newBufferWithLength:DS4_DG_STAGING_BYTES
+                                  options:MTLResourceStorageModeShared];
+        id<MTLBuffer> param =
+            [g_device newBufferWithLength:DS4_DG_PARAM_BYTES
+                                  options:MTLResourceStorageModeShared];
+        if (!staging || !param) {
+            fprintf(stderr, "ds4: decode graph: capture resources unavailable\n");
+            return -1;  /* slot stays free; the island just runs eagerly */
+        }
+        Ds4DecodeGraphCapture *cap = [Ds4DecodeGraphCapture new];
+        cap->entry = e;
+        cap->staging = staging;
+        e->key = *key;
+        e->state = DS4_DG_CAPTURING;
+        e->cmd_count = 0;
+        e->replays = 0;
+        e->last_use = ++g_dg_clock;
+        e->staging = staging;
+        e->param = param;
+        g_dg_capture = cap;
+        g_dg_capture_live = cap;
+        g_dg_capture_proxy = [[Ds4IcbProxyEncoder alloc] initWithCapture:cap];
+    }
+    return 0;
+}
+
+int ds4_gpu_decode_graph_end(const ds4_decode_graph_key *key) {
+    if (!g_dg_capture) return -1;
+    Ds4DecodeGraphCapture *cap = (Ds4DecodeGraphCapture *)g_dg_capture;
+    Ds4DecodeGraphEntry *e = cap->entry;
+    const BOOL key_matches = !key || memcmp(key, &e->key, sizeof(*key)) == 0;
+    ds4_dg_capture_release();
+
+    BOOL ok = key_matches && !cap->poisoned && cap->cmd_count > 0;
+    if (ok) {
+        e->cmd_count = cap->cmd_count;
+        e->state = DS4_DG_READY;
+        e->last_use = ++g_dg_clock;
+        if (g_batch_encoder_concurrent || !ds4_dg_execute_entry(e)) {
+            /* The capture is recorded but the island could not execute now:
+             * retire rather than let a token skip an island (it would be a
+             * mathematical difference, not just a perf one). */
+            ok = NO;
+        }
+    }
+    if (!ok) {
+        const char *reason =
+            !key_matches ? "end() key mismatch (programmer error)" :
+            cap->poisoned ? cap->poison_reason.UTF8String :
+            cap->cmd_count == 0 ? "empty capture" :
+            "no replay substrate on this OS";
+        e->state = DS4_DG_DEAD;
+        g_dg_stat_failed++;
+        /* Spoken once per process for the expected substrate-less case --
+         * every island key hits it on its first token.  Programmer-error
+         * and poison reasons always print: they are not this machine's
+         * steady state and a silent failure loop must never hide them. */
+        const BOOL expected = key_matches && !cap->poisoned && cap->cmd_count > 0;
+        if (!expected || !g_dg_quiet_retire_logged) {
+            g_dg_quiet_retire_logged = YES;
+            ds4_dg_log(&e->key, "capture failed (%s): retired, island eager",
+                       reason);
+        }
+        return -1;
+    }
+    g_dg_stat_captures++;
+    ds4_dg_log(&e->key, "captured (dispatches=%u resources=%lu)",
+               e->cmd_count, (unsigned long)e->used_res.count);
+    return 0;
+}
+
+void ds4_gpu_decode_graph_abort(const ds4_decode_graph_key *key) {
+    if (!g_dg_capture) return;
+    Ds4DecodeGraphCapture *cap = (Ds4DecodeGraphCapture *)g_dg_capture;
+    ds4_dg_log(key ? key : &cap->entry->key,
+               "capture aborted (%u dispatches recorded, never executed)",
+               cap->cmd_count);
+    ds4_dg_capture_release();
+    /* The aborted capture never ran, so the island is untouched; keep the
+     * key eligible for a later recapture. */
+    ds4_dg_entry_reset(cap->entry);
+}
+
+/* The param buffer of the entry owning `key` (capturing or replayable).
+ * Fixed address for the entry's lifetime; captured kernels read it, so host
+ * updates take effect on the next replay without any recapture.  The
+ * pointer stays valid until the entry is evicted, retired, or invalidated. */
+int ds4_gpu_decode_graph_param_map(const ds4_decode_graph_key *key,
+                                   void               **ptr_out,
+                                   uint64_t           *size_out) {
+    if (!key || !ptr_out || !g_initialized) return 0;
+    Ds4DecodeGraphEntry *e = NULL;
+    if (g_dg_capture &&
+        memcmp(&((Ds4DecodeGraphCapture *)g_dg_capture)->entry->key,
+               key, sizeof(*key)) == 0) {
+        e = ((Ds4DecodeGraphCapture *)g_dg_capture)->entry;
+    } else {
+        for (uint32_t i = 0; i < DS4_DG_CAPACITY; i++) {
+            Ds4DecodeGraphEntry *cand = g_dg_entries[i];
+            if (cand && cand->state == DS4_DG_READY &&
+                memcmp(&cand->key, key, sizeof(*key)) == 0) {
+                e = cand;
+                break;
+            }
+        }
+    }
+    if (!e || !e->param) return 0;
+    *ptr_out = [e->param contents];
+    if (size_out) *size_out = DS4_DG_PARAM_BYTES;
+    return 1;
+}
+
+void ds4_gpu_decode_graph_stats(uint64_t *captures,
+                                uint64_t *replays,
+                                uint64_t *captures_failed,
+                                uint64_t *evictions) {
+    if (captures) *captures = g_dg_stat_captures;
+    if (replays) *replays = g_dg_stat_replays;
+    if (captures_failed) *captures_failed = g_dg_stat_failed;
+    if (evictions) *evictions = g_dg_stat_evictions;
+}
+
+/* Test seams (tests/test_metal_graph_capture.c): force the supported state
+ * without env, and wipe the table + counters between scenarios. */
+void ds4_gpu_decode_graph_test_set_enabled(int on) {
+    g_dg_test_override = on;
+}
+
+/* Sends a selector outside the recorded surface to the capture proxy; the
+ * fail-closed path must poison the capture instead of crashing or silently
+ * dropping the dispatch (acceptance test: unrecordable selector). */
+void ds4_gpu_decode_graph_test_poison_probe(void) {
+    if (!g_dg_capture_proxy) return;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    (void)[(id)g_dg_capture_proxy performSelector:
+        sel_registerName("ds4TestUnrecordableSelector")];
+#pragma clang diagnostic pop
+}
+
+void ds4_gpu_decode_graph_test_reset(void) {
+    ds4_gpu_decode_graphs_invalidate();
+    g_dg_clock = 0;
+    g_dg_stat_captures = 0;
+    g_dg_stat_replays = 0;
+    g_dg_stat_failed = 0;
+    g_dg_stat_evictions = 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Model-free dummy kernels for the capture acceptance test.  These exercise
+ * the proxy's recorded surface exactly the way the real island wrappers do
+ * (same encoder message path), without touching model weights.
+ * ------------------------------------------------------------------------ */
+static id<MTLLibrary> g_dg_test_lib;   /* pipelines reference it: keep it alive */
+static id<MTLComputePipelineState> g_dg_test_pipe_add_one;
+static id<MTLComputePipelineState> g_dg_test_pipe_add_value;
+static id<MTLComputePipelineState> g_dg_test_pipe_add_param;
+static id<MTLBuffer> g_dg_test_zero_param;
+static int g_dg_test_pipes_failed;
+
+static const char kDs4DgTestKernelSource[] =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "kernel void dg_test_add_one(device uint *x [[buffer(0)]]) { x[0] += 1u; }\n"
+    "kernel void dg_test_add_value(device uint *x [[buffer(0)]],\n"
+    "                              constant uint &v [[buffer(1)]]) { x[0] += v; }\n"
+    "kernel void dg_test_add_param(device uint *x [[buffer(0)]],\n"
+    "                              const device uint *p [[buffer(1)]]) { x[0] += p[0]; }\n";
+
+static int ds4_dg_test_pipelines(void) {
+    if (g_dg_test_pipe_add_one) return 1;
+    if (g_dg_test_pipes_failed) return 0;
+    @autoreleasepool {
+        NSError *err = nil;
+        id<MTLLibrary> lib = g_dg_test_lib = [g_device newLibraryWithSource:
+            [NSString stringWithUTF8String:kDs4DgTestKernelSource]
+            options:nil
+            error:&err];
+        if (!lib) {
+            fprintf(stderr, "ds4: decode-graph test kernels failed to compile: %s\n",
+                    err.localizedDescription.UTF8String);
+            g_dg_test_pipes_failed = 1;
+            return 0;
+        }
+        g_dg_test_pipe_add_one =
+            [g_device newComputePipelineStateWithFunction:
+                [lib newFunctionWithName:@"dg_test_add_one"] error:nil];
+        g_dg_test_pipe_add_value =
+            [g_device newComputePipelineStateWithFunction:
+                [lib newFunctionWithName:@"dg_test_add_value"] error:nil];
+        g_dg_test_pipe_add_param =
+            [g_device newComputePipelineStateWithFunction:
+                [lib newFunctionWithName:@"dg_test_add_param"] error:nil];
+        g_dg_test_zero_param =
+            [g_device newBufferWithLength:DS4_DG_PARAM_BYTES
+                                  options:MTLResourceStorageModeShared];
+        if (!g_dg_test_pipe_add_one || !g_dg_test_pipe_add_value ||
+            !g_dg_test_pipe_add_param || !g_dg_test_zero_param) {
+            fprintf(stderr, "ds4: decode-graph test pipelines unavailable\n");
+            g_dg_test_pipes_failed = 1;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int ds4_dg_test_encode(ds4_gpu_tensor               *x,
+                              id<MTLComputePipelineState>   pipeline,
+                              const void                   *bytes,
+                              NSUInteger                    bytes_len,
+                              id<MTLBuffer>                 extra_buf,
+                              const char                   *label) {
+    if (!g_initialized && !ds4_gpu_init()) return 0;
+    if (!ds4_dg_test_pipelines()) return 0;
+    @autoreleasepool {
+        id<MTLBuffer> xbuf = ds4_gpu_tensor_buffer(x);
+        if (!xbuf || ds4_gpu_tensor_bytes(x) < sizeof(uint32_t)) return 0;
+        int owned = 0;
+        id<MTLCommandBuffer> cb = ds4_gpu_command_buffer(&owned);
+        if (!cb) return 0;
+        id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
+        if (!enc) return 0;
+        [enc setComputePipelineState:pipeline];
+        [enc setBuffer:xbuf offset:ds4_gpu_tensor_offset(x) atIndex:0];
+        if (bytes) {
+            [enc setBytes:bytes length:bytes_len atIndex:1];
+        } else if (extra_buf) {
+            [enc setBuffer:extra_buf offset:0 atIndex:1];
+        }
+        [enc dispatchThreads:MTLSizeMake(1u, 1u, 1u)
+         threadsPerThreadgroup:MTLSizeMake(1u, 1u, 1u)];
+        ds4_gpu_end_compute_encoder(cb, enc);
+        if (!ds4_gpu_finish_command_buffer(cb, owned, label)) return 0;
+    }
+    return 1;
+}
+
+int ds4_gpu_decode_graph_test_encode_add_one(ds4_gpu_tensor *x) {
+    if (!g_initialized && !ds4_gpu_init()) return 0;
+    if (!ds4_dg_test_pipelines()) return 0;
+    return ds4_dg_test_encode(x, g_dg_test_pipe_add_one,
+                              NULL, 0, NULL, "decode-graph test add_one");
+}
+
+int ds4_gpu_decode_graph_test_encode_add_value(ds4_gpu_tensor *x, uint32_t v) {
+    if (!g_initialized && !ds4_gpu_init()) return 0;
+    if (!ds4_dg_test_pipelines()) return 0;
+    return ds4_dg_test_encode(x, g_dg_test_pipe_add_value,
+                              &v, sizeof(v), NULL, "decode-graph test add_value");
+}
+
+/* Binds the capture entry's fixed param buffer as the addend source.  Outside
+ * a capture the eager path reads a permanently-zero buffer so the function
+ * composes with non-graph code without side effects. */
+int ds4_gpu_decode_graph_test_encode_add_param(ds4_gpu_tensor *x) {
+    if (!g_initialized && !ds4_gpu_init()) return 0;
+    if (!ds4_dg_test_pipelines()) return 0;
+    id<MTLBuffer> p = g_dg_test_zero_param;
+    if (g_dg_capture) p = ((Ds4DecodeGraphCapture *)g_dg_capture)->entry->param;
+    return ds4_dg_test_encode(x, g_dg_test_pipe_add_param,
+                              NULL, 0, p, "decode-graph test add_param");
+}
+
 int ds4_gpu_flush_encoder(void) {
     if (!g_initialized && !ds4_gpu_init()) return 0;
     ds4_gpu_parallel_ffn_reset_state(YES);
@@ -9814,6 +10644,7 @@ int ds4_gpu_flush_encoder(void) {
 int ds4_gpu_flush_commands(void) {
     if (!g_initialized && !ds4_gpu_init()) return 0;
     ds4_gpu_parallel_ffn_reset_state(YES);
+    ds4_dg_note_batch_rotated("ds4_gpu_flush_commands");
     if (!g_batch_cb) return 0;
 
     ds4_gpu_close_batch_encoder();
@@ -11838,6 +12669,7 @@ static int ds4_gpu_signal_batch_and_wait_event(const char *label) {
 }
 
 int ds4_gpu_end_commands(void) {
+    ds4_dg_note_batch_rotated("ds4_gpu_end_commands");
     if (!g_batch_cb) {
         ds4_gpu_parallel_ffn_reset_state(YES);
         return 0;
