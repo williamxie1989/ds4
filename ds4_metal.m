@@ -44769,13 +44769,16 @@ int ds4_gpu_routed_moe_batch_tensor(
          * 32..511 the plain mpp mm-id kernels; below 32 rows the whole-layer
          * arm stays on the mul_mv family, which the streaming addr pair
          * kernels already match bit-for-bit (HANDOFF 12.7). */
+        const bool v41_spec_small_rows =
+            getenv("DS4_METAL_V41_STREAM_GATHER_SPEC_ROWS") != NULL &&
+            n_tokens >= 2u && n_tokens <= 8u;
         const bool use_v41_stream_gather_addr =
             !force_resident &&
             g_ssd_streaming_mode &&
             g_tp_split_world == 1 &&
             !g_quality_mode &&
-            n_tokens >= 32u &&
-            n_tokens < 8192u &&
+            ((n_tokens >= 32u || v41_spec_small_rows) &&
+             n_tokens < 8192u) &&
             n_expert == 6u &&
             n_total_expert == 384u &&
             expert_in_dim == 5120u &&
