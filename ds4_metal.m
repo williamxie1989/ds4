@@ -1025,6 +1025,9 @@ static uint8_t g_stream_expert_cache_slab_slot_locked[DS4_METAL_STREAM_EXPERT_CA
 static uint32_t g_stream_expert_cache_mlock_budget_cap;
 /* Token epoch whose slab headroom has already been reserved. */
 static uint64_t g_stream_expert_cache_reserved_token_epoch;
+/* Set while the binding service thread is loading experts for a gated
+ * dispatch; such a load may not fall back to a non-slab buffer. */
+static int g_stream_expert_binding_load_active;
 static uint8_t g_stream_expert_cache_mlock_relief_applied;
 static uint64_t g_stream_expert_cache_mlock_bytes;
 static uint64_t g_stream_expert_cache_mlock_fail_bytes;
@@ -16038,6 +16041,15 @@ static int ds4_gpu_stream_expert_cache_prepare_load_buffers(
         const uint64_t up_off = gate_expert_bytes;
         const uint64_t down_off = gate_expert_bytes * 2ull;
         const uint64_t combined_bytes = down_off + down_expert_bytes;
+        /*
+         * A standalone expert buffer is not part of the slab pool, so the
+         * gated dispatch -- which reaches its weights through the address
+         * table and therefore marks slabs, not entries -- would read it
+         * without any resource declaration.  Fail the load instead: the
+         * service thread latches that and the layer takes the synchronous
+         * path, which binds the six buffers directly.
+         */
+        if (g_stream_expert_binding_load_active) return 0;
         id<MTLBuffer> combined =
             ds4_gpu_stream_expert_alloc_buffer(combined_bytes,
                                                @"ds4_stream_expert_combined");
@@ -40684,8 +40696,10 @@ static int ds4_gpu_v41_moe_gpu_binding_serve(
                 req->down_expert_bytes);
         if (!entries[i]) missing_mask |= 1u << i;
     }
-    if (missing_mask != 0 &&
-        !ds4_gpu_stream_expert_cache_load_selected_missing(
+    g_stream_expert_binding_load_active = 1;
+    const int loaded =
+        missing_mask == 0 ||
+        ds4_gpu_stream_expert_cache_load_selected_missing(
                 req->model_map,
                 req->model_size,
                 req->layer,
@@ -40698,7 +40712,9 @@ static int ds4_gpu_v41_moe_gpu_binding_serve(
                 req->gate_expert_bytes,
                 req->down_expert_bytes,
                 missing_mask,
-                entries)) {
+                entries);
+    g_stream_expert_binding_load_active = 0;
+    if (!loaded) {
         fprintf(stderr,
                 "ds4: Metal V4.1 MoE GPU binding could not load the missing "
                 "experts at layer %u\n",
