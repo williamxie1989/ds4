@@ -1,0 +1,57 @@
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 107.52 GiB working set
+ds4:   using 75% total for model + cached experts: 81.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 7727 (71.63 GiB)
+ds4: metal SSD streaming cache target 71.63 GiB; effective 71.63 GiB = 7.12 GiB prefill headroom + 64.51 GiB dynamic cache (6959 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 64.51 GiB + prefill expert reserve 7.12 GiB = 93.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+1003 13:21:39 ds4-server: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+1003 13:21:39 ds4-server: host reclaimable memory after session allocation 103.66 GiB (pressure=1)
+1003 13:21:39 ds4-server: listening on http://127.0.0.1:8056
+1003 13:21:47 ds4-server: completion ctx=0..8914:8914 prompt start
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+1003 13:22:06 ds4-server: completion ctx=0..8914:8914 prefill chunk 8192/8914 (91.9%) chunk=0.00 t/s avg=419.03 t/s 19.550s
+1003 13:22:12 ds4-server: completion ctx=0..8914:8914 prefill chunk 8914/8914 (100.0%) chunk=119.39 t/s avg=348.24 t/s 25.597s
+1003 13:22:12 ds4-server: completion ctx=0..8914:8914 prompt done 25.634s
+1003 13:22:16 ds4-server: completion ctx=8914..8964:50 gen=50 THINKING decoding chunk=14.63 t/s avg=14.63 t/s 3.418s
+1003 13:22:18 ds4-server: completion ctx=8964..9014:50 gen=100 THINKING decoding chunk=20.15 t/s avg=16.95 t/s 5.899s
+1003 13:22:21 ds4-server: completion ctx=9014..9064:50 gen=150 THINKING decoding chunk=20.95 t/s avg=18.10 t/s 8.285s
+1003 13:22:23 ds4-server: completion ctx=9064..9114:50 gen=200 THINKING decoding chunk=18.61 t/s avg=18.23 t/s 10.972s
+1003 13:22:26 ds4-server: completion ctx=9114..9164:50 gen=250 THINKING decoding chunk=21.41 t/s avg=18.79 t/s 13.308s
+1003 13:22:26 ds4-server: completion ctx=9164..9170:6 gen=256 THINKING decoding chunk=22.61 t/s avg=18.86 t/s 13.573s
+1003 13:22:26 ds4-server: completion ctx=0..8914:8914 gen=256 THINKING finish=length 39.208s
+1003 13:22:26 ds4-server: rewound live prefix from 9170 to 8912; 2 prompt tokens will be reevaluated
+1003 13:22:26 ds4-server: completion ctx=8912..8914:2 prompt start
+1003 13:22:26 ds4-server: completion ctx=8912..8914:2 prefill chunk 1/2 (50.0%) chunk=0.00 t/s avg=14.74 t/s 0.068s
+1003 13:22:26 ds4-server: completion ctx=8912..8914:2 prefill chunk 2/2 (100.0%) chunk=18.44 t/s avg=16.39 t/s 0.122s
+1003 13:22:26 ds4-server: completion ctx=8912..8914:2 prompt done 0.124s
+1003 13:22:28 ds4-server: completion ctx=8914..8964:50 gen=50 THINKING decoding chunk=24.37 t/s avg=24.37 t/s 2.051s
+1003 13:22:30 ds4-server: completion ctx=8964..9014:50 gen=100 THINKING decoding chunk=24.06 t/s avg=24.22 t/s 4.129s
+1003 13:22:32 ds4-server: completion ctx=9014..9064:50 gen=150 THINKING decoding chunk=23.76 t/s avg=24.06 t/s 6.234s
+1003 13:22:35 ds4-server: completion ctx=9064..9114:50 gen=200 THINKING decoding chunk=22.91 t/s avg=23.76 t/s 8.416s
+1003 13:22:37 ds4-server: completion ctx=9114..9164:50 gen=250 THINKING decoding chunk=21.95 t/s avg=23.38 t/s 10.694s
+1003 13:22:37 ds4-server: completion ctx=9164..9170:6 gen=256 THINKING decoding chunk=21.25 t/s avg=23.32 t/s 10.977s
+1003 13:22:37 ds4-server: completion ctx=8912..8914:2 gen=256 THINKING finish=length 11.100s
+1003 13:22:37 ds4-server: rewound live prefix from 9170 to 8912; 2 prompt tokens will be reevaluated
+1003 13:22:37 ds4-server: completion ctx=8912..8914:2 prompt start
+1003 13:22:37 ds4-server: completion ctx=8912..8914:2 prefill chunk 1/2 (50.0%) chunk=0.00 t/s avg=24.73 t/s 0.040s
+1003 13:22:37 ds4-server: completion ctx=8912..8914:2 prefill chunk 2/2 (100.0%) chunk=26.15 t/s avg=25.42 t/s 0.079s
+1003 13:22:37 ds4-server: completion ctx=8912..8914:2 prompt done 0.080s
+1003 13:22:39 ds4-server: completion ctx=8914..8964:50 gen=50 THINKING decoding chunk=24.91 t/s avg=24.91 t/s 2.007s
+1003 13:22:41 ds4-server: completion ctx=8964..9014:50 gen=100 THINKING decoding chunk=24.70 t/s avg=24.80 t/s 4.032s
+1003 13:22:43 ds4-server: completion ctx=9014..9064:50 gen=150 THINKING decoding chunk=24.76 t/s avg=24.79 t/s 6.051s
+1003 13:22:45 ds4-server: completion ctx=9064..9114:50 gen=200 THINKING decoding chunk=24.71 t/s avg=24.77 t/s 8.074s
+1003 13:22:47 ds4-server: completion ctx=9114..9164:50 gen=250 THINKING decoding chunk=24.47 t/s avg=24.71 t/s 10.117s
+1003 13:22:48 ds4-server: completion ctx=9164..9170:6 gen=256 THINKING decoding chunk=24.74 t/s avg=24.71 t/s 10.360s
+1003 13:22:48 ds4-server: completion ctx=8912..8914:2 gen=256 THINKING finish=length 10.440s
+1003 13:22:48 ds4-server: shutdown requested, draining requests
