@@ -27,6 +27,13 @@ prefix 1024 (`tests/test_deepseek41_dspark.c --verify-scan-ssd`, four runs):
   steps**, i.e. *worse* than two plain decode steps. Batching only starts to
   amortise at n=8, and even there one row costs 0.72 of a step.
 
+On `D` itself, read the two bracketing measurements of each config, not the
+mean: they disagree by up to 17% (6028 experts: 46.4 ms before the scan, 39.5 ms
+after). Steady-state `D` is 61.1 ms at 958 experts, 39.5 ms at 6028, 39.8 ms at
+8078 — so the expert-cache lever is worth ~35% up to ~6000 experts and is **not
+resolvable** above that in this run. `V(n)/D` is unaffected by any of it, which
+is the point; the capacity lever's own numbers stay with M3-4.
+
 Consequences, both recorded in `LOCAL_INVENTORY.md` §D:
 
 - **Payoff of the best possible n-gram policy: 1.0001×–1.0020×.** Optimising
