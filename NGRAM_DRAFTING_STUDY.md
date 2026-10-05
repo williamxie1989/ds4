@@ -27,6 +27,17 @@ prefix 1024 (`tests/test_deepseek41_dspark.c --verify-scan-ssd`, four runs):
   steps**, i.e. *worse* than two plain decode steps. Batching only starts to
   amortise at n=8, and even there one row costs 0.72 of a step.
 
+That last point also **refutes the premise this study was built on**. If a decode
+step were dominated by a fixed per-step host round-trip, an 8-row verify would
+cost far less than 8 steps and a 2-row verify would cost barely more than 1 —
+instead 2 rows cost 2.36 and 8 rows cost 5.77, so there is no fixed cost worth
+amortising. The GPU sitting ~30% busy while a step takes 40 ms is a *latency*
+signature (the SM idles waiting on weight traffic), not headroom that batching
+can reclaim. The lever for decode speed is therefore per-row weight traffic —
+expert-cache capacity and load scheduling — not host-side work. (This says
+nothing about the plain decode path's own host overhead, which M0-4/E1 already
+measured neutral; it says the verify path offers nothing to amortise.)
+
 On `D` itself, read the two bracketing measurements of each config, not the
 mean: they disagree by up to 17% (6028 experts: 46.4 ms before the scan, 39.5 ms
 after). Steady-state `D` is 61.1 ms at 958 experts, 39.5 ms at 6028, 39.8 ms at
