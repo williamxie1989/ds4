@@ -8213,9 +8213,11 @@ static double now_sec(void);
  * timeout (pi and undici both default to 300 s) abort, retry the same
  * prompt, and on models whose recurrent state cannot rewind (Qwen 3.8) the
  * retry re-prefills the whole context.  The same silence covers a tool call
- * that opens inside the think block (held until it completes) and Responses
- * reasoning the client did not opt into.  Mirror the prefill keepalive: an
- * SSE comment every few seconds, which every SSE parser discards. */
+ * that opens inside the think block (held until it completes), Responses
+ * reasoning the client did not opt into, and the second-reasoning guard
+ * holding every visible byte between </think> and the next tool marker
+ * or finish.  Mirror the prefill keepalive: an SSE comment every few
+ * seconds, which every SSE parser discards. */
 #define SSE_WITHHELD_KEEPALIVE_SEC 5.0
 
 static bool sse_withheld_keepalive(int fd, double *last_wire) {
@@ -8235,6 +8237,7 @@ static bool openai_sse_stream_update(int fd, server *s, const request *r, const 
     if (!st->active || !raw) return true;
     const bool withheld =
         st->mode == OPENAI_STREAM_SUPPRESS || st->mode == OPENAI_STREAM_TOOL ||
+        (st->mode == OPENAI_STREAM_TEXT && st->guard_second_reasoning) ||
         (st->mode == OPENAI_STREAM_THINKING && r->has_tools &&
          find_any_tool_start(raw + st->emit_pos) != NULL);
     if (!final && withheld &&
@@ -9877,6 +9880,7 @@ static bool anthropic_sse_stream_update(int fd, server *s, const request *r, con
     if (!st->active || !raw) return true;
     const bool withheld =
         st->mode == ANTH_STREAM_SUPPRESS || st->mode == ANTH_STREAM_TOOL ||
+        (st->mode == ANTH_STREAM_TEXT && st->guard_second_reasoning) ||
         (st->mode == ANTH_STREAM_THINKING && r->has_tools &&
          find_any_tool_start(raw + st->emit_pos) != NULL);
     if (!final && withheld &&
@@ -18590,6 +18594,67 @@ static void test_openai_stream_keepalive_for_tool_inside_thinking(void) {
     request_free(&r);
 }
 
+static void test_openai_stream_keepalive_while_guard_holds_text(void) {
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) return;
+
+    request r;
+    request_init(&r, REQ_CHAT, 128);
+    r.api = API_OPENAI;
+    r.stream = true;
+    r.think_mode = DS4_THINK_HIGH;   /* guard on: think + tools + non-Qwen */
+    r.has_tools = true;
+
+    openai_stream st;
+    openai_stream_start(&r, &st);
+    TEST_ASSERT(st.guard_second_reasoning);
+    /* Past </think>: TEXT mode with the guard holding every visible byte
+     * until a tool marker or finish; without a keepalive here the wire is
+     * silent and the client's 300 s body timeout aborts mid-decode. */
+    st.mode = OPENAI_STREAM_TEXT;
+    const char *text = "visible summary text held back by the guard";
+    const size_t n = strlen(text);
+    TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "id", &st, text, n, false));
+    TEST_ASSERT(st.last_wire != 0.0);
+    st.last_wire -= SSE_WITHHELD_KEEPALIVE_SEC + 1.0;
+    TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "id", &st, text, n, false));
+    TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "id", &st, text, n, false));
+    TEST_ASSERT(st.mode == OPENAI_STREAM_TEXT);
+
+    expect_one_keepalive(sv[0], sv[1]);
+    openai_stream_free(&st);
+    request_free(&r);
+}
+
+static void test_anthropic_stream_keepalive_while_guard_holds_text(void) {
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) return;
+
+    request r;
+    request_init(&r, REQ_CHAT, 128);
+    r.api = API_ANTHROPIC;
+    r.stream = true;
+    r.think_mode = DS4_THINK_HIGH;
+    r.has_tools = true;
+
+    anthropic_stream st;
+    TEST_ASSERT(anthropic_sse_start_live(sv[0], &r, "msg_gka", 10, &st));
+    st.mode = ANTH_STREAM_TEXT;
+    const char *text = "visible summary text held back by the guard";
+    const size_t n = strlen(text);
+    TEST_ASSERT(anthropic_sse_stream_update(sv[0], NULL, &r, "msg_gka", &st, text, n, false));
+    TEST_ASSERT(st.last_wire != 0.0);
+    st.last_wire -= SSE_WITHHELD_KEEPALIVE_SEC + 1.0;
+    TEST_ASSERT(anthropic_sse_stream_update(sv[0], NULL, &r, "msg_gka", &st, text, n, false));
+    TEST_ASSERT(anthropic_sse_stream_update(sv[0], NULL, &r, "msg_gka", &st, text, n, false));
+    TEST_ASSERT(st.mode == ANTH_STREAM_TEXT);
+
+    expect_one_keepalive(sv[0], sv[1]);
+    request_free(&r);
+}
+
 static void test_responses_stream_keepalive_for_unemitted_reasoning(void) {
     int sv[2];
     TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
@@ -24421,6 +24486,8 @@ static void ds4_server_unit_tests_run(void) {
     test_anthropic_stream_keepalive_while_output_withheld();
     test_openai_stream_keepalive_for_tool_inside_thinking();
     test_responses_stream_keepalive_for_unemitted_reasoning();
+    test_openai_stream_keepalive_while_guard_holds_text();
+    test_anthropic_stream_keepalive_while_guard_holds_text();
     test_openai_tool_stream_waits_for_incomplete_tool_tags();
     test_openai_tool_stream_sends_partial_raw_arguments();
     test_openai_tool_stream_preserves_literal_entities();
