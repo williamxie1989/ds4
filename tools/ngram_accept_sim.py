@@ -330,6 +330,9 @@ def main():
     ap.add_argument("--cache", default=CACHE)
     ap.add_argument("--tag", default="smoke")
     ap.add_argument("--sweep", action="store_true")
+    ap.add_argument("--segments", action="store_true",
+                    help="also write seg_<tag>.json with session boundaries kept, "
+                         "which ngram_cost_model.py needs for the per-session index")
     args = ap.parse_args()
 
     os.makedirs(args.cache, exist_ok=True)
@@ -345,16 +348,23 @@ def main():
         print("sessions:", len(files))
         tk = build_tokenizer(args.gguf)
         ids, kind = [], []
+        segs = []
         for f in files:
             pieces = read_session(f, args.max_chars)
             if not pieces:
                 continue
             a, b = tokenize_stream(tk, pieces)
+            if args.segments and len(a) >= 500:
+                segs.append({"name": f.split('/')[-2][:40], "ids": a, "kind": b})
             ids.extend(a)
             kind.extend(b)
             print("  %-52s pieces=%4d tokens=%8d (%.0fs)"
                   % (f.split('/')[-2][:50], len(pieces), len(a), time.time() - t0))
         json.dump({"ids": ids, "kind": kind}, open(cache_f, "w"))
+        if args.segments:
+            seg_f = os.path.join(args.cache, "seg_%s.json" % args.tag)
+            json.dump({"segs": segs}, open(seg_f, "w"))
+            print("wrote %s (%d sessions)" % (seg_f, len(segs)))
         print("tokenized %d tokens in %.0fs" % (len(ids), time.time() - t0))
 
     n = len(ids)

@@ -1,6 +1,22 @@
 #!/usr/bin/env python3
 """Acceptance-by-match-length and optimal draft length for n-gram drafting.
 
+SUPERSEDED (2026-10-06) by ngram_cost_model.py -- do not cite its speedup
+numbers.  Two defects, both of which inflate the result:
+
+  * the "selective policy" table filters the step list down to the speculated
+    steps and then divides conditional tokens by conditional cost, silently
+    dropping the ~90% of steps that never speculate; read as an overall speedup
+    that is wrong by construction (a policy speculating on 9.8% of steps cannot
+    exceed 1.19x at any verify cost);
+  * cost_per_step charges for accepted rows (rows = 1 + min(acc, d)) instead of
+    the rows actually submitted to the verify -- rejected rows cost the same as
+    accepted ones -- and it is off by one against the c(n) = 1 + a*(n-1) model
+    its own docstring states.
+
+Kept because the acceptance structure it measures (survival curve, mean accepted
+by match length, per-content-type split) is correct and still cited.
+
 Consumes the token stream cached by ngram_accept_sim.py, replays the same
 greedy spec loop while recording (match length used, accepted count, span kind),
 then answers the two questions the flat sweep cannot:
