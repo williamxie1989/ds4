@@ -3,6 +3,11 @@
  *   test_deepseek41_dspark MODEL --verify-parity PROMPT   checks
  *   test_deepseek41_dspark MODEL --short-prefill PROMPT   checks
  *   test_deepseek41_dspark MODEL --verify-timing PROMPT   measures
+ *   test_deepseek41_dspark MODEL --verify-scan[-ssd] PROMPT
+ *                                                          measures the cost
+ *   slope of a verified row (a) across n = 2..8, the number draftless n-gram
+ *   speculative decoding turned on; DS4_TEST_VERIFY_WINDOW=same verifies one
+ *   token n times for the expert-union floor.
  *   test_deepseek41_dspark MODEL --stage-timing PROMPT    measures
  * The --verify-parity-ssd and --short-prefill-ssd variants run the same checks
  * with the engine in SSD-streaming mode, where verification rows bind their
@@ -353,6 +358,134 @@ done:
     return rc;
 }
 
+static int cmp_double(const void *a, const void *b) {
+    const double x = *(const double *)a, y = *(const double *)b;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/* Measurement, not a check: the cost slope of a verified row.
+ *
+ * A speculative step that submits c draft rows runs an (c+1)-row verification
+ * in place of one plain decode step. Write V(n) for the wall clock of an n-row
+ * verification and D for one plain decode step; then
+ *
+ *     a(n) = (V(n)/D - 1) / (n - 1)
+ *
+ * is the slope the draftless n-gram decision turns on, because the offline cost
+ * model prices such a step as 1 + a*c decode steps. The scan also times what a
+ * step pays beyond the verify itself -- the host argmax over n vocabularies and
+ * the commit pass -- since a plain decode step pays neither.
+ *
+ * Successive reps verify a shifted window so they route to different experts:
+ * re-verifying the same eight tokens would leave their experts warm and flatter
+ * a streaming run.  Spread across reps is reported because that is what says
+ * whether a is cache-limited. */
+static int time_verify_scan(const char *model, const char *prompt_path, bool streaming) {
+    ds4_engine *engine = NULL;
+    ds4_session *session = NULL;
+    ds4_session_snapshot base = {0};
+    ds4_tokens prompt = {0}, prefix = {0};
+    ds41_spec spec = {0};
+    char err[256] = {0};
+    char *text = read_text(prompt_path);
+    int rc = 1;
+    const uint32_t targets[] = {37, 38, 39};
+    ds4_engine_options opt = {.model_path = model, .backend = DS4_BACKEND_METAL,
+        .context_size = 4096, .power_percent = 100};
+    if (streaming) {
+        opt.ssd_streaming = true;
+        opt.ssd_streaming_cache_bytes = ds41_test_streaming_cache_bytes();
+        const char *experts = getenv("DS4_TEST_STREAMING_CACHE_EXPERTS");
+        opt.ssd_streaming_cache_experts = experts ? (uint32_t)atoi(experts) : 9000u;
+    }
+    REQUIRE(text);
+    REQUIRE(ds4_engine_open(&engine, &opt) == 0);
+    ds4_tokenize_text(engine, text, &prompt);
+    REQUIRE(prompt.len > 1200);
+    REQUIRE(ds4_session_create(&session, engine, 4096) == 0);
+    REQUIRE(ds41_spec_alloc(&spec, targets, 3));
+    const int start = 1024;
+    for (int i = 0; i < start; i++) ds4_tokens_push(&prefix, prompt.v[i]);
+    REQUIRE(ds4_session_sync(session, &prefix, err, sizeof(err)) == 0);
+    REQUIRE(ds4_session_save_snapshot(session, &base, err, sizeof(err)) == 0);
+
+    const int REPS = 9, DROP = 3;
+    double d_before = 0, d_after = 0;
+    for (int phase = 0; phase < 2; phase++) {
+        for (int warm = 0; warm < 8; warm++)
+            REQUIRE(ds4_session_eval(session, prompt.v[start + warm], err, sizeof(err)) == 0);
+        const double t = now_sec();
+        for (int i = 0; i < 32; i++)
+            REQUIRE(ds4_session_eval(session, prompt.v[start + 8 + i], err, sizeof(err)) == 0);
+        const double ms = (now_sec() - t) * 1000.0 / 32.0;
+        if (!phase) d_before = ms; else d_after = ms;
+        REQUIRE(ds4_session_load_snapshot(session, &base, err, sizeof(err)) == 0);
+    }
+    const double d_ms = 0.5 * (d_before + d_after);
+    fprintf(stderr, "MODE %s  one-token decode D = %.2f ms (before %.2f, after %.2f)\n",
+            streaming ? "ssd-streaming" : "resident", d_ms, d_before, d_after);
+    fprintf(stderr, "rows  verify_ms (min/med/max)   argmax+commit_ms  V/D    a_verify  a_full\n");
+
+    const uint32_t rows_list[] = {2, 3, 4, 5, 6, 7, 8};
+    for (size_t r = 0; r < sizeof(rows_list) / sizeof(rows_list[0]); r++) {
+        const uint32_t rows = rows_list[r];
+        double v[16], h[16];
+        int nv = 0, nh = 0;
+        for (int rep = 0; rep < REPS; rep++) {
+            /* DS4_TEST_VERIFY_WINDOW=same verifies one token eight times, which
+             * routes every row to the same experts: the floor of a verify's
+             * cost, and the test of whether a is expert-union growth or plain
+             * per-row traffic. */
+            static int same_rows = -1;
+            if (same_rows < 0) same_rows = getenv("DS4_TEST_VERIFY_WINDOW") != NULL;
+            const int *suffix = same_rows ? prompt.v + start
+                                          : prompt.v + start + (rep * 11) % 96;
+            REQUIRE(ds4_session_load_snapshot(session, &base, err, sizeof(err)) == 0);
+            double t = now_sec();
+            REQUIRE(ds41_graph_verify(&session->ds41_graph, &engine->model, &engine->weights,
+                                      suffix, rows, &spec));
+            v[nv++] = (now_sec() - t) * 1000.0;
+            if (rep >= DROP) {
+                const float *logits = ds4_gpu_tensor_contents(spec.logits);
+                REQUIRE(logits);
+                t = now_sec();
+                volatile int sink = 0;
+                for (uint32_t i = 0; i < rows; i++)
+                    sink += sample_argmax(logits + (size_t)i * DS4_N_VOCAB, DS4_N_VOCAB);
+                (void)sink;
+                if (!ds4_gpu_begin_commands() ||
+                    !ds41_spec_commit(&session->ds41_graph, &spec, rows) ||
+                    !ds4_gpu_end_commands()) {
+                    if (ds4_gpu_commands_active()) (void)ds4_gpu_end_commands();
+                    REQUIRE(false);
+                }
+                h[nh++] = (now_sec() - t) * 1000.0;
+            }
+        }
+        double vmin = 1e30, vmax = 0;
+        for (int i = DROP; i < nv; i++) { vmin = fmin(vmin, v[i]); vmax = fmax(vmax, v[i]); }
+        qsort(v + DROP, (size_t)(nv - DROP), sizeof(double), cmp_double);
+        qsort(h, (size_t)nh, sizeof(double), cmp_double);
+        const double vmed = v[DROP + (nv - DROP) / 2];
+        const double hmed = h[nh / 2];
+        fprintf(stderr, "%4u  %8.2f (%.2f/%.2f/%.2f)  %14.2f  %5.3f  %8.4f  %7.4f\n",
+                rows, vmed, vmin, vmed, vmax, hmed, vmed / d_ms,
+                (vmed / d_ms - 1.0) / (double)(rows - 1),
+                ((vmed + hmed) / d_ms - 1.0) / (double)(rows - 1));
+    }
+    rc = 0;
+done:
+    if (err[0]) fprintf(stderr, "error: %s\n", err);
+    if (ds4_gpu_commands_active()) (void)ds4_gpu_end_commands();
+    ds41_spec_free(&spec);
+    ds4_session_snapshot_free(&base);
+    ds4_tokens_free(&prefix); ds4_tokens_free(&prompt);
+    ds4_session_free(session);
+    ds4_engine_close(engine);
+    free(text);
+    return rc;
+}
+
 /* Measurement: where one decoded token's GPU time goes, from 40 encodes of
  * one layer's own kernels on its real weights. */
 static int time_stages(const char *model, const char *prompt_path) {
@@ -624,6 +757,10 @@ int main(int argc, char **argv) {
         return time_stages(argv[1], argv[3]);
     if (argc == 4 && !strcmp(argv[2], "--verify-timing"))
         return time_verify(argv[1], argv[3]);
+    if (argc == 4 && !strcmp(argv[2], "--verify-scan"))
+        return time_verify_scan(argv[1], argv[3], false);
+    if (argc == 4 && !strcmp(argv[2], "--verify-scan-ssd"))
+        return time_verify_scan(argv[1], argv[3], true);
     if (argc == 4 && !strcmp(argv[2], "--short-prefill"))
         return check_short_prefill(argv[1], argv[3], false);
     if (argc == 4 && !strcmp(argv[2], "--short-prefill-ssd"))
@@ -637,6 +774,7 @@ int main(int argc, char **argv) {
     if (argc == 3 && !strcmp(argv[2], "--moe-bind-parity"))
         return check_moe_bind_parity(argv[1]);
     fprintf(stderr, "usage: %s MODEL --verify-parity|--verify-parity-ssd"
-                    "|--short-prefill|--short-prefill-ssd|--short-prefill-ssd-rows PROMPT\n", argv[0]);
+                    "|--short-prefill|--short-prefill-ssd|--short-prefill-ssd-rows"
+                    "|--verify-timing|--verify-scan|--verify-scan-ssd PROMPT\n", argv[0]);
     return 2;
 }
