@@ -440,15 +440,23 @@ static int time_verify_scan(const char *model, const char *prompt_path, bool str
     fprintf(stderr, "MODE %s  one-token decode D = %.2f ms (before %.2f, after %.2f)\n",
             streaming ? "ssd-streaming" : "resident", d_ms, d_before, d_after);
     fprintf(stderr, "  disk read per decode step: %.1f MB (phase 1, cold) / %.1f MB "
-            "(phase 2, steady) -- weights per token are ~3.5 GB, so steady-state "
-            "miss rate is %.1f%%\n",
+            "(phase 2, steady) -- a token's weights are 10.50 GB (see "
+            "--weight-inventory), so steady-state miss rate is %.2f%%\n",
             disk_d[0] / 1048576.0, disk_d[1] / 1048576.0,
-            100.0 * disk_d[1] / 3.5e9);
+            100.0 * disk_d[1] / 10.50e9);
     fprintf(stderr, "rows  verify_ms (min/med/max)   disk MB/verify   argmax+commit_ms  V/D    a_verify  a_full\n");
 
-    const uint32_t rows_list[] = {2, 3, 4, 5, 6, 7, 8};
+    /* Rows above DS4_TP_BATCH_MAX_ROWS are skipped, not clamped: the point of
+     * listing them is to see the shape on the far side of the ceiling, and a
+     * clamp would silently report the ceiling as if it were the measurement. */
+    const uint32_t rows_list[] = {2, 3, 4, 6, 8, 12, 16, 24, 32};
     for (size_t r = 0; r < sizeof(rows_list) / sizeof(rows_list[0]); r++) {
         const uint32_t rows = rows_list[r];
+        if (rows > (uint32_t)DS4_TP_BATCH_MAX_ROWS) {
+            fprintf(stderr, "%4u  skipped: above DS4_TP_BATCH_MAX_ROWS (%d)\n",
+                    rows, (int)DS4_TP_BATCH_MAX_ROWS);
+            continue;
+        }
         double v[16], h[16];
         int nv = 0, nh = 0;
         double disk_rep[16];
@@ -674,6 +682,14 @@ static int time_stages(const char *model, const char *prompt_path) {
                 case 3: ok = ds41_shared_mid(g, m, l) &&
                             ds41_matmul(g->shared, m, l->ffn_down_shexp, g->shared_mid, true); break;
                 case 4: {
+                    /* Not isolatable in streaming mode: the routed MoE there is
+                     * driven from ds41_graph_step's host loop (read the layer's
+                     * selected ids back, page the experts in), not from this
+                     * per-layer encode -- every encode-side call here reports
+                     * ~0.3 ms because the work is queued elsewhere. The raw
+                     * one_tensor call below is the resident-mode path and binds
+                     * whole-map views streaming does not map, so it aborts.
+                     * Under streaming, subtract the other six stages instead. */
                     uint64_t gate_row = 0, down_row = 0;
                     ok = tensor_nbytes(l->ffn_gate_exps->type, DS4_N_EMBD, &gate_row) &&
                         tensor_nbytes(l->ffn_down_exps->type, DS4_N_FF_EXP, &down_row) &&

@@ -91,35 +91,81 @@ Two ways to move it, and only one is available:
    single-token decode does not have. Prefill does use them (the log shows
    `kernel_dsv4_indexed_mixed_attention_heads16_nax`); decode cannot.
 
-So the whole problem reduces to: **at batch = 1 the engine is locked to the
-matvec path at ~450 G weights/s, and there is no way to give it more rows
-without batching.**
+So the problem reduces to the weight rate. Section 5 tests the one way to give
+the engine more rows -- and finds it does not help either.
 
-## 5. The one unmeasured cliff, and why it may matter
+## 5. The batching cliff does not exist (measured 2026-10-06, second window)
 
-`DS4_TP_BATCH_MAX_ROWS = 8` (`ds4_tp.h:34`). Every measurement above, including
-`a = 0.68`, was taken at **≤ 8 rows** — entirely inside the matvec regime. The
-tensor units want **≥ 16**. **The batching curve above 8 rows has never been
-measured, because the row ceiling forbids it.**
+`DS4_TP_BATCH_MAX_ROWS` was raised from 8 to 32 for one experiment and
+`--verify-scan` extended to 12/16/24/32 rows. **The per-row cost does not move:**
 
-If the tensor path engages at 16 rows and lifts the weight rate several-fold, the
-marginal row cost collapses and speculative decoding's economics flip — the
-`a = 0.68` that killed it was measured only where the slow path lives.
+| rows | 2 | 3 | 4 | 6 | 8 | 12 | 16 | 24 | 32 |
+|---|---|---|---|---|---|---|---|---|---|
+| V/D | 2.186 | 2.739 | 3.456 | 4.839 | 5.936 | 9.047 | 11.428 | 16.849 | 22.393 |
+| marginal per row | – | – | – | – | 0.705 | 0.778 | 0.595 | 0.678 | 0.693 |
 
-That is a bounded experiment: raise `DS4_TP_BATCH_MAX_ROWS` to 16/32, extend
-`--verify-scan` past 8, measure. It touches `ds4_tp.h`, the `ds41_spec` buffer
-sizing, and the bit-contract surface, so it needs the user's adjudication before
-anyone starts. Two cautions:
+Fitting the large end, `V(n) = 0.451 + 0.686·n` in decode steps — a fixed batch
+overhead of ~18 ms plus ~27.6 ms per row, against 40.3 ms for a standalone step.
+So a batched row costs 0.69 of a standalone row, and that ratio is **flat from 8
+to 32 rows**. The tensor units either do not engage above 8 rows on this path or
+buy nothing when they do.
 
-- The E0.3 registered red ("contract does not exist above eight rows") is about
-  the *append* path, not the verify path — but the verify path's exactness must
-  be re-established above 8 rows, not assumed.
-- The V4.1 "exact" paths are gated by `ds4_gpu_dsv41_exact_admitted()`, which
-  returns false whenever `g_ssd_streaming_mode` is set — and streaming is the
-  only mode this model fits in on a 128 GiB host. The tuned paths also require
-  `ds4_gpu_device_is_m3_ultra()`. **On M5 Max in streaming mode the engine is
-  structurally excluded from those paths**, which is a second reason to expect
-  headroom, and a second thing to check before betting on row count alone.
+**The ceiling was reverted to 8** and the scan now skips rows above it rather
+than clamping. Nothing else was kept: raising the constant globally would also
+widen the batch path for 9..32-row callers, which is exactly the E0.3
+registered-red territory, and there is no payoff to buy with that risk.
+
+This closes the last candidate for a step change. Speculative decoding is dead
+for a stronger reason than the earlier `a = 0.68`: it is not a small-batch
+artifact that a larger verify would fix.
+
+## 6. A dense kernel on the same machine reaches 700 GB/s
+
+`--stage-timing`'s row-scaling tail times 40 layers of the `q_b` projection (Q8,
+1.68 G weights) at increasing row counts:
+
+| rows | 1 | 2 | 4 | 6 | 8 |
+|---|---|---|---|---|---|
+| ms for 40 layers | 3.25 | 5.02 | 9.73 | 14.47 | 19.17 |
+| ms per row | 3.25 | 2.51 | 2.43 | 2.41 | 2.40 |
+
+Marginal row: 1.68 G weights in 2.40 ms = **700 G weights/s = 700 GB/s**. So the
+machine's unified memory delivers at least 700 GB/s on a dense Q8 matvec, and the
+dense attention stages (450–535 GB/s) are at 65–75% of that, not at a wall.
+
+The routed-expert path's **116 GB/s is therefore 6× off what the same machine
+does on a dense kernel**, and it is ~50% of the decode step.
+
+## 7. Why the routed stage still cannot be measured directly
+
+Stage 4 of `--stage-timing` cannot be isolated under streaming. The routed MoE
+there is not dispatched by the per-layer encode at all: `ds41_graph_step`'s host
+loop reads each layer's selected ids back and pages the experts in, and every
+encode-side call tried (`ds4_gpu_routed_moe_one_tensor`, `ds41_moe_partial`,
+`ds41_moe` + `ds41_graph_after_moe`) reports ~0.3 ms because the work is queued
+elsewhere. The raw `one_tensor` call is the resident-mode path and binds
+whole-map views that streaming does not map, so it aborts.
+
+So the routed figure above remains **D minus the other six stages**, now with all
+six measured through the path the engine actually decodes with (attention
+projections 4.63, attention core 3.26, attention output 5.98, shared expert 3.37,
+hc mixes and norms 1.76, output head 1.20 = 20.20 ms of 40.32). That is a
+stronger basis than the earlier subtraction, but it is still a subtraction.
+
+**And that host-side per-layer paging is itself a suspect**: it is a per-(layer,
+token) round trip that no other stage has, and it is what card I targeted for
++2.7–3.2%. Card I's small gain suggests the readback is not the dominant cost,
+but nothing measured here separates "the gather kernel is slow" from "the host
+paging loop feeding it is slow". Splitting those two is the next real step, and
+it needs a different instrument, not another pass at this one.
+
+One caution that survives from the hypothesis this section tested: the V4.1
+"exact" paths are gated by `ds4_gpu_dsv41_exact_admitted()`, which returns false
+whenever `g_ssd_streaming_mode` is set -- and streaming is the only mode this
+model fits in on a 128 GiB host. They also require
+`ds4_gpu_device_is_m3_ultra()`. **On M5 Max in streaming mode the engine is
+structurally excluded from those tuned paths**, which is a separate reason to
+expect headroom and is not addressed by anything measured here.
 
 ## Reproduction
 
@@ -137,7 +183,7 @@ DS4_TEST_SSD=1 DS4_TEST_STREAMING_CACHE_GIB=16 DS4_TEST_STREAMING_CACHE_EXPERTS=
 
 `--stage-timing` aborts at the routed-expert stage in streaming mode
 ("Metal model range ... is not covered by mapped model views"): it binds
-whole-map views that streaming does not map. The routed number above is therefore
-D minus the four stages that did measure, and the other three are by subtraction
-too. Making that stage measurable directly is a prerequisite for trusting the
-`~414 G/s` figure to better than ±10%.
+whole-map views that streaming does not map. The routed number is therefore D
+minus the other six stages, all six of which do measure through the real decode
+path. See section 7 for why that stage resists isolation, and section 5 for the
+row-ceiling experiment (the ceiling is back at 8; the scan skips rows above it).
