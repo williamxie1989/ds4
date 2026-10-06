@@ -458,7 +458,10 @@ and the remaining ~3.9 ms miss + ~6.5 ms drain cost stays closed under the curre
 contract shape (sections 9-10). Anything larger than ~10000 does not fit this machine.
 Recommendation: **run production at 10000 experts on 128 GB boxes** and close T2 here --
 what is left is only reachable through the two shapes the project has already closed
-(T3 drain removal, split masked gather).
+(T3 drain removal, split masked gather). **User adjudication 2026-10-06: T2 is
+closed** -- production runs at 10000 experts on 128 GB; the plan's four tasks all
+landed (T0 confirmed, T1 priced the drain at 6.5 ms, T3 closed, T2 harvested -7-8%
+and closed).
 
 Housekeeping: the leg's `layers 82.666` profile line double-counts the before/after
 arms of the DSpark test inside the 64-step profile window (D 40.82, 24.50 t/s, and
