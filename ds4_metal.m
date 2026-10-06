@@ -872,6 +872,21 @@ static uint64_t g_stream_expert_timing_cache_all_missing_layers;
 static uint64_t g_stream_expert_timing_cache_mixed_layers;
 static uint64_t g_stream_expert_timing_cache_resident_experts;
 static uint64_t g_stream_expert_timing_cache_missing_experts;
+static uint64_t g_stream_expert_timing_residency_calls;
+static double g_stream_expert_timing_residency_ms;
+static uint64_t g_stream_expert_timing_prune_layer_calls;
+static double g_stream_expert_timing_prune_layer_ms;
+static uint64_t g_stream_expert_timing_prune_layer_evictions;
+static uint64_t g_stream_expert_timing_prune_global_calls;
+static double g_stream_expert_timing_prune_global_ms;
+static uint64_t g_stream_expert_timing_prune_global_evictions;
+static uint64_t g_stream_expert_timing_prune_global_scans;
+static uint64_t g_stream_expert_timing_pread_pool_begin_calls;
+static uint64_t g_stream_expert_timing_pread_pool_sync_fallbacks;
+static double g_stream_expert_timing_pread_pool_begin_ms;
+static uint64_t g_stream_expert_timing_pread_load_waits;
+static double g_stream_expert_timing_pread_overlap_ms;
+static double g_stream_expert_timing_pread_block_ms;
 typedef struct {
     uint64_t selected_calls;
     double selected_read_ms;
@@ -910,6 +925,21 @@ typedef struct {
     uint64_t cache_mixed_layers;
     uint64_t cache_resident_experts;
     uint64_t cache_missing_experts;
+    uint64_t residency_calls;
+    double residency_ms;
+    uint64_t prune_layer_calls;
+    double prune_layer_ms;
+    uint64_t prune_layer_evictions;
+    uint64_t prune_global_calls;
+    double prune_global_ms;
+    uint64_t prune_global_evictions;
+    uint64_t prune_global_scans;
+    uint64_t pread_pool_begin_calls;
+    uint64_t pread_pool_sync_fallbacks;
+    double pread_pool_begin_ms;
+    uint64_t pread_load_waits;
+    double pread_overlap_ms;
+    double pread_block_ms;
 } ds4_gpu_stream_expert_timing_snapshot;
 static ds4_gpu_stream_expert_timing_snapshot g_stream_expert_timing_last_report;
 static int g_stream_prefill_batch_selected_addr_building;
@@ -4359,6 +4389,25 @@ ds4_gpu_stream_expert_timing_current(void) {
             g_stream_expert_timing_cache_resident_experts,
         .cache_missing_experts =
             g_stream_expert_timing_cache_missing_experts,
+        .residency_calls = g_stream_expert_timing_residency_calls,
+        .residency_ms = g_stream_expert_timing_residency_ms,
+        .prune_layer_calls = g_stream_expert_timing_prune_layer_calls,
+        .prune_layer_ms = g_stream_expert_timing_prune_layer_ms,
+        .prune_layer_evictions =
+            g_stream_expert_timing_prune_layer_evictions,
+        .prune_global_calls = g_stream_expert_timing_prune_global_calls,
+        .prune_global_ms = g_stream_expert_timing_prune_global_ms,
+        .prune_global_evictions =
+            g_stream_expert_timing_prune_global_evictions,
+        .prune_global_scans = g_stream_expert_timing_prune_global_scans,
+        .pread_pool_begin_calls =
+            g_stream_expert_timing_pread_pool_begin_calls,
+        .pread_pool_sync_fallbacks =
+            g_stream_expert_timing_pread_pool_sync_fallbacks,
+        .pread_pool_begin_ms = g_stream_expert_timing_pread_pool_begin_ms,
+        .pread_load_waits = g_stream_expert_timing_pread_load_waits,
+        .pread_overlap_ms = g_stream_expert_timing_pread_overlap_ms,
+        .pread_block_ms = g_stream_expert_timing_pread_block_ms,
     };
 }
 
@@ -4512,6 +4561,66 @@ ds4_gpu_stream_expert_timing_delta(
             ds4_gpu_stream_expert_timing_delta_u64(
                     current.cache_missing_experts,
                     previous.cache_missing_experts),
+        .residency_calls =
+            ds4_gpu_stream_expert_timing_delta_u64(
+                    current.residency_calls,
+                    previous.residency_calls),
+        .residency_ms =
+            ds4_gpu_stream_expert_timing_delta_f64(
+                    current.residency_ms,
+                    previous.residency_ms),
+        .prune_layer_calls =
+            ds4_gpu_stream_expert_timing_delta_u64(
+                    current.prune_layer_calls,
+                    previous.prune_layer_calls),
+        .prune_layer_ms =
+            ds4_gpu_stream_expert_timing_delta_f64(
+                    current.prune_layer_ms,
+                    previous.prune_layer_ms),
+        .prune_layer_evictions =
+            ds4_gpu_stream_expert_timing_delta_u64(
+                    current.prune_layer_evictions,
+                    previous.prune_layer_evictions),
+        .prune_global_calls =
+            ds4_gpu_stream_expert_timing_delta_u64(
+                    current.prune_global_calls,
+                    previous.prune_global_calls),
+        .prune_global_ms =
+            ds4_gpu_stream_expert_timing_delta_f64(
+                    current.prune_global_ms,
+                    previous.prune_global_ms),
+        .prune_global_evictions =
+            ds4_gpu_stream_expert_timing_delta_u64(
+                    current.prune_global_evictions,
+                    previous.prune_global_evictions),
+        .prune_global_scans =
+            ds4_gpu_stream_expert_timing_delta_u64(
+                    current.prune_global_scans,
+                    previous.prune_global_scans),
+        .pread_pool_begin_calls =
+            ds4_gpu_stream_expert_timing_delta_u64(
+                    current.pread_pool_begin_calls,
+                    previous.pread_pool_begin_calls),
+        .pread_pool_sync_fallbacks =
+            ds4_gpu_stream_expert_timing_delta_u64(
+                    current.pread_pool_sync_fallbacks,
+                    previous.pread_pool_sync_fallbacks),
+        .pread_pool_begin_ms =
+            ds4_gpu_stream_expert_timing_delta_f64(
+                    current.pread_pool_begin_ms,
+                    previous.pread_pool_begin_ms),
+        .pread_load_waits =
+            ds4_gpu_stream_expert_timing_delta_u64(
+                    current.pread_load_waits,
+                    previous.pread_load_waits),
+        .pread_overlap_ms =
+            ds4_gpu_stream_expert_timing_delta_f64(
+                    current.pread_overlap_ms,
+                    previous.pread_overlap_ms),
+        .pread_block_ms =
+            ds4_gpu_stream_expert_timing_delta_f64(
+                    current.pread_block_ms,
+                    previous.pread_block_ms),
     };
 }
 
@@ -4602,7 +4711,7 @@ static void ds4_gpu_stream_expert_timing_print(
         cache_layer_count != 0.0 ?
             (double)s.cache_missing_experts / cache_layer_count : 0.0;
     fprintf(stderr,
-            "ds4:   streaming expert timing %s selected_calls=%llu read_avg=%.3f ms sync_avg=%.3f ms copy_avg=%.3f ms bind_avg=%.3f ms read_total=%.3f ms sync_total=%.3f ms copy_total=%.3f ms bind_total=%.3f ms split_layers=%llu resident_experts_avg=%.2f missing_experts_avg=%.2f resident_submit_avg=%.3f ms missing_bind_avg=%.3f ms resident_submit_total=%.3f ms missing_bind_total=%.3f ms missing_load_avg=%.3f ms missing_slot_avg=%.3f ms missing_prune_avg=%.3f ms missing_addr_avg=%.3f ms missing_wait_avg=%.3f ms missing_wait_total=%.3f ms load_calls=%llu load_prepare_avg=%.3f ms load_pread_avg=%.3f ms load_install_avg=%.3f ms prepare_batch_reuse_calls=%llu prepare_batch_reuse_avg=%.3f ms prepare_batch_reuse_total=%.3f ms prepare_buffer_calls=%llu prepare_buffer_avg=%.3f ms prepare_buffer_total=%.3f ms prepare_task_experts=%llu prepare_task_avg=%.3f ms prepare_task_total=%.3f ms reuse_scan_calls=%llu reuse_scan_entries_avg=%.1f reuse_scan_avg=%.3f ms reuse_scan_total=%.3f ms reuse_clear_total=%.3f ms readahead_calls=%llu readahead_avg=%.3f ms readahead_total=%.3f ms readahead_gib=%.2f cache_all_resident=%llu cache_all_missing=%llu cache_mixed=%llu cache_resident_avg=%.2f cache_missing_avg=%.2f\n",
+            "ds4:   streaming expert timing %s selected_calls=%llu read_avg=%.3f ms sync_avg=%.3f ms copy_avg=%.3f ms bind_avg=%.3f ms read_total=%.3f ms sync_total=%.3f ms copy_total=%.3f ms bind_total=%.3f ms split_layers=%llu resident_experts_avg=%.2f missing_experts_avg=%.2f resident_submit_avg=%.3f ms missing_bind_avg=%.3f ms resident_submit_total=%.3f ms missing_bind_total=%.3f ms missing_load_avg=%.3f ms missing_slot_avg=%.3f ms missing_prune_avg=%.3f ms missing_addr_avg=%.3f ms missing_wait_avg=%.3f ms missing_wait_total=%.3f ms load_calls=%llu load_prepare_avg=%.3f ms load_pread_avg=%.3f ms load_install_avg=%.3f ms prepare_batch_reuse_calls=%llu prepare_batch_reuse_avg=%.3f ms prepare_batch_reuse_total=%.3f ms prepare_buffer_calls=%llu prepare_buffer_avg=%.3f ms prepare_buffer_total=%.3f ms prepare_task_experts=%llu prepare_task_avg=%.3f ms prepare_task_total=%.3f ms reuse_scan_calls=%llu reuse_scan_entries_avg=%.1f reuse_scan_avg=%.3f ms reuse_scan_total=%.3f ms reuse_clear_total=%.3f ms readahead_calls=%llu readahead_avg=%.3f ms readahead_total=%.3f ms readahead_gib=%.2f cache_all_resident=%llu cache_all_missing=%llu cache_mixed=%llu cache_resident_avg=%.2f cache_missing_avg=%.2f residency_calls=%llu residency_avg=%.3f ms prune_layer_calls=%llu prune_layer_avg=%.3f ms prune_layer_evictions=%llu prune_global_calls=%llu prune_global_avg=%.3f ms prune_global_evictions=%llu prune_global_scans=%llu pread_pool_begin_calls=%llu pread_pool_sync_fallbacks=%llu pread_pool_begin_avg=%.3f ms pread_load_waits=%llu pread_overlap_avg=%.3f ms pread_block_avg=%.3f ms\n",
             scope ? scope : "total",
             (unsigned long long)s.selected_calls,
             selected_read_avg,
@@ -4652,7 +4761,29 @@ static void ds4_gpu_stream_expert_timing_print(
             (unsigned long long)s.cache_all_missing_layers,
             (unsigned long long)s.cache_mixed_layers,
             cache_resident_experts_avg,
-            cache_missing_experts_avg);
+            cache_missing_experts_avg,
+            (unsigned long long)s.residency_calls,
+            s.residency_calls != 0 ?
+                s.residency_ms / (double)s.residency_calls : 0.0,
+            (unsigned long long)s.prune_layer_calls,
+            s.prune_layer_calls != 0 ?
+                s.prune_layer_ms / (double)s.prune_layer_calls : 0.0,
+            (unsigned long long)s.prune_layer_evictions,
+            (unsigned long long)s.prune_global_calls,
+            s.prune_global_calls != 0 ?
+                s.prune_global_ms / (double)s.prune_global_calls : 0.0,
+            (unsigned long long)s.prune_global_evictions,
+            (unsigned long long)s.prune_global_scans,
+            (unsigned long long)s.pread_pool_begin_calls,
+            (unsigned long long)s.pread_pool_sync_fallbacks,
+            s.pread_pool_begin_calls != 0 ?
+                s.pread_pool_begin_ms /
+                    (double)s.pread_pool_begin_calls : 0.0,
+            (unsigned long long)s.pread_load_waits,
+            s.pread_load_waits != 0 ?
+                s.pread_overlap_ms / (double)s.pread_load_waits : 0.0,
+            s.pread_load_waits != 0 ?
+                s.pread_block_ms / (double)s.pread_load_waits : 0.0);
 }
 
 static void ds4_gpu_print_task_memory_report(void) {
@@ -15220,6 +15351,53 @@ static void ds4_gpu_stream_expert_timing_note_reuse_clear(double ms) {
     g_stream_expert_timing_reuse_clear_ms += ms;
 }
 
+static void ds4_gpu_stream_expert_timing_note_residency_scan(double ms) {
+    if (!ds4_gpu_stream_expert_timing_summary_enabled()) return;
+    g_stream_expert_timing_residency_calls++;
+    g_stream_expert_timing_residency_ms += ms;
+}
+
+static void ds4_gpu_stream_expert_timing_note_prune_layer(
+        double   ms,
+        uint32_t evictions) {
+    if (!ds4_gpu_stream_expert_timing_summary_enabled()) return;
+    g_stream_expert_timing_prune_layer_calls++;
+    g_stream_expert_timing_prune_layer_ms += ms;
+    g_stream_expert_timing_prune_layer_evictions += evictions;
+}
+
+static void ds4_gpu_stream_expert_timing_note_prune_global(
+        double   ms,
+        uint32_t evictions,
+        uint64_t scans) {
+    if (!ds4_gpu_stream_expert_timing_summary_enabled()) return;
+    g_stream_expert_timing_prune_global_calls++;
+    g_stream_expert_timing_prune_global_ms += ms;
+    g_stream_expert_timing_prune_global_evictions += evictions;
+    g_stream_expert_timing_prune_global_scans += scans;
+}
+
+static void ds4_gpu_stream_expert_timing_note_pread_pool_begin(
+        double ms,
+        int    used_pool) {
+    if (!ds4_gpu_stream_expert_timing_summary_enabled()) return;
+    if (used_pool) {
+        g_stream_expert_timing_pread_pool_begin_calls++;
+        g_stream_expert_timing_pread_pool_begin_ms += ms;
+    } else {
+        g_stream_expert_timing_pread_pool_sync_fallbacks++;
+    }
+}
+
+static void ds4_gpu_stream_expert_timing_note_pread_wait(
+        double overlap_ms,
+        double block_ms) {
+    if (!ds4_gpu_stream_expert_timing_summary_enabled()) return;
+    g_stream_expert_timing_pread_load_waits++;
+    g_stream_expert_timing_pread_overlap_ms += overlap_ms;
+    g_stream_expert_timing_pread_block_ms += block_ms;
+}
+
 static void ds4_gpu_stream_expert_timing_note_cache_class(
         uint32_t resident_mask,
         uint32_t missing_mask) {
@@ -17295,6 +17473,21 @@ static void ds4_gpu_stream_expert_cache_clear_all(int reset_stats) {
         g_stream_expert_timing_cache_mixed_layers = 0;
         g_stream_expert_timing_cache_resident_experts = 0;
         g_stream_expert_timing_cache_missing_experts = 0;
+        g_stream_expert_timing_residency_calls = 0;
+        g_stream_expert_timing_residency_ms = 0.0;
+        g_stream_expert_timing_prune_layer_calls = 0;
+        g_stream_expert_timing_prune_layer_ms = 0.0;
+        g_stream_expert_timing_prune_layer_evictions = 0;
+        g_stream_expert_timing_prune_global_calls = 0;
+        g_stream_expert_timing_prune_global_ms = 0.0;
+        g_stream_expert_timing_prune_global_evictions = 0;
+        g_stream_expert_timing_prune_global_scans = 0;
+        g_stream_expert_timing_pread_pool_begin_calls = 0;
+        g_stream_expert_timing_pread_pool_sync_fallbacks = 0;
+        g_stream_expert_timing_pread_pool_begin_ms = 0.0;
+        g_stream_expert_timing_pread_load_waits = 0;
+        g_stream_expert_timing_pread_overlap_ms = 0.0;
+        g_stream_expert_timing_pread_block_ms = 0.0;
         g_stream_expert_timing_last_report =
             (ds4_gpu_stream_expert_timing_snapshot){0};
         memset(g_stream_expert_cache_layer_hits,
@@ -17334,6 +17527,10 @@ static void ds4_gpu_stream_expert_cache_prune_layer(
         uint32_t n_selected,
         const int32_t *protect_ids,
         uint32_t n_protect) {
+    const int prune_timing =
+        ds4_gpu_stream_expert_timing_summary_enabled();
+    const double prune_t0 = prune_timing ? ds4_gpu_now_ms() : 0.0;
+    uint32_t prune_evictions = 0;
     if (layer >= DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER) return;
     uint32_t cap = ds4_gpu_stream_expert_cache_effective_cap(layer,
                                                              n_total_expert,
@@ -17367,7 +17564,13 @@ static void ds4_gpu_stream_expert_cache_prune_layer(
             }
         }
         if (victim == UINT32_MAX) break;
+        prune_evictions++;
         ds4_gpu_stream_expert_cache_clear_entry(layer, victim, 1);
+    }
+    if (prune_timing) {
+        ds4_gpu_stream_expert_timing_note_prune_layer(
+                ds4_gpu_now_ms() - prune_t0,
+                prune_evictions);
     }
 }
 
@@ -17985,9 +18188,22 @@ static void ds4_gpu_stream_expert_cache_prune_global(
         uint32_t protect_layer,
         const int32_t *protect_ids,
         uint32_t n_protect) {
+    const int prune_timing =
+        ds4_gpu_stream_expert_timing_summary_enabled();
+    const double prune_t0 = prune_timing ? ds4_gpu_now_ms() : 0.0;
     const uint32_t budget = ds4_gpu_stream_expert_cache_configured_budget();
-    if (budget == 0 || g_stream_expert_cache_entry_count <= budget) return;
+    if (budget == 0 || g_stream_expert_cache_entry_count <= budget) {
+        if (prune_timing) {
+            ds4_gpu_stream_expert_timing_note_prune_global(
+                    ds4_gpu_now_ms() - prune_t0,
+                    0,
+                    0);
+        }
+        return;
+    }
 
+    uint64_t prune_scans = 0;
+    uint32_t prune_evictions = 0;
     while (g_stream_expert_cache_entry_count > budget) {
         uint32_t victim_layer = UINT32_MAX;
         uint32_t victim_expert = UINT32_MAX;
@@ -17999,6 +18215,7 @@ static void ds4_gpu_stream_expert_cache_prune_global(
             for (uint32_t expert = 0;
                  expert < DS4_METAL_STREAM_EXPERT_CACHE_MAX_EXPERT;
                  expert++) {
+                if (prune_timing) prune_scans++;
                 ds4_gpu_stream_expert_cache_entry *e =
                     &g_stream_expert_cache[layer][expert];
                 if (!e->valid ||
@@ -18021,7 +18238,14 @@ static void ds4_gpu_stream_expert_cache_prune_global(
             }
         }
         if (victim_layer == UINT32_MAX || victim_expert == UINT32_MAX) break;
+        prune_evictions++;
         ds4_gpu_stream_expert_cache_clear_entry(victim_layer, victim_expert, 1);
+    }
+    if (prune_timing) {
+        ds4_gpu_stream_expert_timing_note_prune_global(
+                ds4_gpu_now_ms() - prune_t0,
+                prune_evictions,
+                prune_scans);
     }
 }
 
@@ -18456,10 +18680,17 @@ static int ds4_gpu_stream_expert_pending_load_finish(
     if (!p->active) return 1;
 
     const double start_ms = p->start_ms;
+    const double wait_t0 = ds4_gpu_now_ms();
     if (!ds4_gpu_stream_expert_pread_pool_wait()) {
         ds4_gpu_stream_expert_pending_load_release_buffers(p);
         p->active = 0;
         return 0;
+    }
+    if (ds4_gpu_stream_expert_timing_summary_enabled()) {
+        const double wait_t1 = ds4_gpu_now_ms();
+        ds4_gpu_stream_expert_timing_note_pread_wait(
+                wait_t0 - start_ms,
+                wait_t1 - wait_t0);
     }
     const double elapsed_ms = ds4_gpu_now_ms() - start_ms;
     p->active = 0;
@@ -18584,6 +18815,7 @@ int ds4_gpu_stream_expert_cache_begin_selected_load(
     }
     memset(p->tasks, 0, sizeof(p->tasks));
 
+    const double residency_t0 = load_timing ? ds4_gpu_now_ms() : 0.0;
     for (uint32_t i = 0; i < n_selected; i++) {
         if (selected_ids[i] < 0 || (uint32_t)selected_ids[i] >= n_total_expert) {
             fprintf(stderr,
@@ -18644,6 +18876,10 @@ int ds4_gpu_stream_expert_cache_begin_selected_load(
         p->source_slots[i] = i;
         p->missing_mask |= 1u << i;
         p->load_slots[p->n_loads++] = i;
+    }
+    if (load_timing) {
+        ds4_gpu_stream_expert_timing_note_residency_scan(
+                ds4_gpu_now_ms() - residency_t0);
     }
     if (p->n_loads == 0) return 1;
 
@@ -18768,9 +19004,15 @@ int ds4_gpu_stream_expert_cache_begin_selected_load(
     if (load_timing) {
         p->prepare_ms = p->start_ms - load_prepare_t0;
     }
+    const double pool_t0 = load_timing ? ds4_gpu_now_ms() : 0.0;
     if (ds4_gpu_stream_expert_pread_pool_begin(p->tasks,
                                                p->n_tasks,
                                                n_workers)) {
+        if (load_timing) {
+            ds4_gpu_stream_expert_timing_note_pread_pool_begin(
+                    ds4_gpu_now_ms() - pool_t0,
+                    1);
+        }
         p->active = 1;
         if (ds4_gpu_stream_expert_pending_load_profile_enabled()) {
             fprintf(stderr,
@@ -18783,6 +19025,11 @@ int ds4_gpu_stream_expert_cache_begin_selected_load(
         return 1;
     }
 
+    if (load_timing) {
+        ds4_gpu_stream_expert_timing_note_pread_pool_begin(
+                ds4_gpu_now_ms() - pool_t0,
+                0);
+    }
     uint64_t read_bytes = 0;
     double read_ms = 0.0;
     if (!ds4_gpu_stream_expert_pread_tasks(p->tasks,
