@@ -166,6 +166,13 @@ instrumenting that loop, not isolating the kernel. The routed figure above stays
 D minus the other six stages, all six measured through the real decode path
 (4.62 + 3.27 + 5.98 + 3.37 + 1.75 + 1.20 = 20.19 ms of 40.32).
 
+Section 8 does exactly that, and the answer is that neither of the two is the
+problem. Note also that the V4.1 decode step does not go through
+`metal_graph_encode_decode_layer_phase` at all: `ds41_graph_step` (`ds4.c:41834`)
+drives `ds41_graph_layer` -> `ds41_moe` -> `ds41_moe_partial` (`ds4.c:41029`),
+which calls `ds4_gpu_routed_moe_one_tensor` directly. The paging is therefore
+*inside* that function, not in the encoder's override calls.
+
 One caution that survives from the hypothesis this section tested: the V4.1
 "exact" paths are gated by `ds4_gpu_dsv41_exact_admitted()`, which returns false
 whenever `g_ssd_streaming_mode` is set -- and streaming is the only mode this
@@ -173,6 +180,107 @@ model fits in on a 128 GiB host. They also require
 `ds4_gpu_device_is_m3_ultra()`. **On M5 Max in streaming mode the engine is
 structurally excluded from those tuned paths**, which is a separate reason to
 expect headroom and is not addressed by anything measured here.
+
+## 8. Neither the kernel nor the paging loop: it is the per-layer drain (2026-10-06, third window)
+
+The section-7 conclusion was that the two costs cannot be separated. That is
+true of the real decode path, but not of the kernel: the kernel *can* be timed
+if its address table is populated first. `tests/test_deepseek41_dspark.c
+--routed-split-ssd` does that. It runs 72 real decode steps (which is also what
+fills the cache), reads the per-(layer, expert) hit snapshot the streaming cache
+writes while it runs, and then binds, for each of the 40 layers, the six experts
+*that decode actually selected* -- so the table is valid and the experts are
+resident -- before timing the dispatch. Arms, best of four, per token:
+
+| arm | ms/token | GB/s | of which drain |
+|---|---|---|---|
+| A  gather only, one command buffer | **6.76** | **353** | 6.61 |
+| B  gather only, flush between layers | 7.05 | 339 | 6.52 |
+| C  A + per-layer `begin_selected_load` | **6.75** | **354** | 6.60 |
+| E  per-layer drain only, nothing dispatched | 0.87 | -- | 0.01 |
+| D  gather + per-layer drain (what the engine does) | **13.62** | 175 | 0.36 |
+
+The routed path moves 2.22 GiB per token (6 of 384 experts, 9.49 MiB each:
+gate 2.90 + up 2.90 + down 3.69 MiB), so arm A is **8.494 G weights in 6.61 ms
+= 1285 G weights/s** -- the highest weight rate anywhere in this engine, 1.8x
+the dense Q8 `q_b` matvec's 700 G/s. The earlier "116 GB/s, 6x off the dense
+kernel" was a bytes-based reading of a weights-bound engine; measured alone,
+the Q2 gather is the *fast* one.
+
+**Arm C is the answer to the question.** Adding the paging decision
+(`ds4_gpu_stream_expert_cache_begin_selected_load`, the residency check and slot
+setup the host runs per layer) changes arm A by **-0.01 ms**. The host paging
+loop is free. So is the readback copy itself: over 64 decode steps the streaming
+cache reports `read_avg 0.823 ms` of which `copy_avg 0.000` -- every microsecond
+of it is `sync_avg`, i.e. `ds4_gpu_end_commands()`.
+
+And that sync is the cost. `ds4_gpu_routed_moe_one_tensor` needs the six expert
+ids **on the host** to pick cache slots, so it drains the command queue, reads
+them back and reopens a buffer -- per layer, 40 times a token. Arm E puts the
+empty round trip at 0.87 ms/token; arm D, the same dispatch with that drain in
+place, costs **6.86 ms more than arm A** -- almost exactly the kernel's own GPU
+time, which the drain now fully exposes instead of overlapping. This is what
+`DS4_METAL_DISABLE_V41_DECODE_QUEUE` and the per-layer `flush_commands` in
+`ds41_graph_step` exist to avoid; the drain inside the dispatch defeats them.
+The host profile agrees: `DS4_METAL_V41_DECODE_HOST_PROFILE=1` puts **43.401 of
+43.01 ms** of the step inside the layer loop, with 1969.3 compute encodes and
+139.1 blit copies per step.
+
+**Where the ~20.13 ms actually goes.** The six non-routed stages sum to
+20.19 ms and the routed bucket is D minus those, so the bucket decomposes as:
+
+| term | ms/token | how measured |
+|---|---|---|
+| gather kernel | 6.6 | arm A |
+| per-layer drain / lost overlap | 6.9 | arm D - arm A |
+| expert-cache misses | 6.0 | 386 loads / 64 tokens at ~1.0 ms (`load_prepare` 0.385 + `load_pread` 0.611 + readahead) |
+| router, glue, readahead residue | ~0.6 | remainder |
+| **total** | **~20.1** | |
+
+Two cautions on the miss term: it is *host* time inside the same dispatch
+(`bind_avg` 0.149 ms over 2560 calls, rising to ~1.6 ms on the 15% of calls with
+a miss), and it is logical `pread` traffic, not physical disk -- `miss_pread` is
+57 MiB/token while the process's own `ri_diskio_bytesread` stays at 0.8 MB/token.
+The page cache is absorbing it. Section 1's "the disk is not involved" stands;
+the *path* to the disk still costs.
+
+**Consequences.**
+
+- **Do not touch the gather kernel.** It is the fastest kernel in the engine per
+  weight, and it is only 6.6 of the 20 ms. Anything spent on IQ2_XXS/Q2_K gather
+  micro-optimisation buys at most a third of the bucket.
+- **Do not touch the paging decision.** `begin_selected_load` costs nothing
+  (arm C).
+- The two real targets are the **per-layer readback drain** (6.9 ms) and the
+  **miss path** (6.0 ms). The first already has two implementations in the tree
+  that move the readback off the critical path: the generic decode path's
+  `metal_graph_selected_async_load_*` worker (`ds4.c:23532`), which the V4.1
+  step does not use, and card I's GPU-binding service thread (PR #1178,
+  measured +2.7-3.2%). Both keep the drain *as a drain* -- they only remove the
+  host from the critical path around it -- which is consistent with card I's
+  small gain and leaves the 6.9 ms figure as the ceiling for that shape of fix.
+- `DS4_METAL_ENABLE_STREAMING_FULL_EXPERT_ADDR_TABLE` looks like the readback-free
+  answer (`selected_ids_available = false`, no drain) but it is not: it binds the
+  *whole layer's* expert tensors out of the model map (3.64 GiB per layer), which
+  is a resident-mode feature and exactly what streaming cannot map.
+
+The D measured in this window is 43.01 ms (23.25 t/s), against 40.2-40.3 ms in
+the first two windows at the same 82 GiB / 8078-expert configuration; the arms
+are self-consistent within a run and are compared only against that run's D.
+
+## Reproduction (additions)
+
+```sh
+DS4_TEST_STREAMING_CACHE_GIB=82 DS4_TEST_STREAMING_CACHE_EXPERTS=8000 \
+DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1 DS4_METAL_V41_DECODE_HOST_PROFILE=1 \
+  ./tests/test_deepseek41_dspark gguf/DeepSeek-V4.1-Flash-Q2.gguf \
+  --routed-split-ssd tests/long_context_security_prompt.txt
+```
+
+`--routed-split-ssd` prints D, the arms above, and (with the two env vars) the
+streaming cache's own per-layer counters and the V4.1 host profile. It needs
+~93 GiB of process footprint at that cache size; the run above peaked at 75.1
+GiB resident with swap unchanged.
 
 ## Reproduction
 
