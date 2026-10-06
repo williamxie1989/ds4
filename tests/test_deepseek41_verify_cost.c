@@ -519,6 +519,269 @@ done:
     return rc;
 }
 
+/* Measurement: the routed-expert half of a decode step, split into the gather
+ * kernel and the host paging that feeds it.
+ *
+ * The engine interleaves the two across command buffers -- the paging is a
+ * precondition for the dispatch -- so no call that skips the paging can time
+ * the kernel: it would dispatch against an unpopulated address table. This
+ * times the kernel with the table already populated and nothing on the host
+ * between dispatches, then adds the real path's costs back one arm at a time:
+ *
+ *   warm   one untimed pass, so any expert the arms bind is resident first
+ *   A      one command buffer, one gather dispatch per layer, nothing between
+ *   B      the same, with a command-buffer flush between dispatches -- what
+ *          the real per-layer encoder pays, twice per layer
+ *   C      arm A plus the per-layer selected-expert load, the paging decision
+ *          the real path runs on its worker thread
+ *
+ * The expert ids are the ones this process's own decode selects: the streaming
+ * cache writes a per-(layer, expert) hit snapshot while it runs, so each layer
+ * binds six experts that a decode really chose and that are therefore resident.
+ * A decode step's routed bytes are 2*gate + down per expert per layer. */
+static bool routed_split_read_hotlist(const char *path, int32_t *ids, uint32_t n_layer,
+                                      uint32_t n_used) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) return false;
+    uint64_t best[64][DS4_MAX_EXPERT_USED];
+    int32_t best_id[64][DS4_MAX_EXPERT_USED];
+    if (n_layer > 64) { fclose(fp); return false; }
+    for (uint32_t l = 0; l < n_layer; l++)
+        for (uint32_t k = 0; k < n_used; k++) { best[l][k] = 0; best_id[l][k] = -1; }
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        if (line[0] == '#') continue;
+        unsigned layer = 0, expert = 0;
+        unsigned long long hits = 0;
+        if (sscanf(line, "%u %u %llu", &layer, &expert, &hits) != 3) continue;
+        if (layer >= n_layer || expert >= DS4_MAX_EXPERT || hits == 0) continue;
+        for (uint32_t k = 0; k < n_used; k++) {
+            if (hits <= best[layer][k]) continue;
+            for (uint32_t m = n_used - 1; m > k; m--) {
+                best[layer][m] = best[layer][m - 1];
+                best_id[layer][m] = best_id[layer][m - 1];
+            }
+            best[layer][k] = hits;
+            best_id[layer][k] = (int32_t)expert;
+            break;
+        }
+    }
+    fclose(fp);
+    for (uint32_t l = 0; l < n_layer; l++) {
+        if (best_id[l][n_used - 1] < 0) return false;
+        for (uint32_t k = 0; k < n_used; k++) ids[l * n_used + k] = best_id[l][k];
+    }
+    return true;
+}
+
+static bool routed_split_load(const ds4_model          *m,
+                              const ds4_layer_weights  *l,
+                              uint32_t                  il,
+                              uint64_t                  gate_expert,
+                              uint64_t                  down_expert,
+                              const int32_t            *ids) {
+    const ds4_gpu_stream_expert_table table =
+        graph_stream_expert_table_make(m, l, il, gate_expert, down_expert);
+    return ds4_gpu_stream_expert_cache_begin_selected_load(&table, ids,
+                                                           DS4_N_EXPERT_USED) != 0;
+}
+
+static bool routed_split_dispatch(ds41_gpu_graph          *g,
+                                  const ds4_model         *m,
+                                  const ds4_layer_weights *l,
+                                  uint32_t                 il,
+                                  uint64_t                 gate_row,
+                                  uint64_t                 gate_expert,
+                                  uint64_t                 down_row,
+                                  uint64_t                 down_expert) {
+    return ds4_gpu_routed_moe_one_tensor(g->routed, g->gate, g->up, g->mid, g->experts,
+               m->map, m->size,
+               l->ffn_gate_exps->abs_offset, l->ffn_up_exps->abs_offset,
+               l->ffn_down_exps->abs_offset,
+               l->ffn_gate_exps->type, l->ffn_down_exps->type,
+               gate_expert, gate_row, down_expert, down_row,
+               DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD,
+               g->selected, g->route_weights,
+               DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, g->norm, NULL, il,
+               false) != 0;
+}
+
+static int routed_split_ssd(const char *model, const char *prompt_path) {
+    ds4_engine *engine = NULL;
+    ds4_session *session = NULL;
+    ds4_tokens prompt = {0}, prefix = {0};
+    char err[256] = {0};
+    char *text = read_text(prompt_path);
+    char hot_path[256];
+    int rc = 1;
+    const uint32_t n_layer = 40;
+    int32_t ids[64 * DS4_MAX_EXPERT_USED];
+    uint64_t gate_row_b[64], gate_exp_b[64], down_row_b[64], down_exp_b[64];
+    ds4_engine_options opt = {.model_path = model, .backend = DS4_BACKEND_METAL,
+        .context_size = 4096, .power_percent = 100};
+    snprintf(hot_path, sizeof(hot_path), "/tmp/ds4_routed_split_hotlist_%d.txt", (int)getpid());
+    /* Recording is what arms the snapshot writer, so both names must point at
+     * the same file: DS4_MOE_RECORD_SELECTED_HOTLIST turns the per-(layer,
+     * expert) counters on, and ..._SNAPSHOT is the one the writer reads. */
+    setenv("DS4_MOE_RECORD_SELECTED_HOTLIST", hot_path, 1);
+    setenv("DS4_MOE_RECORD_SELECTED_HOTLIST_SNAPSHOT", hot_path, 1);
+    setenv("DS4_MOE_RECORD_SELECTED_HOTLIST_SNAPSHOT_MS", "50", 1);
+    opt.ssd_streaming = true;
+    opt.ssd_streaming_cache_bytes = ds41_test_streaming_cache_bytes();
+    const char *experts = getenv("DS4_TEST_STREAMING_CACHE_EXPERTS");
+    opt.ssd_streaming_cache_experts = experts ? (uint32_t)atoi(experts) : 9000u;
+    REQUIRE(text && ds4_engine_open(&engine, &opt) == 0);
+    REQUIRE(DS4_N_LAYER == n_layer && DS4_N_EXPERT_USED <= DS4_MAX_EXPERT_USED);
+    ds4_tokenize_text(engine, text, &prompt);
+    REQUIRE(ds4_session_create(&session, engine, 4096) == 0);
+    const int start = 1024;
+    for (int i = 0; i < start; i++) ds4_tokens_push(&prefix, prompt.v[i]);
+    REQUIRE(ds4_session_sync(session, &prefix, err, sizeof(err)) == 0);
+    for (int warm = 0; warm < 8; warm++)
+        REQUIRE(ds4_session_eval(session, prompt.v[start + warm], err, sizeof(err)) == 0);
+
+    /* The real thing first, so the arms are read against a decode step this
+     * process actually measured, and so the streaming cache's own counters
+     * bracket exactly the timed window when the summary env is on. */
+    const bool report = getenv("DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY") != NULL;
+    if (report) ds4_gpu_print_memory_report("before the decode window");
+    double d_before = 0, d_after = 0;
+    for (int phase = 0; phase < 2; phase++) {
+        const double t = now_sec();
+        for (int i = 0; i < 32; i++)
+            REQUIRE(ds4_session_eval(session, prompt.v[start + 8 + i], err, sizeof(err)) == 0);
+        const double ms = (now_sec() - t) * 1000.0 / 32.0;
+        if (!phase) d_before = ms; else d_after = ms;
+    }
+    if (report) ds4_gpu_print_memory_report("after the decode window");
+    fprintf(stderr, "one-token decode D = %.2f ms (before %.2f, after %.2f), %.2f t/s\n",
+            0.5 * (d_before + d_after), d_before, d_after,
+            1000.0 / (0.5 * (d_before + d_after)));
+
+    /* The snapshot thread publishes every 50 ms; 64 decode steps is far more
+     * than it needs, so one more tick is all this waits for. If the snapshot
+     * is unavailable the arms still run, against a spread of experts that the
+     * untimed warm pass loads first. */
+    struct timespec nap = {.tv_sec = 0, .tv_nsec = 200000000l};
+    nanosleep(&nap, NULL);
+    const bool have_hotlist =
+        routed_split_read_hotlist(hot_path, ids, n_layer, DS4_N_EXPERT_USED);
+    if (!have_hotlist) {
+        for (uint32_t il = 0; il < n_layer; il++)
+            for (uint32_t k = 0; k < DS4_N_EXPERT_USED; k++)
+                ids[(size_t)il * DS4_N_EXPERT_USED + k] =
+                    (int32_t)((il * 37u + k * 101u + 5u) % DS4_N_EXPERT);
+    }
+    unlink(hot_path);
+    fprintf(stderr, "routed split: expert ids from %s\n",
+            have_hotlist ? "this run's own decode (hotlist snapshot)"
+                         : "a deterministic spread (no snapshot)");
+
+    ds41_gpu_graph *g = &session->ds41_graph;
+    const ds4_model *m = &engine->model;
+    const ds4_weights *w = &engine->weights;
+    uint64_t per_token = 0;
+    for (uint32_t il = 0; il < n_layer; il++) {
+        const ds4_layer_weights *l = &w->layer[il];
+        REQUIRE(tensor_nbytes(l->ffn_gate_exps->type, DS4_N_EMBD, &gate_row_b[il]) &&
+                tensor_nbytes(l->ffn_down_exps->type, DS4_N_FF_EXP, &down_row_b[il]));
+        gate_exp_b[il] = gate_row_b[il] * DS4_N_FF_EXP;
+        down_exp_b[il] = down_row_b[il] * DS4_N_EMBD;
+        per_token += (uint64_t)DS4_N_EXPERT_USED *
+                     (2u * gate_exp_b[il] + down_exp_b[il]);
+    }
+    fprintf(stderr,
+            "routed split: %u layers, %u of %u experts, %.2f GiB per token, "
+            "gate %.2f MiB + up %.2f MiB + down %.2f MiB per expert\n",
+            n_layer, (unsigned)DS4_N_EXPERT_USED, (unsigned)DS4_N_EXPERT,
+            (double)per_token / 1073741824.0,
+            (double)gate_exp_b[0] / 1048576.0, (double)gate_exp_b[0] / 1048576.0,
+            (double)down_exp_b[0] / 1048576.0);
+
+/* The window has to span the whole layer loop, not just the final drain: an
+ * arm whose body drains per layer (D, E) would otherwise be timed by the last
+ * layer alone and report a fortieth of its cost. total = host encode + every
+ * drain the body performed; drain = only the drain that closed the window. */
+#define ROUTED_SPLIT_ARM(label, body) do {                                          \
+        double best = 1e30, best_drain = 0.0;                                       \
+        for (int rep = 0; rep < 4; rep++) {                                         \
+            REQUIRE(ds4_gpu_begin_commands());                                      \
+            bool ok = true;                                                         \
+            const double loop0 = now_sec();                                         \
+            for (uint32_t il = 0; ok && il < n_layer; il++) {                       \
+                body;                                                               \
+            }                                                                       \
+            const double loop1 = now_sec();                                         \
+            REQUIRE(ok && ds4_gpu_end_commands());                                  \
+            const double end = now_sec();                                           \
+            if ((end - loop0) * 1000.0 < best) {                                    \
+                best = (end - loop0) * 1000.0;                                      \
+                best_drain = (end - loop1) * 1000.0;                                \
+            }                                                                       \
+        }                                                                           \
+        fprintf(stderr, "%-44s %7.2f ms/token total (%6.2f encode, %6.2f drain) "   \
+                        "%6.1f GB/s\n", label, best, best - best_drain, best_drain,  \
+                (double)per_token / 1e9 / (best / 1000.0));                         \
+    } while (0)
+
+    ROUTED_SPLIT_ARM("warm  load + first pass",
+        ok = routed_split_load(m, &w->layer[il], il, gate_exp_b[il], down_exp_b[il],
+                               ids + (size_t)il * DS4_N_EXPERT_USED) &&
+             ds4_gpu_routed_moe_set_selected_override(
+                 ids + (size_t)il * DS4_N_EXPERT_USED, DS4_N_EXPERT_USED) != 0 &&
+             routed_split_dispatch(g, m, &w->layer[il], il, gate_row_b[il],
+                                   gate_exp_b[il], down_row_b[il], down_exp_b[il]));
+
+    ROUTED_SPLIT_ARM("A  gather only, one command buffer",
+        ok = ds4_gpu_routed_moe_set_selected_override(
+                 ids + (size_t)il * DS4_N_EXPERT_USED, DS4_N_EXPERT_USED) != 0 &&
+             routed_split_dispatch(g, m, &w->layer[il], il, gate_row_b[il],
+                                   gate_exp_b[il], down_row_b[il], down_exp_b[il]));
+
+    ROUTED_SPLIT_ARM("B  gather only, flush between layers",
+        ok = ds4_gpu_routed_moe_set_selected_override(
+                 ids + (size_t)il * DS4_N_EXPERT_USED, DS4_N_EXPERT_USED) != 0 &&
+             routed_split_dispatch(g, m, &w->layer[il], il, gate_row_b[il],
+                                   gate_exp_b[il], down_row_b[il], down_exp_b[il]) &&
+             ds4_gpu_flush_commands() != 0);
+
+    ROUTED_SPLIT_ARM("C  gather + per-layer expert load",
+        ok = routed_split_load(m, &w->layer[il], il, gate_exp_b[il], down_exp_b[il],
+                               ids + (size_t)il * DS4_N_EXPERT_USED) &&
+             ds4_gpu_routed_moe_set_selected_override(
+                 ids + (size_t)il * DS4_N_EXPERT_USED, DS4_N_EXPERT_USED) != 0 &&
+             routed_split_dispatch(g, m, &w->layer[il], il, gate_row_b[il],
+                                   gate_exp_b[il], down_row_b[il], down_exp_b[il]));
+
+    /* E is the round trip on its own: drain and reopen per layer with nothing
+     * encoded between, which is the floor D has to pay on top of A. */
+    ROUTED_SPLIT_ARM("E  per-layer drain only, nothing dispatched",
+        ok = ds4_gpu_end_commands() != 0 && ds4_gpu_begin_commands() != 0);
+
+    /* D is what the engine actually does. ds41_moe_partial dispatches the
+     * gather with force_resident false and no selected override armed, so
+     * ds4_gpu_routed_moe_one_tensor drains the command queue, reads the ids
+     * back and reopens a buffer -- per layer, 40 times a token, which is the
+     * round trip DS4_METAL_DISABLE_V41_DECODE_QUEUE exists to avoid. */
+    ROUTED_SPLIT_ARM("D  gather + per-layer drain (real path)",
+        ok = ds4_gpu_routed_moe_set_selected_override(
+                 ids + (size_t)il * DS4_N_EXPERT_USED, DS4_N_EXPERT_USED) != 0 &&
+             ds4_gpu_end_commands() != 0 &&
+             ds4_gpu_begin_commands() != 0 &&
+             routed_split_dispatch(g, m, &w->layer[il], il, gate_row_b[il],
+                                   gate_exp_b[il], down_row_b[il], down_exp_b[il]));
+#undef ROUTED_SPLIT_ARM
+    rc = 0;
+done:
+    if (err[0]) fprintf(stderr, "error: %s\n", err);
+    if (ds4_gpu_commands_active()) (void)ds4_gpu_end_commands();
+    ds4_tokens_free(&prefix); ds4_tokens_free(&prompt);
+    ds4_session_free(session);
+    ds4_engine_close(engine);
+    free(text);
+    return rc;
+}
+
 /* Measurement, not a check: what one decoded token actually reads.
  *
  * The stage timings are only interpretable against the bytes each stage moves,
@@ -920,6 +1183,8 @@ int main(int argc, char **argv) {
         return time_verify_scan(argv[1], argv[3], false);
     if (argc == 4 && !strcmp(argv[2], "--verify-scan-ssd"))
         return time_verify_scan(argv[1], argv[3], true);
+    if (argc == 4 && !strcmp(argv[2], "--routed-split-ssd"))
+        return routed_split_ssd(argv[1], argv[3]);
     if (argc == 3 && !strcmp(argv[2], "--weight-inventory"))
         return weight_inventory(argv[1]);
     if (argc == 4 && !strcmp(argv[2], "--short-prefill"))
@@ -936,6 +1201,7 @@ int main(int argc, char **argv) {
         return check_moe_bind_parity(argv[1]);
     fprintf(stderr, "usage: %s MODEL --verify-parity|--verify-parity-ssd"
                     "|--short-prefill|--short-prefill-ssd|--short-prefill-ssd-rows"
-                    "|--verify-timing|--verify-scan|--verify-scan-ssd PROMPT\n", argv[0]);
+                    "|--verify-timing|--verify-scan|--verify-scan-ssd"
+                    "|--routed-split-ssd PROMPT\n", argv[0]);
     return 2;
 }
