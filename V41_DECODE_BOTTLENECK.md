@@ -282,6 +282,95 @@ streaming cache's own per-layer counters and the V4.1 host profile. It needs
 ~93 GiB of process footprint at that cache size; the run above peaked at 75.1
 GiB resident with swap unchanged.
 
+## 9. The drain, priced in the real step: 6.3-6.5 ms of pure serialization (2026-10-06, fourth window)
+
+Section 8's D-arm gap (6.86 ms) was an isolated measurement: an empty command
+buffer holding one gather per layer, drained per layer. In the real step the
+drain window contains GPU work that has to finish anyway, so the *net* loss
+had never been measured -- and the one structural attempt so far (card I /
+PR #1178: move the readback onto a GPU-event-gated service thread) recovered
+only +2.7-3.2% (~1.3 ms), 5x less than the isolated gap. The two numbers had
+to be reconciled.
+
+The probe: a test-only, never-committed ablation inside the selected-id
+readback branch of `ds4_gpu_routed_moe_one_tensor` (`ds4_metal.m`, file-scope
+statics + the final `else`). It replays a **stale per-layer id set**: the
+first token records each layer's real ids, every later token rebinds that
+frozen set through the same `ds4_gpu_stream_selected_ids_prepare` path the
+override uses, so host and kernel see the same ids and the cache converges to
+240 resident experts. `DS4_METAL_V41_PROBE_STALE_IDS=2` keeps the drain (the
+readback real ids land in a scratch buffer and are discarded); `=1` skips the
+`end_commands`/`begin_commands` pair entirely and the command buffer stays
+open across layers -- exactly the chaining `ds41_graph_step` was designed
+for. Output is wrong by construction; only the timing is the point.
+
+Legs at 82 GiB / 8000 experts, one process per leg, decode-window deltas only
+(64 tokens, 2560 selected calls), same session:
+
+| leg | layers (host, ~= D) | D wall | drain/layer (sync_avg) | load_calls | bind_avg | window cache |
+|---|---|---|---|---|---|---|
+| live routing (no probe) | **44.962** | 44.74 | 0.855 ms | 386 (6.03/tok) | 0.150 ms | 2174 all_resident + 386 mixed, 0 all_missing |
+| PROBE=2 stale ids, drain kept | **38.900** | 37.94 | 0.848 ms | **0** | 0.002 ms | 2560/2560 all_resident |
+| PROBE=1 stale ids, drain skipped | **32.417** | 31.63 | **0.000 ms** | **0** | 0.002 ms | 2560/2560 all_resident |
+
+Both probe legs are identical workloads -- 1969.3 compute encodes and 139.1
+blits per step in both, `bind_avg` 0.002 in both, zero loads in both. The
+*only* variable is the 40-per-token drain. The two readings:
+
+- **The drain costs 6.48 ms/token net** (layers 38.900 -> 32.417; wall D
+  37.94 -> 31.63). Per layer the host waits 0.848 ms inside
+  `ds4_gpu_end_commands` (33.9 ms/token), of which 6.5 ms is exposed
+  serialization -- GPU idle while the host reopens and re-encodes -- and the
+  rest is work that would overlap anyway. Section 8's isolated 6.86 ms was
+  *not* inflated by the empty-CB geometry: the real step loses the same
+  6.3-6.5 ms.
+- **The steady-state miss cost is 6.1-6.8 ms/token** (live 44.96 -> stale
+  38.90 in layers; 44.74 -> 37.94 in D), arriving from exactly the 6.03
+  loads/token of section 8 and vanishing to zero when the ids stop moving:
+  pinned ids give 2560/2560 all-resident hits, `bind_avg` collapses 0.150 ->
+  0.002 ms, and `load_calls`, `reuse_scan_calls` and the whole prune/pread
+  machinery go silent. This also reconciles the T0 cross-check:
+  `bind_avg x 40 = 5.95 ms` ~= `load_calls x ~1.0 ms = 6.03` -- the 0.148 ms
+  of bind between the frozen and live legs *is* the miss-path bookkeeping
+  (slot prune + addr prepare), so the 6.0 ms miss term is real at this cache
+  size and it lives inside bind, not beside it.
+
+**Consequences.**
+
+1. **T3 (remove the drain) is worth >= 4 ms and card I had ~20% of it.**
+   Card I's shape -- host off the critical path, drain still a drain --
+   recovers the host sync time but not the GPU bubble at the 40 command-buffer
+   boundaries per token. The 6.5 ms is only recoverable by shape (b) of
+   section 8's option table (per-layer address table over cache buffers +
+   on-GPU id->mask kernel), which touches the registered red-line bind
+   surface (E0.3, DRIFT <= 7.6e-06). Not started; awaiting user adjudication.
+2. **T2 (miss path) stands: 6.03 loads/token confirmed in-session**, ~6 ms,
+   and its accounting is now bracketed: `load_prepare 0.383 + load_pread
+   0.613 + install 0.003 + reuse_scan 0.073 ms` per call accounts for most of
+   each ~1.0-1.16 ms load; the residue inside `bind` is where T2.0's prune
+   probes (`prune_layer`, `prune_global`) still have to look.
+3. Steady-state at this cache size is *both* penalties at once: 6.5 ms drain
+   + 6.1 ms misses ~= 12.6 of the ~21 ms routed bucket, leaving the kernel's
+   6.6 ms and ~0.6 ms of glue -- section 8's decomposition, now independently
+   confirmed by ablation rather than by subtraction.
+
+Caveats: the probe is deleted and the engine is back to the committed bytes
+(full rebuild + zero-model suite green); the legs are sequential runs of the
+same clean binary, and as always only same-round numbers are compared (this
+round's live leg measured D 44.74 vs 43.01 last round, within the known
+inter-round spread). Mid-window resident peaked at 84.4 GiB (cleanup report
+75.0), swap unchanged throughout.
+
+```sh
+# legs (probe existed only in a scratch build; logs: /tmp/t1_{base,drain,nodrain}.log):
+DS4_TEST_STREAMING_CACHE_GIB=82 DS4_TEST_STREAMING_CACHE_EXPERTS=8000 \
+DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1 DS4_METAL_V41_DECODE_HOST_PROFILE=1 \
+DS4_METAL_SELECTED_PROFILE=1 DS4_METAL_SELECTED_PROFILE_LAYER=0 \
+[DS4_METAL_V41_PROBE_STALE_IDS=2|1] \
+  ./tests/test_deepseek41_dspark gguf/DeepSeek-V4.1-Flash-Q2.gguf \
+  --routed-split-ssd tests/long_context_security_prompt.txt
+```
+
 ## Reproduction
 
 ```sh
