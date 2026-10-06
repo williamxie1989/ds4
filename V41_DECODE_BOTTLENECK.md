@@ -343,7 +343,8 @@ blits per step in both, `bind_avg` 0.002 in both, zero loads in both. The
    boundaries per token. The 6.5 ms is only recoverable by shape (b) of
    section 8's option table (per-layer address table over cache buffers +
    on-GPU id->mask kernel), which touches the registered red-line bind
-   surface (E0.3, DRIFT <= 7.6e-06). Not started; awaiting user adjudication.
+   surface (E0.3, DRIFT <= 7.6e-06). **User adjudication 2026-10-06: T3 is
+   closed -- the recoverable shape does not justify the red-line surface.**
 2. **T2 (miss path) stands: 6.03 loads/token confirmed in-session**, ~6 ms,
    and its accounting is now bracketed: `load_prepare 0.383 + load_pread
    0.613 + install 0.003 + reuse_scan 0.073 ms` per call accounts for most of
@@ -367,6 +368,61 @@ DS4_TEST_STREAMING_CACHE_GIB=82 DS4_TEST_STREAMING_CACHE_EXPERTS=8000 \
 DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1 DS4_METAL_V41_DECODE_HOST_PROFILE=1 \
 DS4_METAL_SELECTED_PROFILE=1 DS4_METAL_SELECTED_PROFILE_LAYER=0 \
 [DS4_METAL_V41_PROBE_STALE_IDS=2|1] \
+  ./tests/test_deepseek41_dspark gguf/DeepSeek-V4.1-Flash-Q2.gguf \
+  --routed-split-ssd tests/long_context_security_prompt.txt
+```
+
+## 10. The miss path, accounted to the last 0.1 ms: it is the serial pread wall (2026-10-06, fifth window, T2.0)
+
+Section 9 left 6.03 loads/token (~5.7 ms) as the second target, with 0.29 ms of
+each load unattributed and two untimed prune suspects. Permanent instrumentation
+was added to the streaming-expert timing system (commit `c306365`, env-gated,
+default off): residency-scan time, `prune_layer`/`prune_global` time + evictions
++ scan entries, pread-pool submit + sync-fallback counts, and a split of the
+load wait into overlap (engine work while reads run) versus block. Then three
+legs of the identical 64-token window (logs `/tmp/t2_{attr,no_ra,thr1}.log`):
+
+| leg | load_prepare | load_pread | per-load | readahead | prune (layer/global) | D |
+|---|---|---|---|---|---|---|
+| default (threads=9, readahead on) | 0.353 | 0.588 | 0.944 ms | 1287 calls x 0.084 | 2565 calls each, **0.000 ms, 0 evictions, 0 scans** | 43.73 |
+| readahead off | **0.078** | **0.933** | 1.014 ms | 0 | same, 0 | 44.91 |
+| pread threads=1 | 0.344 | **0.695** | 1.041 ms | 1332 x 0.079 | -- | 45.16 |
+
+**The composition of the 5.7 ms/token (386 loads x per-load, window delta):**
+
+| term | ms/call | ms/token | verdict |
+|---|---|---|---|
+| serial page-cache pread (~3 tasks, pool) | 0.588 | **3.55** | the term. 16.4 GB/s with 3 threads; 18.7 GB/s/thread single -- scaling gave only 0.107 ms for 3x parallelism, so it is a per-copy-path ceiling, not disk latency |
+| readahead `F_RDADVISE` (3.3 ranges/expert, per-16K-page fcntl) | 0.28 | 1.69 | near self-financing: costs 0.28, saves 0.345 of pread -> net **-0.07**; keep on |
+| buffer prep (`prepare_load_buffers`, incl. `take_reusable` scans) | 0.07 | 0.42 | includes reuse_scan 0.071/call |
+| batch reuse scan | 0.009 | 0.06 | |
+| install | 0.003 | 0.02 | |
+| `prune_layer` | ~0 | ~0 | **exonerated with evidence**: `effective_cap(layer, 384, 6) = 384` and the layer cache is indexed by expert, so the eviction loop can never execute |
+| `prune_global` | ~0 | ~0 | **exonerated**: in steady state `entry_count == budget` -- every call took the trivial-return path (2565 calls, 0 scans); evictions happen via buffer reuse, which does not grow `entry_count` |
+
+The two views reconcile exactly: `bind_avg 0.142 ms x 2560 = 5.68 ms/token` is
+the same cost spread over all selected calls, and 5.7 matches the frozen-ids
+ablation's live-minus-stale 6.1 ms.
+
+**What the accounting kills and what it leaves.** Every knob inside cache
+management moved the per-load cost by <= 0.11 ms: threads 1 -> 3 (+0.107),
+readahead on -> off (-0.070 net), prune does not exist as a cost. The `0.29 ms`
+mystery was readahead. The dominant 3.55 ms is the **exposed serial wall of
+preads issued after the drain** -- ids are only known after the per-layer sync,
+so by design the host pays copy time with the GPU idle (section 9 closed the
+only shape that removes the sync). Hiding it inside the current contract needs
+the split/masked-gather path (dispatch the resident experts while the missing
+ones stream) -- that changes accumulation shape (E0.3 family) and only pays on
+the 15% mixed layers. The remaining honest lever is not code: at this cache
+size misses are rotation, and the production sizing (10000 experts) is
+untested -- if its hot set fits, the miss term is zero where it matters and T2
+closes without a line of optimization. No engine default was touched.
+
+```sh
+# the three legs (identical except the two env vars; instrumentation commit c306365):
+DS4_TEST_STREAMING_CACHE_GIB=82 DS4_TEST_STREAMING_CACHE_EXPERTS=8000 \
+DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1 DS4_METAL_V41_DECODE_HOST_PROFILE=1 \
+[DS4_METAL_DISABLE_STREAMING_EXPERT_READAHEAD=1 | DS4_METAL_STREAMING_EXPERT_PREAD_THREADS=1] \
   ./tests/test_deepseek41_dspark gguf/DeepSeek-V4.1-Flash-Q2.gguf \
   --routed-split-ssd tests/long_context_security_prompt.txt
 ```
