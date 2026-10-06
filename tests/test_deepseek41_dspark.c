@@ -19,6 +19,18 @@
  *   packed-TensorOps thresholds to 1024, so both arms run the same expert
  *   matmul family with only the weight bind differing (HANDOFF-V41 13.4). */
 #include "../ds4.c"
+#include <libproc.h>
+
+/* Bytes this process has read from disk, cumulative. The decode step's cost is
+ * either weight traffic from RAM or weight traffic from SSD, and this is what
+ * tells them apart: bytes/token against the ~3.5 GB a token's weights occupy
+ * gives the expert-cache miss rate directly, with no ambiguity from other
+ * processes the way iostat has. */
+static uint64_t disk_read_bytes(void) {
+    struct rusage_info_v4 ri;
+    if (proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t *)&ri) != 0) return 0;
+    return ri.ri_diskio_bytesread;
+}
 
 #define REQUIRE(x) do { if (!(x)) { \
     fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); goto done; \
@@ -411,26 +423,35 @@ static int time_verify_scan(const char *model, const char *prompt_path, bool str
 
     const int REPS = 9, DROP = 3;
     double d_before = 0, d_after = 0;
+    double disk_d[2] = {0, 0};
     for (int phase = 0; phase < 2; phase++) {
         for (int warm = 0; warm < 8; warm++)
             REQUIRE(ds4_session_eval(session, prompt.v[start + warm], err, sizeof(err)) == 0);
+        const uint64_t disk0 = disk_read_bytes();
         const double t = now_sec();
         for (int i = 0; i < 32; i++)
             REQUIRE(ds4_session_eval(session, prompt.v[start + 8 + i], err, sizeof(err)) == 0);
         const double ms = (now_sec() - t) * 1000.0 / 32.0;
+        disk_d[phase] = (double)(disk_read_bytes() - disk0) / 32.0;
         if (!phase) d_before = ms; else d_after = ms;
         REQUIRE(ds4_session_load_snapshot(session, &base, err, sizeof(err)) == 0);
     }
     const double d_ms = 0.5 * (d_before + d_after);
     fprintf(stderr, "MODE %s  one-token decode D = %.2f ms (before %.2f, after %.2f)\n",
             streaming ? "ssd-streaming" : "resident", d_ms, d_before, d_after);
-    fprintf(stderr, "rows  verify_ms (min/med/max)   argmax+commit_ms  V/D    a_verify  a_full\n");
+    fprintf(stderr, "  disk read per decode step: %.1f MB (phase 1, cold) / %.1f MB "
+            "(phase 2, steady) -- weights per token are ~3.5 GB, so steady-state "
+            "miss rate is %.1f%%\n",
+            disk_d[0] / 1048576.0, disk_d[1] / 1048576.0,
+            100.0 * disk_d[1] / 3.5e9);
+    fprintf(stderr, "rows  verify_ms (min/med/max)   disk MB/verify   argmax+commit_ms  V/D    a_verify  a_full\n");
 
     const uint32_t rows_list[] = {2, 3, 4, 5, 6, 7, 8};
     for (size_t r = 0; r < sizeof(rows_list) / sizeof(rows_list[0]); r++) {
         const uint32_t rows = rows_list[r];
         double v[16], h[16];
         int nv = 0, nh = 0;
+        double disk_rep[16];
         for (int rep = 0; rep < REPS; rep++) {
             /* DS4_TEST_VERIFY_WINDOW=same verifies one token eight times, which
              * routes every row to the same experts: the floor of a verify's
@@ -441,10 +462,12 @@ static int time_verify_scan(const char *model, const char *prompt_path, bool str
             const int *suffix = same_rows ? prompt.v + start
                                           : prompt.v + start + (rep * 11) % 96;
             REQUIRE(ds4_session_load_snapshot(session, &base, err, sizeof(err)) == 0);
+            const uint64_t dk = disk_read_bytes();
             double t = now_sec();
             REQUIRE(ds41_graph_verify(&session->ds41_graph, &engine->model, &engine->weights,
                                       suffix, rows, &spec));
             v[nv++] = (now_sec() - t) * 1000.0;
+            disk_rep[rep] = (double)(disk_read_bytes() - dk) / 1048576.0;
             if (rep >= DROP) {
                 const float *logits = ds4_gpu_tensor_contents(spec.logits);
                 REQUIRE(logits);
@@ -462,14 +485,16 @@ static int time_verify_scan(const char *model, const char *prompt_path, bool str
                 h[nh++] = (now_sec() - t) * 1000.0;
             }
         }
-        double vmin = 1e30, vmax = 0;
+        double vmin = 1e30, vmax = 0, dkmed = 0;
         for (int i = DROP; i < nv; i++) { vmin = fmin(vmin, v[i]); vmax = fmax(vmax, v[i]); }
+        for (int i = DROP; i < REPS; i++) dkmed += disk_rep[i];
+        dkmed /= (double)(REPS - DROP);
         qsort(v + DROP, (size_t)(nv - DROP), sizeof(double), cmp_double);
         qsort(h, (size_t)nh, sizeof(double), cmp_double);
         const double vmed = v[DROP + (nv - DROP) / 2];
         const double hmed = h[nh / 2];
-        fprintf(stderr, "%4u  %8.2f (%.2f/%.2f/%.2f)  %14.2f  %5.3f  %8.4f  %7.4f\n",
-                rows, vmed, vmin, vmed, vmax, hmed, vmed / d_ms,
+        fprintf(stderr, "%4u  %8.2f (%.2f/%.2f/%.2f)  %13.1f  %14.2f  %5.3f  %8.4f  %7.4f\n",
+                rows, vmed, vmin, vmed, vmax, dkmed, hmed, vmed / d_ms,
                 (vmed / d_ms - 1.0) / (double)(rows - 1),
                 ((vmed + hmed) / d_ms - 1.0) / (double)(rows - 1));
     }
@@ -486,6 +511,119 @@ done:
     return rc;
 }
 
+/* Measurement, not a check: what one decoded token actually reads.
+ *
+ * The stage timings are only interpretable against the bytes each stage moves,
+ * and this GGUF is not uniformly quantized -- routed experts, the shared expert,
+ * the attention projections and the head each carry their own mix. Summing the
+ * tensor bytes the layer stack and the head touch turns "ms per stage" into
+ * "GB/s per stage", which is what separates "the machine is at its limit" from
+ * "the kernel is". */
+static int weight_inventory(const char *model) {
+    ds4_engine *engine = NULL;
+    char err[256] = {0};
+    int rc = 1;
+    ds4_engine_options opt = {.model_path = model, .backend = DS4_BACKEND_METAL,
+        .context_size = 4096, .power_percent = 100};
+    if (getenv("DS4_TEST_SSD")) {
+        opt.ssd_streaming = true;
+        opt.ssd_streaming_cache_bytes = ds41_test_streaming_cache_bytes();
+        const char *experts = getenv("DS4_TEST_STREAMING_CACHE_EXPERTS");
+        opt.ssd_streaming_cache_experts = experts ? (uint32_t)atoi(experts) : 9000u;
+    }
+    REQUIRE(ds4_engine_open(&engine, &opt) == 0);
+    const ds4_weights *w = &engine->weights;
+
+    /* Named explicitly, not by struct offset: the layer struct interleaves the
+     * routed and shared expert tensors, so an offset range silently merges
+     * them. */
+#define SUM_LAYER(field) do { for (uint32_t il = 0; il < DS4_N_LAYER; il++) \
+        if (w->layer[il].field) { bytes += w->layer[il].field->bytes; \
+                                  elems += w->layer[il].field->elements; } } while (0)
+    struct { const char *name; int routed; } groups[] = {
+        {"attention projections (q_a, q_b, kv)", 0},
+        {"attention output (o_a, o_b)", 0},
+        {"indexer + compressor", 0},
+        {"shared expert (gate, up, down)", 0},
+        {"routed experts (gate, up, down)", 1},
+        {"hyper-connection mixes", 0},
+        {"norms and router", 0},
+    };
+    fprintf(stderr, "V4.1 weight inventory (n_layer=%u, n_expert=%u, used=%u)\n",
+            (unsigned)DS4_N_LAYER, (unsigned)DS4_N_EXPERT, (unsigned)DS4_N_EXPERT_USED);
+    uint64_t per_token = 0, per_token_w = 0;
+    for (size_t g = 0; g < sizeof(groups) / sizeof(groups[0]); g++) {
+        uint64_t bytes = 0, elems = 0;
+        switch (g) {
+        case 0:
+            SUM_LAYER(attn_q_a); SUM_LAYER(attn_q_a_norm); SUM_LAYER(attn_q_b);
+            SUM_LAYER(attn_kv); SUM_LAYER(attn_kv_a_mqa); SUM_LAYER(attn_kv_a_norm);
+            SUM_LAYER(attn_k_b); SUM_LAYER(attn_v_b); SUM_LAYER(attn_sinks);
+            break;
+        case 1:
+            SUM_LAYER(attn_output); SUM_LAYER(attn_output_a); SUM_LAYER(attn_output_b);
+            break;
+        case 2:
+            SUM_LAYER(attn_compressor_ape); SUM_LAYER(attn_compressor_kv);
+            SUM_LAYER(attn_compressor_gate); SUM_LAYER(attn_compressor_norm);
+            SUM_LAYER(indexer_attn_q_b); SUM_LAYER(indexer_attn_k); SUM_LAYER(indexer_k_norm);
+            SUM_LAYER(indexer_k_norm_b); SUM_LAYER(indexer_proj);
+            SUM_LAYER(indexer_compressor_ape); SUM_LAYER(indexer_compressor_kv);
+            SUM_LAYER(indexer_compressor_gate); SUM_LAYER(indexer_compressor_norm);
+            break;
+        case 3:
+            SUM_LAYER(ffn_gate_shexp); SUM_LAYER(ffn_up_shexp); SUM_LAYER(ffn_down_shexp);
+            break;
+        case 4:
+            SUM_LAYER(ffn_gate_exps); SUM_LAYER(ffn_up_exps); SUM_LAYER(ffn_down_exps);
+            break;
+        case 5:
+            SUM_LAYER(hc_attn_fn); SUM_LAYER(hc_attn_scale); SUM_LAYER(hc_attn_base);
+            SUM_LAYER(hc_ffn_fn); SUM_LAYER(hc_ffn_scale); SUM_LAYER(hc_ffn_base);
+            break;
+        default:
+            SUM_LAYER(attn_norm); SUM_LAYER(ffn_norm); SUM_LAYER(ffn_gate_inp);
+            SUM_LAYER(ffn_exp_probs_b); SUM_LAYER(ffn_exp_probs_vl);
+            SUM_LAYER(ffn_gate_tid2eid);
+            break;
+        }
+        fprintf(stderr, "  %-36s %8.3f GiB  %7.3f G weights", groups[g].name,
+                (double)bytes / 1073741824.0, (double)elems / 1e9);
+        if (groups[g].routed) {
+            fprintf(stderr, "  (%.2f MiB/expert, %u of %u per token)",
+                    (double)bytes / DS4_N_LAYER / DS4_N_EXPERT / 1048576.0,
+                    (unsigned)DS4_N_EXPERT_USED, (unsigned)DS4_N_EXPERT);
+            per_token += bytes / DS4_N_EXPERT * DS4_N_EXPERT_USED;
+            per_token_w += elems / DS4_N_EXPERT * DS4_N_EXPERT_USED;
+        } else {
+            per_token += bytes;
+            per_token_w += elems;
+        }
+        fprintf(stderr, "\n");
+    }
+#undef SUM_LAYER
+    /* The embedding table is a row lookup, not a stream: only the head and its
+     * norm are read whole per token. */
+    uint64_t head = 0, embd = 0, head_w = 0;
+    if (w->token_embd) embd += w->token_embd->bytes;
+    if (w->output) { head += w->output->bytes; head_w += w->output->elements; }
+    if (w->output_norm) { head += w->output_norm->bytes; head_w += w->output_norm->elements; }
+    fprintf(stderr, "  %-36s %8.3f GiB  %7.3f G weights\n", "output head + norm",
+            (double)head / 1073741824.0, (double)head_w / 1e9);
+    fprintf(stderr, "  %-36s %8.3f GiB (row lookup, not streamed)\n",
+            "embedding table", (double)embd / 1073741824.0);
+    per_token += head;
+    per_token_w += head_w;
+    fprintf(stderr, "per decoded token: %.2f GiB (%.2f GB), %.3f G weight touches\n",
+            (double)per_token / 1073741824.0, (double)per_token / 1e9,
+            (double)per_token_w / 1e9);
+    rc = 0;
+done:
+    if (err[0]) fprintf(stderr, "error: %s\n", err);
+    ds4_engine_close(engine);
+    return rc;
+}
+
 /* Measurement: where one decoded token's GPU time goes, from 40 encodes of
  * one layer's own kernels on its real weights. */
 static int time_stages(const char *model, const char *prompt_path) {
@@ -497,6 +635,14 @@ static int time_stages(const char *model, const char *prompt_path) {
     int rc = 1;
     ds4_engine_options opt = {.model_path = model, .backend = DS4_BACKEND_METAL,
         .context_size = 4096, .power_percent = 100};
+    /* The per-stage split is only worth reading in the regime the engine is
+     * deployed in, so honour the same streaming knobs the scan uses. */
+    if (getenv("DS4_TEST_SSD")) {
+        opt.ssd_streaming = true;
+        opt.ssd_streaming_cache_bytes = ds41_test_streaming_cache_bytes();
+        const char *experts = getenv("DS4_TEST_STREAMING_CACHE_EXPERTS");
+        opt.ssd_streaming_cache_experts = experts ? (uint32_t)atoi(experts) : 9000u;
+    }
     REQUIRE(text && ds4_engine_open(&engine, &opt) == 0);
     ds4_tokenize_text(engine, text, &prompt);
     REQUIRE(ds4_session_create(&session, engine, 4096) == 0);
@@ -761,6 +907,8 @@ int main(int argc, char **argv) {
         return time_verify_scan(argv[1], argv[3], false);
     if (argc == 4 && !strcmp(argv[2], "--verify-scan-ssd"))
         return time_verify_scan(argv[1], argv[3], true);
+    if (argc == 3 && !strcmp(argv[2], "--weight-inventory"))
+        return weight_inventory(argv[1]);
     if (argc == 4 && !strcmp(argv[2], "--short-prefill"))
         return check_short_prefill(argv[1], argv[3], false);
     if (argc == 4 && !strcmp(argv[2], "--short-prefill-ssd"))
