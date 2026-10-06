@@ -427,6 +427,43 @@ DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY=1 DS4_METAL_V41_DECODE_HOST_PROFILE=1 
   --routed-split-ssd tests/long_context_security_prompt.txt
 ```
 
+## 11. The 10000-expert sizing leg: it fits, misses halve, D drops to 40.8 -- but the hot set is still bigger (2026-10-06, sixth window)
+
+Section 10 left one honest lever: the production sizing, untested. Ran the identical
+64-token window with `DS4_TEST_STREAMING_CACHE_EXPERTS=10000` (plus `GIB=100` so the
+bytes side did not clamp first; log `/tmp/t2_10k.log`). The machine said yes:
+budget requested 10000, granted **9861** (the harness caps 100 GiB to 99 to stay under
+graph working-set pressure; 99 GiB / 9.49 MiB = 9861), **mlock locked 91.48 GiB with
+zero failures** in 1555 ms, swap never moved, window peak lived inside the box.
+
+| metric (64-token window delta) | 8078 experts | 9861 experts |
+|---|---|---|
+| loads/token | 6.03 | **3.13** |
+| fully-resident layers | 2174/2560 (85%) | **2360/2560 (92.2%)** |
+| missing experts/window | 435 | 207 |
+| miss cost | 5.7 ms/token | **3.85 ms/token** |
+| bind_avg | 0.142 | 0.098 |
+| D | 43.73 (family 43.7-45.5) | **40.82** |
+
+Per-load cost crept up (pread 0.588 -> 0.847 ms: with 92.7 GiB of cache buffers
+mlocked, the page cache that used to absorb reads is squeezed, so more of each read
+goes to real disk) -- but load count halved, so the term nets ~1.85 ms/token off and
+D lands ~3-4 ms under the 8k family: **-7 to -8%**. That is real, contract-clean,
+zero-code.
+
+**The sizing answer is therefore "mostly, not fully":** the 128 GB machine locks the
+production cache and takes the win, but the hot set of this long-prompt workload
+still rotates ~3.1 misses/token at 9861 entries -- the miss term is smaller, not zero,
+and the remaining ~3.9 ms miss + ~6.5 ms drain cost stays closed under the current
+contract shape (sections 9-10). Anything larger than ~10000 does not fit this machine.
+Recommendation: **run production at 10000 experts on 128 GB boxes** and close T2 here --
+what is left is only reachable through the two shapes the project has already closed
+(T3 drain removal, split masked gather).
+
+Housekeeping: the leg's `layers 82.666` profile line double-counts the before/after
+arms of the DSpark test inside the 64-step profile window (D 40.82, 24.50 t/s, and
+`bind_avg 0.098 x 2560 = 250 ms` are mutually consistent); read D, not that line.
+
 ## Reproduction
 
 ```sh
