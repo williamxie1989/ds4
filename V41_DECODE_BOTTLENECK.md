@@ -136,28 +136,35 @@ dense attention stages (450–535 GB/s) are at 65–75% of that, not at a wall.
 The routed-expert path's **116 GB/s is therefore 6× off what the same machine
 does on a dense kernel**, and it is ~50% of the decode step.
 
-## 7. Why the routed stage still cannot be measured directly
+## 7. The routed dispatch is not in the same command buffer as the layer
 
-Stage 4 of `--stage-timing` cannot be isolated under streaming. The routed MoE
-there is not dispatched by the per-layer encode at all: `ds41_graph_step`'s host
-loop reads each layer's selected ids back and pages the experts in, and every
-encode-side call tried (`ds4_gpu_routed_moe_one_tensor`, `ds41_moe_partial`,
-`ds41_moe` + `ds41_graph_after_moe`) reports ~0.3 ms because the work is queued
-elsewhere. The raw `one_tensor` call is the resident-mode path and binds
-whole-map views that streaming does not map, so it aborts.
+Stage 4 of `--stage-timing` used to abort under streaming because the harness
+hardcoded the last argument of `ds4_gpu_routed_moe_one_tensor` to `true`. That
+argument is `force_resident`; the real call in `ds41_moe_partial` passes
+`!g->streaming` (`ds4.c:41095`). Fixing it removes the abort -- and the stage
+then reports **0.33 ms per token for all 40 layers**, which is 8 µs per layer.
 
-So the routed figure above remains **D minus the other six stages**, now with all
-six measured through the path the engine actually decodes with (attention
-projections 4.63, attention core 3.26, attention output 5.98, shared expert 3.37,
-hc mixes and norms 1.76, output head 1.20 = 20.20 ms of 40.32). That is a
-stronger basis than the earlier subtraction, but it is still a subtraction.
+2.224 GiB of expert weights cannot move in 0.33 ms. So the encode path is not
+where the routed cost lives: **the gather is dispatched in a different command
+buffer from the rest of the layer, after the host has prepared state for it.**
 
-**And that host-side per-layer paging is itself a suspect**: it is a per-(layer,
-token) round trip that no other stage has, and it is what card I targeted for
-+2.7–3.2%. Card I's small gain suggests the readback is not the dominant cost,
-but nothing measured here separates "the gather kernel is slow" from "the host
-paging loop feeding it is slow". Splitting those two is the next real step, and
-it needs a different instrument, not another pass at this one.
+That is the real shape of the problem, and it is why the stage cannot be
+isolated by calling encode helpers out of sequence -- the streaming gather
+depends on host-side work done *between* command buffers, so any call that skips
+that work measures a gather with an unpopulated address table.
+
+The interleaving lives in `metal_graph_encode_decode_layer_phase`
+(`ds4.c:24104`), the per-layer decode encoder, which calls
+`metal_graph_decode_set_hash_selected_override` (`ds4.c:23101`, the paging) and
+`metal_graph_decode_selected_readahead_override` (`ds4.c:23240`, the readahead)
+at `ds4.c:26252` and `ds4.c:26765`.
+
+**So "slow gather kernel" and "slow host paging loop" are not separable by
+construction in the current code** -- the paging is a precondition for the
+dispatch and they interleave at the command-buffer level. Splitting them means
+instrumenting that loop, not isolating the kernel. The routed figure above stays
+D minus the other six stages, all six measured through the real decode path
+(4.62 + 3.27 + 5.98 + 3.37 + 1.75 + 1.20 = 20.19 ms of 40.32).
 
 One caution that survives from the hypothesis this section tested: the V4.1
 "exact" paths are gated by `ds4_gpu_dsv41_exact_admitted()`, which returns false

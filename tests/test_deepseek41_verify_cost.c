@@ -682,14 +682,10 @@ static int time_stages(const char *model, const char *prompt_path) {
                 case 3: ok = ds41_shared_mid(g, m, l) &&
                             ds41_matmul(g->shared, m, l->ffn_down_shexp, g->shared_mid, true); break;
                 case 4: {
-                    /* Not isolatable in streaming mode: the routed MoE there is
-                     * driven from ds41_graph_step's host loop (read the layer's
-                     * selected ids back, page the experts in), not from this
-                     * per-layer encode -- every encode-side call here reports
-                     * ~0.3 ms because the work is queued elsewhere. The raw
-                     * one_tensor call below is the resident-mode path and binds
-                     * whole-map views streaming does not map, so it aborts.
-                     * Under streaming, subtract the other six stages instead. */
+                    /* Last argument is force_resident: the real call passes
+                     * !g->streaming (ds4.c, ds41_moe_partial). Hardcoding true
+                     * here forced the whole-map bind that streaming does not
+                     * map, which is why this stage used to abort. */
                     uint64_t gate_row = 0, down_row = 0;
                     ok = tensor_nbytes(l->ffn_gate_exps->type, DS4_N_EMBD, &gate_row) &&
                         tensor_nbytes(l->ffn_down_exps->type, DS4_N_FF_EXP, &down_row) &&
@@ -703,7 +699,8 @@ static int time_stages(const char *model, const char *prompt_path) {
                             l->ffn_down_exps->abs_offset, l->ffn_gate_exps->type, l->ffn_down_exps->type,
                             gate_row * DS4_N_FF_EXP, gate_row, down_row * DS4_N_EMBD, down_row,
                             DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD, g->selected, g->route_weights,
-                            DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, g->norm, NULL, il, true);
+                            DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, g->norm, NULL, il,
+                            !g->streaming);
                     break;
                 }
                 case 5: ok = ds41_hc_mix(g, m, l, false) &&
