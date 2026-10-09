@@ -42,6 +42,7 @@
 | #985 (Rick Ratmansky) | 归一化 tool replay 跨轮保住 KV cache | `504f298` | 10-02 前缀复用批次 |
 | #727 (LEFBE) | transient metadata block 剥离后保住 live KV（issue #364，#378 的返工） | `4a9efa8`, `97e8a0c` | 同上 |
 | #1192 (Emilian Bold) | 非因果 top-k argsort 接 simd_shuffle_xor 寄存器排序网络（plain 内核此前只走 threadgroup 网络；作者 M5 Max 实测整调用 −20~23%，输出 bit-identical） | `c4e5e97` | 2026-10-09 批次；PR **OPEN**（base `0aaea5a`，对上游 mergeable clean）、`cherry-pick -x` + `Upstream-PR:` trailer；机制与已默认上产的 `..._causal_shuffle` 同模板零新增。收益落点（修正版）：GLM indexed prefill 多行 topk（`ds4.c:57077`，主顾）、V4 ratio-4 层 prefill（`ds4.c:32365/32450/32571`，因果 batch 只收 ratio 1/2，ratio-4 结构上走 plain）、DSpark verify suffix topk（`ds4.c:39318/39385`，vocab 129280 多行=全场最大 sort）；**DSv4.1 文本 prefill 主路无新增**（ratio 1/2 → causal batch，shuffle 自 #1090 已默认在跑）；decode router 384 选 6 实测 −2.2%=噪声（"10000 experts"是缓存数不是每层专家数）。内核验收全绿：`test_deepseek41_topk`（600 poisoned）、`test_glm53_topk_fast`（720）、`test_glm53_router_shared`、`test_glm53_q8_inputs`；`test_deepseek41_metal` 内多行非因果 topk 与 causal ties 断言通过（该套件另有存量 attn_flags 红，见 D 既有红项，非本 pick 引入）。**本机 ABBA 复测（同二进制 + `DS4_METAL_ARGSORT_SOURCE` 换源，零模型，2026-10-09，腿 log `/tmp/ab_{A1,B1,A2,B2}.txt`，取各形状两轮最好）**：prefill 形状 256 行——8192×256 983→746 µs（**−24.1%**）、16384×256 1861→1377（**−26.0%**）、32768×256 3685→2831（**−23.2%**），与作者 −20~23% 吻合；decode 形状 1 行——indexer-8k −1.3%、indexer-32k +1.8%、cand-4k −1.5%、router-384 −2.2%，**全部埋在 ~150 µs 固定 commit/wait 地板里 = 噪声带内，decode 无感**。⇒ 收益集中在多行非因果 topk（GLM indexed prefill 主路）；DSv4.1 causal prefill 早已走 causal_shuffle 无新增。**DSpark 真实形状复测（同换源法，`top_k=1`×top_rows×vocab 129280，腿 log `/tmp/ab_dsp{A1,B1,A2,B2}.txt`）**：7 行 520.6→436.2 µs（**−16.2%**）、3 行 320.4→259.0（**−19.2%**）——但该调用**每 verify 周期只跑一次（输出头）**，对 V(8)≈5.77×D≈230 ms 的 verify 步省 ~85 µs ≈ **≤0.2% 端到端=噪声**；draft 采样走独立 `dspark_markov_argmax` 内核不受影响 ⇒ **DSv4.1+DSpark 场景实际无感**，场景级受益者只有 GLM indexed prefill 与 V4 ratio-4 布局。原文存档分支 `pr-1192` |
+| #1197 (joohooo) | macOS ImageIO 接受 WebP 图片（`server_image_media_type` 白名单 + data-URI 前缀加 webp；`ds4_image.c` 新增 `ds4_decode_webp_imageio`，透明像素铺白底 RGBA8 复用 oriented-RGB 路；Linux 明确报 "WebP images require the macOS ImageIO decoder"） | `67242f2` | 2026-10-09 批次；PR **OPEN**（当日新提，antirez 未 review）、`cherry-pick -x` + `Upstream-PR:` trailer，对 main dry-run merge-tree 零冲突。**动因（实测复现）**：dsh `read_image` 把截图降采样为 `image/webp` 发给 ds4-server → 白名单拒绝走 `bad:` 兜底 → 误导性 `400 invalid JSON request`，且图片滞留历史后每个后续请求秒败（会话 session-692df918 turn1 step140 起全灭，证据链见当日会话）。**上游 #976 帖内有第二独立复现**（hertz-hwang：全屏截图重编码 webp→400，同像素 PNG/JPEG 过；轴只有容器格式）。验收：`./ds4_test --server` 全绿（含新增 `test_openai_inline_webp_image_content`，含 ImageIO 真解码断言）、`tests/test_deepseek4_vision_image` + `tests/test_image_decode` 通过；`ds4-server`/`ds4_test` 编译 `-Wall -Wextra` 零警告，且与未提交的 `/v1/status` menubar 改动（工作区）合并编译通过。**配套本地修 fixup `40590fa`**（见 B/C：PR 只给 METAL_LDLIBS 加框架，standalone 测试目标链 `ds4_image.o` 缺框架）。**与 #976 互斥**（同址：白名单/data-URI/`ds4_image.c` 解码），#976 为跨平台 vendored 单头解码器方案（+3134，Linux 可用），本机 macOS 场景取 #1197 零新依赖；若将来需 Linux webp 或上游 review 落在 #976，再整片换装。原文存档分支 `pr-1197` |
 
 ## B. 本地实现提交（29 个，含从自己 feat 分支重新落地；2026-10-08 rebase 后 SHA 已刷新）
 
@@ -68,6 +69,7 @@
 | `005a452` | M3-7/M3-5 E0：`--short-prefill-ssd-rows` 登记红灯臂 + bind-parity 行集扩 {9,16,31}；实测 [9,31] 批量==步进逐位等、≥32 红灯（1.9–2.8 logits）；**bind 轴 [9,31] addr-vs-whole-map DRIFT ≤7.6e-06 新红灯（工具 rc=1）**，E1 按 M3-5 红线停线待裁 | 本地（HANDOFF §15.2b；**裁决 2026-10-05=iii 弃 E1**，红灯长期登记） |
 | `168df92` `3833a39` `2148647` `7385e6f` | V4.1 decode 瓶颈线（全部 test-only + 文档，零引擎改动）：`--verify-scan-ssd` 改用 `proc_pid_rusage` 记进程自身读盘、`--stage-timing` 支持 streaming 域并修正 `force_resident` 硬编码、`--weight-inventory` 按显式张量名分组、`--routed-split-ssd`（预热地址表后单独计 gather 内核，并把 paging／per-layer 排空／往返分臂） | 本地（测量与文档；结论见 D 与 `V41_DECODE_BOTTLENECK.md` §8） |
 | `b203362` | V4.1 decode 未命中路径归因插桩：streaming-expert 计时系统加 5 组 env-gated 计数器（residency_scan、prune_layer/prune_global 的时间+驱逐+扫描量、pread pool submit+sync fallback、load wait 拆 overlap/block），`DS4_METAL_STREAMING_EXPERT_TIMING_SUMMARY` 关时零行为变更、零模型验收全绿；三腿归因读数见 D 与 §10 | 本地（测量插桩；结论见 D 与 `V41_DECODE_BOTTLENECK.md` §10，2026-10-06） |
+| `40590fa` | Makefile：新增 `IMAGE_LDLIBS`（Darwin 含 ImageIO/CoreGraphics/CoreFoundation），standalone 测试目标 `tests/test_deepseek4_vision_image` / `tests/test_image_decode` 链 `ds4_image.o` 由裸 `-lm` 换用之 | 本地 fixup，**修 #1197 落地缺口**（PR 只给 METAL_LDLIBS 加框架；macOS 上两测试目标 `Undefined symbols: _CFDataCreate…` 链接失败，本机实测后修） |
 
 ### B2. 2026-10-08 退役记录（视觉会话快照资格修复）
 
@@ -89,6 +91,7 @@
 | ~~#1003 rewind 片~~ | — | **已退役**（上游 `fc80bd6` 取代）；原依赖 #1089/#1041 随片消失 |
 | ~~B2 视觉快照资格（`4db95ee`）~~ | #1000, #1003 | **已退役**（上游机制无 vision 排除）；回归测试随之退役，见 B2 |
 | p42-attn-glue（worktree，未提交） | **#1042** 剩余片 `f61a83d` | 见 V41_M5MAX_BASELINE §12.2 |
+| `40590fa` | **#1197** | fixup 修的即 #1197 在 macOS 的测试目标链接缺口；`ds4_image.o` 引用 ImageIO 符号由 #1197 引入 |
 
 ## D. 9/25 之后文档 → 已放弃/不再需要的在途工作
 
@@ -126,6 +129,7 @@
 ### 本地保留但**未取用**的上游 PR（评审存档，非依赖）
 
 - `pr-710`（live-prefix rewind 上 Flash/Metal；与本地 `64b6461` 域不同）、`pr-856`（thinking 通道空白符 cache miss）、`pr-1058`（tool 会话 KV checkpoint 键改 client-visible transcript + 重启恢复冒烟）
+- `pr-976`（WebP 跨平台 vendored 单头解码器，+3134，OPEN 未 review）：**2026-10-09 评估后未取**——同址功能已由 #1197（macOS ImageIO，零新依赖）覆盖（见 A2）；两 PR 互斥（白名单/data-URI/`ds4_image.c` 同址）。触发换装重评的条件：需要 Linux webp 解码，或 antirez review 落在 #976。帖内 hertz-hwang 独立复现与 libwebp 像素差异告警（有损 VP8 ≤2/通道，vision-cache fingerprint 解码器相关）一并存档于此，换装时勿当回归"修坏"
 - `up/pr/` 旧 ref：**758**（M5 indexed prefill——被 `64b6461` 替代）、**1034/1035**（Dango233 SSD decode/Engram——Engram 并行读已被 fork 自身覆盖）、**1060**（indexer radix-select）、**1073**（Tarjei 54-commit 大 PR）、**1152**（GLM 参数类型——`e067c8f` 已自研覆盖）、**1153/1154/1155**（image-prefix snapshot / Qwen PLE prefetch / detached backend cache-miss）
 - 这些 PR 后续若在上游合入，本地 `e067c8f`、`64b6461`、gather 系列都可能与之冲突，对拍时需按本清单 A2/B 逐项核对。
 
