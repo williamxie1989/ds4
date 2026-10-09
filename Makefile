@@ -26,9 +26,12 @@ DS4_DSPARK_SUPPORT ?= gguf/DeepSeek-V4-Flash-DSpark-support-0731.gguf
 
 ifeq ($(UNAME_S),Darwin)
 METAL_LDLIBS := $(LDLIBS) -framework Foundation -framework Metal -framework ImageIO -framework CoreGraphics -framework CoreFoundation
+# Standalone test binaries that link ds4_image.o need the ImageIO WebP decoder.
+IMAGE_LDLIBS := -lm -framework ImageIO -framework CoreGraphics -framework CoreFoundation
 CORE_OBJS = ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_metal.o ds4_layer_pack.o ds4_engram.o
 CPU_CORE_OBJS = ds4_cpu.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_layer_pack.o
 else
+IMAGE_LDLIBS := -lm
 CFLAGS += -D_GNU_SOURCE -fno-finite-math-only
 CUDA_HOME ?= $(shell if [ -x /usr/local/cuda/bin/nvcc ]; then \
 	printf '%s' /usr/local/cuda; \
@@ -925,13 +928,13 @@ tests/test_deepseek4_vision_image.o: tests/test_deepseek4_vision_image.c ds4_ima
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 tests/test_deepseek4_vision_image: tests/test_deepseek4_vision_image.o ds4_image.o
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+	$(CC) $(CFLAGS) -o $@ $^ $(IMAGE_LDLIBS)
 
 tests/test_image_decode.o: tests/test_image_decode.c ds4_image.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 tests/test_image_decode: tests/test_image_decode.o ds4_image.o
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+	$(CC) $(CFLAGS) -o $@ $^ $(IMAGE_LDLIBS)
 
 # Model-free exactness screens for the isolated M3 Ultra fork experiments.
 ifeq ($(UNAME_S),Darwin)
