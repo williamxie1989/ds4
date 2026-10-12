@@ -10,6 +10,7 @@
 > **2026-10-02 P0b 已实现并实测：速度门达标（831-token 续写 17.5 s → 9.6 s，sweep I/O 151→42 GiB），但逐位对拍 DRIFT——sweep 行数下 gather 走 `mul_mv_addr` pair（f32 mid），整层臂走 `mm_id` tile（f16 mid），不同内核族不可能逐位。按 §7.2 DRIFT 即否决；机制以 opt-in（`DS4_METAL_ENABLE_V41_STREAMING_SWEEP_GATHER`）保留，默认行为与开工前逐位一致。全过程与后续坐标见 §13。**
 > **§14 已记录 P0c+P0d+P0f：gather 默认生效、窗口扩到 2048、minimum 降到 32；1002 live 验证见 §14.6/14.7。**
 > **2026-10-02 P0G 已执行（见 §17）：环逐位安全但速度为负——gather 域 prepare 只预读 decode span（0.17 GiB/层），expert miss 受 router 数据依赖锁死，环深度结构上吃不到；§16.1 的 820 ms/层证据属整层臂，路径串线。环保留为 opt-in（`DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_AHEAD`），默认 1 = P0G 前行为逐位一致。**
+> **2026-10-12 P0h 已执行（见 §18）：multimodal 会话被 gather 准入的 `g->image_count` 排除挡在 P0d 地板下调之外——带图会话每个 [32,2048) 行 append 逐 token 走（生产 ~17-20 t/s vs 非 mm 同尺寸 80+）。移除该排除，mm append 与图像行一并进 gather；`--mm-gather-prefill` 微测全绿（准入/分块 + gather vs 整层逐位）。**
 
 ---
 
@@ -996,3 +997,55 @@ layer-major prefill sweep 每层的 GPU 计算只被"提前 1 层"的 expert 页
 - 生产侧冷域 A/B 模板（待 server 停窗）：同 build 两段流量对比 32–2048 行 "prefill chunk" 行，env unset vs `=3`；expert miss 数据依赖决定了预期——**低预期，做之前想清楚值不值一个重启窗口**。
 - `/tmp/p0g/`：dump 目录、cmp_*.json（status 字段）、g4 CSV、bench 日志，重启即失。
 - 真正的 100 行档靶子回到 §15：**E1**（低行数批量省，保 scalar 数值）与 §14.6 已点名的场域修复（page cache 保温/LRU 老化/条带读）——环不是它们的替代品。
+
+---
+
+## 18. P0h 执行记录（2026-10-12）：multimodal 会话进 gather——`image_count` 排除移除，mm append 回到批量
+
+### 18.1 生产报障与归因
+
+用户 10-12 生产日志（`ds4_10121118.log`，`-c 393216 --ssd-streaming --ssd-streaming-cache-experts 9000`）：
+带图会话的续写 append 全部逐 token（"prefill chunk" 每行 +1，~17-20 t/s）：
+mm 轮 224/240/514/604/639/714/725/875 行 FRAG；同日志非 mm 轮 288/589/704 行整块（80+ t/s）；
+旧日志（1008/1009，streaming 关）mm 591 行 6.7 s（~88 t/s）。会话级浪费 ~3.6 min。
+
+链条（全部实测锚定，非推断）：
+1. cache-experts 9000 ≥ 7680（`DS4_N_LAYER*DS4_N_EXPERT/2`，40 层口径）→ `ds41_prefill_count`
+   的 streaming 暖门把 minimum 顶到 1024（ds4.c ~42921）。
+2. 非 mm 轮：P0d 借 `ds41_streaming_sweep_moe_gather_admitted` 把 1024 压回 32 → ≥32 行批量 ✓
+   （这就是 288/589/704 "whole" 的原因）。
+3. mm 轮：准入里 `g->image_count` 直接否决 → P0d 下调失效 → <1024 行 return 1 逐 token。
+   Fallback 若走到 sweep（cache < 7680 的会话），也只是整层 sweep 而非 gather，[32,256) 段仍 256 地板。
+
+`image_count` 排除是 P0c（f3151ef）的域外保守项：parity 域当时只在纯文本 fixture 上验证。
+**技术上不成立**：gather 与整层 bind 的唯一差异是 expert 字节的读取路径（addr 表 vs 整层 view），
+输入是激活/选中 id/路由权重；图像行只在 `ds41_embed`（残差来源）与文本行不同，
+对 MoE 不可见。decode/verify 侧的 `ds41_streaming_verify_moe_gather_admitted` 仍保留该排除
+（未动，后续若 decode mm verify 有提速需求再单独立项）。
+
+### 18.2 改动
+
+- `ds4.c` `ds41_streaming_sweep_moe_gather_admitted`：移除 `g->image_count ||`（一行 + 注释）。
+  其余准入条件（tp=1、parity mask、cache ≥ 384、IQ2_XXS/IQ2_XXS/Q2_K、rows ∈ [32,2048]）不变。
+- `tests/test_deepseek41_dspark.c` 新增 `--mm-gather-prefill PROMPT`（回归 + 契约）：
+  ① 准入单元断言（image_count=1 时 admitted，223 行 `ds41_prefill_count == 223`，修复前红）；
+  ② 逐位契约臂：合成的 64 行图像 span（129264 占位 + 伪 embedding）进 prompt，
+  gather 腿 vs `DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER` 整层腿，
+  300 行冷前缀（含图像行，gather 真正吃到图像残差）与 1024 行纯文本续写
+  （checkpoint 带图，生产 FRAG 形态）两轮 logits 逐位相同。
+  env A/B 腿靠准入 per-call `getenv` 进程内翻转，同一 build 同一进程。
+
+### 18.3 门闸（本机 M5 Max，模型 Q2 streaming 16 GiB 测试预算）
+
+| 门 | 结果 |
+|---|---|
+| RED 复现（修复前 build） | `mm gather: sweep admission rejects image-carrying sessions` @ 测试 :341 ✅ |
+| GREEN `--mm-gather-prefill` | prefix 300 rows max diff **0**；append 1024 rows max diff **0**；admitted/chunking 断言过 ✅ |
+| `tests/test_deepseek41_prefill --dispatch`（无模型） | PASS（期望表零改动；parity 门在测试 env 恒假，表不因本改动变义）✅ |
+| `--moe-bind-parity` | 18/18 bit-exact + 9 DRIFT **全部是 §15.2b 登记红 [9,31] 带**（layer0/20/39 × {9,16,31}，≤7.6e-06），无新增 ✅ |
+| `DS4_TEST_SSD_STREAMING=1 ./ds4_test --logprob-vectors` | 与 main 相同红集（short_code_completion step0 ×2 断言，V41_M5MAX_BASELINE_SPEED_PLAN.md:184 在案 fork 既有漂移），其余 vector 全过 ✅ |
+| `make` / 测试二进制 | 0 warning 0 error ✅ |
+
+无服务器部署面变化：kill switch 原样（`DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER`）；
+生产行为变化 = 带图会话的 [32,2048) 行 append 从逐 token（~20 t/s）回 gather 批量（P0c 口径 ~140 t/s），
+logits 与整层臂逐位一致（§18.2②），KV checkpoint / test-vectors 锚不动。

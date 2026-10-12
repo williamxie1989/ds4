@@ -43380,8 +43380,15 @@ static bool ds41_streaming_sweep_moe_gather_admitted(const ds41_gpu_graph *g,
     if (getenv("DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER") ||
         getenv("DS4_METAL_DISABLE_V41_STREAM_GATHER_MM_ID")) return false;
     if (!ds4_gpu_v41_stream_gather_parity_supported()) return false;
+    /* Image rows are admitted: they differ from text rows only upstream in
+     * ds41_embed (the residual source), while the gather bind changes only
+     * where the expert bytes come from for identical activations, selected
+     * ids and route weights. Excluding them here used to strip every
+     * image-carrying session of the P0d floor lowering, so each multimodal
+     * turn's [32,2048)-row append prefilled token by token. The bind-parity
+     * contract is checked with images by --mm-gather-prefill. */
     if (!g->streaming || g->tp_world != 1 || g->quality || g->imatrix ||
-        g->image_count || rows < 32u || DS4_N_EXPERT_USED != 6) return false;
+        rows < 32u || DS4_N_EXPERT_USED != 6) return false;
     if (getenv("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR") ||
         getenv("DS4_METAL_DISABLE_STREAMING_EXPERT_ADDR_TABLE") ||
         getenv("DS4_METAL_DISABLE_ROUTED_PAIR_SWIGLU_FUSION") ||

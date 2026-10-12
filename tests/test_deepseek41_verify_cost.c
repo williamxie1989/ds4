@@ -17,7 +17,11 @@
  *   MoE twice on identical inputs: whole-map bind vs the streaming address
  *   table, bit-exact (HANDOFF-V41 12.5). Rows sweep past the mm-id and
  *   packed-TensorOps thresholds to 1024, so both arms run the same expert
- *   matmul family with only the weight bind differing (HANDOFF-V41 13.4). */
+ *   matmul family with only the weight bind differing (HANDOFF-V41 13.4).
+ *   test_deepseek41_dspark MODEL --mm-gather-prefill PROMPT  checks that
+ *   image-carrying sessions keep the streaming sweep gather: admission, the
+ *   223-row chunk decision, and bit-exact gather vs whole-layer multimodal
+ *   prefills (the image_count exclusion regression). */
 #include "../ds4.c"
 #include <libproc.h>
 
@@ -286,6 +290,108 @@ done:
     ds4_tokens_free(&prefix); ds4_tokens_free(&prompt);
     ds4_session_free(batched); ds4_session_free(scalar);
     ds4_engine_close(engine);
+    free(text);
+    return rc;
+}
+
+/* The streaming sweep gather excluded image-conditioned sessions outright
+ * (g->image_count in the admission), so every multimodal turn lost the P0d
+ * floor lowering and prefilled its text append token by token: the 1012
+ * production log shows mm appends of 224..875 tokens at ~17-20 t/s while
+ * identical non-mm appends batch at 80+. The gather bind differs from the
+ * whole-layer bind only in where the expert bytes come from; image rows
+ * differ only upstream in ds41_embed, so the bind-parity contract extends
+ * to them unchanged. Checks, in order: the admission admits image-carrying
+ * sweeps, the chunk decider batches a 223-row image-carrying append instead
+ * of going token-major, and a multimodal prefill stays bit-exact against
+ * the kill-switch whole-layer arm -- across image rows (300-row cold prefix,
+ * 64 of them image) and across a pure-text 1024-row append whose checkpoint
+ * carries the image. */
+static int check_mm_gather_prefill(const char *model, const char *prompt_path) {
+    ds4_engine *engine = NULL;
+    ds4_session *gather = NULL, *wholemap = NULL;
+    ds4_tokens prompt = {0}, prefix = {0};
+    ds4_vision_span span;
+    float *image_data = NULL;
+    char err[256] = {0};
+    char *text = read_text(prompt_path);
+    int rc = 1;
+    ds4_engine_options opt = {.model_path = model, .backend = DS4_BACKEND_METAL,
+        .vision_path = "gguf/DeepSeek-V4.1-Flash-Vision.gguf",
+        .context_size = 4096, .power_percent = 100,
+        .ssd_streaming = true,
+        .ssd_streaming_cache_bytes = ds41_test_streaming_cache_bytes()};
+    REQUIRE(text && ds4_engine_open(&engine, &opt) == 0);
+    REQUIRE(ds4_session_create(&gather, engine, 4096) == 0);
+    REQUIRE(ds4_session_create(&wholemap, engine, 4096) == 0);
+    ds41_gpu_graph *g = &gather->ds41_graph;
+    REQUIRE(g->streaming && g->tp_world == 1);
+    /* Control: this harness reaches the gather domain at all (parity
+     * pipelines, expert cache, layer recipes). */
+    REQUIRE(ds41_streaming_sweep_moe_gather_admitted(g, &engine->weights, 223));
+    /* Regression: an image-carrying session keeps the gather and the P0d
+     * floor lowering. Before the fix the image_count check rejected the
+     * sweep and the 223-row append below returned 1 (token-major). */
+    g->image_count = 1;
+    const bool admitted = ds41_streaming_sweep_moe_gather_admitted(g, &engine->weights, 223);
+    const uint32_t count = ds41_prefill_count(g, &engine->weights, 223);
+    g->image_count = 0;
+    if (!admitted)
+        fprintf(stderr, "mm gather: sweep admission rejects image-carrying sessions\n");
+    REQUIRE(admitted);
+    if (count == 1)
+        fprintf(stderr, "mm gather: 223-row image-carrying append chunks token-major\n");
+    REQUIRE(count == 223);
+    /* Bit-exactness: gather arm versus kill-switch whole-layer arm on the
+     * same multimodal syncs. 100 text + 64 image + 136 text = 300 rows, so
+     * the gather bind runs on image rows too; then a 1024-row text append
+     * prefills with the image in the checkpoint. */
+    ds4_tokenize_text(engine, text, &prompt);
+    REQUIRE(prompt.len >= 1260);
+    memset(&span, 0, sizeof(span));
+    image_data = malloc((size_t)64 * DS4_N_EMBD * sizeof(float));
+    REQUIRE(image_data);
+    for (uint64_t i = 0; i < (uint64_t)64 * DS4_N_EMBD; i++)
+        image_data[i] = ((float)(int32_t)((i * 2654435761u >> 16) & 0xFF) - 127.5f) / 127.5f;
+    span.token_start = 100;
+    span.embedding.data = image_data;
+    span.embedding.token_count = 64;
+    REQUIRE(engine->vision_image_token > 0);
+    for (int i = 0; i < 100; i++) ds4_tokens_push(&prefix, prompt.v[i]);
+    for (int i = 0; i < 64; i++) ds4_tokens_push(&prefix, engine->vision_image_token);
+    for (int i = 0; i < 136; i++) ds4_tokens_push(&prefix, prompt.v[100 + i]);
+    REQUIRE(prefix.len == 300);
+    REQUIRE(ds4_session_sync_multimodal(gather, &prefix, &span, 1, err, sizeof(err)) == 0);
+    setenv("DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER", "1", 1);
+    REQUIRE(ds4_session_sync_multimodal(wholemap, &prefix, &span, 1, err, sizeof(err)) == 0);
+    unsetenv("DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER");
+    double worst = 0;
+    for (uint32_t v = 0; v < DS4_N_VOCAB; v++)
+        worst = fmax(worst, fabs((double)gather->logits[v] - wholemap->logits[v]));
+    fprintf(stderr, "mm gather prefix 300 rows (64 image): gather vs whole-layer "
+                    "max logit diff %.9g\n", worst);
+    REQUIRE(worst == 0);
+    for (int i = 0; i < 1024; i++) ds4_tokens_push(&prefix, prompt.v[236 + i]);
+    REQUIRE(prefix.len == 1324);
+    REQUIRE(ds4_session_sync_multimodal(gather, &prefix, &span, 1, err, sizeof(err)) == 0);
+    setenv("DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER", "1", 1);
+    REQUIRE(ds4_session_sync_multimodal(wholemap, &prefix, &span, 1, err, sizeof(err)) == 0);
+    unsetenv("DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER");
+    worst = 0;
+    for (uint32_t v = 0; v < DS4_N_VOCAB; v++)
+        worst = fmax(worst, fabs((double)gather->logits[v] - wholemap->logits[v]));
+    fprintf(stderr, "mm gather append 1024 rows: gather vs whole-layer "
+                    "max logit diff %.9g\n", worst);
+    REQUIRE(worst == 0);
+    printf("V4.1 mm gather prefill: admission, chunking and bind parity with images: PASS\n");
+    rc = 0;
+done:
+    if (err[0]) fprintf(stderr, "error: %s\n", err);
+    unsetenv("DS4_METAL_DISABLE_V41_STREAMING_SWEEP_GATHER");
+    ds4_tokens_free(&prefix); ds4_tokens_free(&prompt);
+    ds4_session_free(wholemap); ds4_session_free(gather);
+    ds4_engine_close(engine);
+    free(image_data);
     free(text);
     return rc;
 }
@@ -1193,6 +1299,8 @@ int main(int argc, char **argv) {
         return check_short_prefill(argv[1], argv[3], true);
     if (argc == 4 && !strcmp(argv[2], "--short-prefill-ssd-rows"))
         return check_short_prefill_rows(argv[1], argv[3]);
+    if (argc == 4 && !strcmp(argv[2], "--mm-gather-prefill"))
+        return check_mm_gather_prefill(argv[1], argv[3]);
     if (argc == 4 && !strcmp(argv[2], "--verify-parity"))
         return check_verify_parity(argv[1], argv[3], false);
     if (argc == 4 && !strcmp(argv[2], "--verify-parity-ssd"))
