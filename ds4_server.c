@@ -11018,6 +11018,53 @@ static void request_live_state_clear(server *s, server_slot *slot) {
     thinking_live_clear(s, slot);
 }
 
+/* Decode-cancel heal: an aborted round means "this round never happened".
+ * Rewind the live frontier back to where this round's prompt evaluation left
+ * it, dropping the half-sampled tail, and re-arm the thinking-visible binding
+ * with the request's own canonical render (j->req outlives the disconnect).
+ * The next request -- the same history plus one new message -- starts with
+ * that render, hits the visible tier, and incrementally prefills only the new
+ * message instead of rebuilding the full prefix from token zero.
+ *
+ * Fail-closed like every other rewind path: ds4_session_rewind() lands
+ * exactly on a valid checkpoint or the state is unusable, and heal restores
+ * nothing when it cannot, so the caller falls back to clearing the live
+ * bindings.  The rewind span equals the round's generated tokens, so a round
+ * that outgrew the raw-log ring simply misses heal here -- never enlarge the
+ * ring or loosen the landing check to rescue long rounds.
+ *
+ * Only plain Chat Completions re-arms thinking-visible: Responses and
+ * Anthropic slots bind live continuations with differently-shaped keys, and
+ * arming the wrong shape invites false hits worse than a miss.  Those rounds
+ * keep today's clear behavior.
+ *
+ * Locking: the generation worker calls this between its decode loop and the
+ * job return, so the session is quiet; inference_mu covers the rewind and is
+ * released before any tool_mu work -- thinking_live_remember() takes tool_mu
+ * itself. */
+static bool server_heal_live_on_cancel(server *s, server_slot *slot,
+                                       const job *j, int prompt_frontier) {
+    if (!s || !slot || !slot->session || !j) return false;
+    if (j->req.kind != REQ_CHAT || j->req.api != API_OPENAI) return false;
+    if (!j->req.prompt_text || !j->req.prompt_text[0]) return false;
+    if (g_stop_requested) return false;
+    if (prompt_frontier < 0) return false;
+    pthread_mutex_lock(&s->inference_mu);
+    ds4_session_rewind(slot->session, prompt_frontier);
+    /* ds4_session_rewind() can early-return without truncating (its
+     * speculative path) or truncate without a restorable graph state: trust
+     * the postcondition, never the call. */
+    const bool landed = ds4_session_pos(slot->session) == prompt_frontier &&
+                        ds4_session_checkpoint_valid(slot->session);
+    pthread_mutex_unlock(&s->inference_mu);
+    if (!landed) return false;
+    /* Responses/Anthropic bindings described a frontier that no longer
+     * exists; drop them, then rebind thinking-visible to the restored one. */
+    responses_live_clear(s, slot);
+    anthropic_live_clear(s, slot);
+    return thinking_live_remember(s, slot, j->req.prompt_text, &j->req) > 0;
+}
+
 static bool responses_live_has_call_id(server *s, const char *id) {
     if (!s || !id || !id[0]) return false;
     pthread_mutex_lock(&s->tool_mu);
@@ -14805,6 +14852,10 @@ decode_again:
     dsml_decode_tracker_init(&dsml_tracker);
     dsml_tracker.model_syntax = j->req.model_syntax;
 
+    /* Where this job's prompt evaluation left the live frontier: the decode
+     * start position and the rewind target for decode-cancel heal ("the round
+     * never happened" -- the prompt stays, the half-sampled tail goes). */
+    const int prompt_frontier = ds4_session_pos(slot->session);
     server_generation_enter(s);
     while (!g_stop_requested && !job_cancelled(j) && completion < max_tokens &&
            ds4_session_pos(slot->session) < ds4_session_ctx(slot->session)) {
@@ -15172,7 +15223,20 @@ decode_again:
     server_generation_leave(s);
 
     if (job_cancelled(j)) {
-        request_live_state_clear(s, slot);
+        /* A decode-cancel is "this round never happened".  Heal the live
+         * frontier back to the prompt end and rebind the visible tier so the
+         * next request only prefills its new suffix; if heal cannot land
+         * exactly, fall back to clearing every live binding.  The wording
+         * below is aligned with upstream #785's cancel logging so a future
+         * rebase does not fork two log lines for this exit. */
+        const int cancelled_at = ds4_session_pos(slot->session);
+        if (server_heal_live_on_cancel(s, slot, j, prompt_frontier)) {
+            server_log(DS4_LOG_DEFAULT,
+                       "ds4-server: chat cancelled at %d, healed to %d",
+                       cancelled_at, prompt_frontier);
+        } else {
+            request_live_state_clear(s, slot);
+        }
         trace_event(s, trace_id, "cancelled during generation after %d tokens", completion);
         anthropic_stream_free(&anthropic_live);
         openai_stream_free(&openai_live);
@@ -17727,6 +17791,124 @@ static void test_slot_probe_live_state_tiers(void) {
         visible_live_free(&slot.thinking_live);
         ds4_session_free_test_checkpoint(slot.session);
         request_free(&j.req);
+    }
+}
+
+/* Decode-cancel heal: an aborted decode must roll the live frontier back to
+ * this round's prompt end and re-arm the thinking-visible binding with the
+ * cancelled request's own render, so the next request -- the same history
+ * plus one new message -- hits the visible tier and incrementally prefills
+ * only that message.  Before heal the cancel silently dropped every live
+ * binding and the next request rebuilt the full prefix from token 0. */
+static void test_slot_probe_cancel_heal(void) {
+    server s = {0};
+    int ckpt_tok[10];
+    for (int i = 0; i < 10; i++) ckpt_tok[i] = i + 1;
+    const int gen_tok[4] = {101, 102, 103, 104};
+
+    /* 1. Heal lands: frontier returns to the prompt end, the half-sampled
+     *    tail is dropped, and thinking-live names exactly that position
+     *    (INV-CANCEL-1).  The next request finds a visible-tier hit and
+     *    reuses the healed frontier. */
+    {
+        server_slot slot = {0};
+        slot.session = ds4_session_new_test_checkpoint(ckpt_tok, 10);
+        ds4_session_set_test_rewind_keeps_valid(slot.session, true);
+        ds4_session_append_test_tokens(slot.session, gen_tok, 4);
+        job j = {0};
+        j.req.kind = REQ_CHAT;
+        j.req.api = API_OPENAI;
+        j.req.prompt_text = xstrdup("canonical prompt render");
+        ds4_tokens_push(&j.req.prompt, 999);  /* token tier would diverge */
+        TEST_ASSERT(server_heal_live_on_cancel(&s, &slot, &j, 10));
+        TEST_ASSERT(ds4_session_pos(slot.session) == 10);
+        TEST_ASSERT(ds4_session_checkpoint_valid(slot.session));
+        TEST_ASSERT(slot.thinking_live.valid);
+        TEST_ASSERT(slot.thinking_live.live_tokens ==
+                    ds4_session_pos(slot.session));
+        TEST_ASSERT(slot.thinking_live.visible_len ==
+                    strlen("canonical prompt render"));
+        job next = {0};
+        next.req.kind = REQ_CHAT;
+        next.req.api = API_OPENAI;
+        next.req.prompt_text =
+            xstrdup("canonical prompt render and a new question");
+        ds4_tokens_push(&next.req.prompt, 999);
+        slot_reuse pr = slot_probe_reuse_locked(&s, &slot, &next.req);
+        TEST_ASSERT(pr.kind == REUSE_THINKING_VISIBLE);
+        TEST_ASSERT(pr.reuse_tokens == 10);
+        /* A request that does not extend the healed key must still miss. */
+        next.req.prompt_text[0] = 'X';
+        TEST_ASSERT(slot_probe_reuse_locked(&s, &slot, &next.req).kind ==
+                    REUSE_NONE);
+        visible_live_free(&slot.thinking_live);
+        ds4_session_free_test_checkpoint(slot.session);
+        request_free(&j.req);
+        request_free(&next.req);
+    }
+
+    /* 2. Fail-closed: a rewind that cannot land on a valid checkpoint heals
+     *    nothing.  The caller's fallback then clears the live state, leaving
+     *    the slot no better bound than the pre-heal behavior. */
+    {
+        server_slot slot = {0};
+        slot.session = ds4_session_new_test_checkpoint(ckpt_tok, 10);
+        ds4_session_append_test_tokens(slot.session, gen_tok, 4);
+        slot.thinking_live.valid = true;
+        slot.thinking_live.live_tokens = 10;
+        slot.thinking_live.visible_text = xstrdup("canonical prompt render");
+        slot.thinking_live.visible_len = strlen("canonical prompt render");
+        job j = {0};
+        j.req.kind = REQ_CHAT;
+        j.req.api = API_OPENAI;
+        j.req.prompt_text = xstrdup("canonical prompt render");
+        ds4_tokens_push(&j.req.prompt, 999);
+        TEST_ASSERT(!server_heal_live_on_cancel(&s, &slot, &j, 10));
+        job next = {0};
+        next.req.kind = REQ_CHAT;
+        next.req.api = API_OPENAI;
+        next.req.prompt_text =
+            xstrdup("canonical prompt render and a new question");
+        ds4_tokens_push(&next.req.prompt, 999);
+        request_live_state_clear(&s, &slot);  /* caller's fallback */
+        TEST_ASSERT(!slot.thinking_live.valid);
+        TEST_ASSERT(slot_probe_reuse_locked(&s, &slot, &next.req).kind ==
+                    REUSE_NONE);
+        ds4_session_free_test_checkpoint(slot.session);
+        request_free(&j.req);
+        request_free(&next.req);
+    }
+
+    /* 3. Guards: completions, Responses/Anthropic shapes, empty renders and
+     *    shutdown skip heal entirely -- those rounds keep today's behavior
+     *    and the frontier stays untouched. */
+    {
+        server_slot slot = {0};
+        slot.session = ds4_session_new_test_checkpoint(ckpt_tok, 10);
+        ds4_session_set_test_rewind_keeps_valid(slot.session, true);
+        ds4_session_append_test_tokens(slot.session, gen_tok, 4);
+        job j = {0};
+        j.req.kind = REQ_CHAT;
+        j.req.api = API_OPENAI;
+        j.req.prompt_text = xstrdup("canonical prompt render");
+        j.req.kind = REQ_COMPLETION;
+        TEST_ASSERT(!server_heal_live_on_cancel(&s, &slot, &j, 10));
+        j.req.kind = REQ_CHAT;
+        j.req.api = API_RESPONSES;
+        TEST_ASSERT(!server_heal_live_on_cancel(&s, &slot, &j, 10));
+        j.req.api = API_ANTHROPIC;
+        TEST_ASSERT(!server_heal_live_on_cancel(&s, &slot, &j, 10));
+        j.req.api = API_OPENAI;
+        free(j.req.prompt_text);
+        j.req.prompt_text = NULL;
+        TEST_ASSERT(!server_heal_live_on_cancel(&s, &slot, &j, 10));
+        g_stop_requested = 1;
+        j.req.prompt_text = xstrdup("canonical prompt render");
+        TEST_ASSERT(!server_heal_live_on_cancel(&s, &slot, &j, 10));
+        g_stop_requested = 0;
+        TEST_ASSERT(ds4_session_pos(slot.session) == 14);  /* guards: no rewind */
+        request_free(&j.req);
+        ds4_session_free_test_checkpoint(slot.session);
     }
 }
 
@@ -25333,6 +25515,7 @@ static void ds4_server_unit_tests_run(void) {
     test_live_continuation_contract();
     test_slot_probe_and_routing_scores();
     test_slot_probe_live_state_tiers();
+    test_slot_probe_cancel_heal();
     test_slot_probe_v41_rewind_tiers();
     test_slot_probe_glm_rewind_tiers();
     test_slot_probe_vision_tiers();
