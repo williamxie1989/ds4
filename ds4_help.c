@@ -351,6 +351,8 @@ static void print_server_api(FILE *fp, const help_colors *c) {
     opt(fp, c, "--batched-session N", "Keep N resident sessions and batch decode-ready requests.");
     opt(fp, c, "--mixed-prefill-quantum N", "Prefill chunk while generations are active. Default: 128; GLM-5.3 minimum: 1024");
     opt(fp, c, "--image-cache-mb N", "Vision embedding result cache budget in MiB; 0 disables. Default: 256");
+    opt(fp, c, "--menubar", "Spawn the macOS menu bar sidecar (menubar/ds4_menubar.py) showing live prefill/decode status. Requires python3 with PyObjC; --no-menubar disables.");
+    para(fp, c, "Endpoints: /v1/chat/completions, /v1/responses, /v1/completions, /v1/messages, and read-only /v1/status.");
     para(fp, c, "Model endpoint aliases include deepseek-v4-flash and deepseek-v4-pro; both serve the loaded GGUF.");
     fputc('\n', fp);
 }
