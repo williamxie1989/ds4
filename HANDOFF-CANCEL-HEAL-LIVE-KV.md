@@ -213,3 +213,9 @@ gguf`，常驻）。结果：
 操作备忘（防下个会话踩坑）：macOS 无 `timeout` 命令，回归脚本别用它（rc=127 假失败）；
 `tests/test_web_recovery` 必须走 `python3 tests/test_web_recovery.py ./tests/test_web_recovery`；
 测试 server 用 V4.1 权重时 `--power` 必须 100（引擎校验）。
+
+追记（10-13 存量红立案结案）：两枚 ds41-exact 红（fusions matvec-bf16、engram_admission
+line 56）经基线 worktree 对照定性为 `4a84e65` 自带的"M3-Ultra-only oracle 在 M5 上先天不
+成立"，修复见 `e9c0e3c` + 台账 D"存量红开案"表——均为测试侧，引擎零改动；再犯排查先查
+loop 变量是否双前缀（`for t in tests/X; do ./tests/$t` = `./tests/tests/X` → rc=127 假象，
+本次调查曾一度被它带偏）。
