@@ -26,6 +26,10 @@ DS4_DSPARK_SUPPORT ?= gguf/DeepSeek-V4-Flash-DSpark-support-0731.gguf
 
 ifeq ($(UNAME_S),Darwin)
 METAL_LDLIBS := $(LDLIBS) -framework Foundation -framework Metal -framework ImageIO -framework CoreGraphics -framework CoreFoundation
+# ds4_image.o carries the ImageIO WebP decoder, and every Darwin link includes
+# it (both CORE_OBJS and CPU_CORE_OBJS list it), so the decoder frameworks
+# belong in LDLIBS itself: CPU and CPU-test links need them too.
+LDLIBS += -framework ImageIO -framework CoreGraphics -framework CoreFoundation
 # Standalone test binaries that link ds4_image.o need the ImageIO WebP decoder.
 IMAGE_LDLIBS := -lm -framework ImageIO -framework CoreGraphics -framework CoreFoundation
 CORE_OBJS = ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_metal.o ds4_layer_pack.o ds4_engram.o
