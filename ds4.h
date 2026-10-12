@@ -493,6 +493,14 @@ void ds4_session_free_test_checkpoint(ds4_session *s);
  * token_start/row-count/fingerprint per span).  Not usable for inference. */
 void ds4_session_set_test_images(ds4_session *s,
                                  const ds4_vision_span *images, size_t n);
+/* Test hook: append tokens to a test checkpoint's token history without an
+ * engine or graph, to stand in for a frontier decode advanced past the end
+ * of the prompt. */
+void ds4_session_append_test_tokens(ds4_session *s, const int *tokens, int n);
+/* Test hook: make a graph-less test checkpoint's rewind preserve the
+ * checkpoint, as a real graph rewind does; unset rewinds keep the fail-closed
+ * invalidation. */
+void ds4_session_set_test_rewind_keeps_valid(ds4_session *s, bool on);
 int ds4_session_argmax(ds4_session *s);
 int ds4_session_argmax_excluding(ds4_session *s, int excluded_id);
 int ds4_session_argmax_ignoring_eos(ds4_session *s,

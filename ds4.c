@@ -63527,6 +63527,11 @@ struct ds4_session {
      * checkpoints have no snapshot ring, so the probe's GLM rewind tier would
      * be unreachable without it.  Zero (calloc default) means unset. */
     int test_rewind_floor;
+    /* Unit-test hook for ds4_session_rewind(): emulate a graph rewind that
+     * restores state on a graph-less test checkpoint, so heal-style callers
+     * can exercise their success path.  False (calloc default) keeps the
+     * fail-closed invalidation. */
+    bool test_rewind_keeps_valid;
 };
 
 static bool ds4_session_tp_leader(const ds4_session *s);
@@ -89715,6 +89720,10 @@ void ds4_session_rewind(ds4_session *s, int pos) {
         state_ok = ds41_graph_rewind(&s->ds41_graph, s->checkpoint.v, (uint32_t)pos);
 #endif
 #endif
+    /* Unit-test hook: emulate a state-restoring graph rewind on a graph-less
+     * test checkpoint; production never sets the flag and truncation keeps
+     * invalidating the checkpoint fail-closed. */
+    if (!state_ok && !s->engine && s->test_rewind_keeps_valid) state_ok = true;
     s->checkpoint.len = pos;
     /* DeepSeek compressors cannot be rolled back by truncating their row
      * counts. Without a saved frontier the caller must rebuild this prefix. */
@@ -89781,6 +89790,18 @@ void ds4_session_free_test_checkpoint(ds4_session *s) {
  * GLM-5.3 graph for. */
 void ds4_session_set_test_rewind_floor(ds4_session *s, int pos) {
     if (s) s->test_rewind_floor = pos > 0 ? pos : 0;
+}
+
+/* Unit-test hook: extend a graph-less test checkpoint's token history without
+ * an engine, to stand in for a frontier decode advanced past the prompt end. */
+void ds4_session_append_test_tokens(ds4_session *s, const int *tokens, int n) {
+    if (!s || !tokens) return;
+    for (int i = 0; i < n; i++) token_vec_push(&s->checkpoint, tokens[i]);
+}
+
+/* Unit-test hook: see test_rewind_keeps_valid in ds4_session_rewind(). */
+void ds4_session_set_test_rewind_keeps_valid(ds4_session *s, bool on) {
+    if (s) s->test_rewind_keeps_valid = on;
 }
 
 void ds4_session_set_test_images(ds4_session *s,
