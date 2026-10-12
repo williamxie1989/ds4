@@ -10295,7 +10295,11 @@ struct server_slot {
 };
 
 #define SERVER_IMAGE_CACHE_ENTRIES 32
-#define SERVER_IMAGE_CACHE_BYTES (128u * 1024u * 1024u)
+/* Default byte budget for the vision embedding result cache.  A large
+ * screenshot embedding is ~16 MiB (fp32), so 128 MiB thrashed on an
+ * 8-image agent history and every miss re-ran the vision tower for
+ * ~8 s per turn.  256 MiB keeps a typical working set resident. */
+#define SERVER_IMAGE_CACHE_BYTES (256u * 1024u * 1024u)
 
 typedef struct {
     uint8_t *encoded;
@@ -10309,6 +10313,7 @@ typedef struct {
     server_image_cache_entry entries[SERVER_IMAGE_CACHE_ENTRIES];
     size_t bytes;
     uint64_t clock;
+    size_t max_bytes; /* Runtime budget from --image-cache-mb; 0 disables. */
 } server_image_cache;
 
 static void server_image_cache_remove(server_image_cache *cache,
@@ -10325,8 +10330,14 @@ static void server_image_cache_clear(server_image_cache *cache) {
     cache->clock = 0;
 }
 
+/* Release the image cache only under CRITICAL pressure.  A WARN is routine
+ * on a box with resident multi-model servers, and clearing here forced a
+ * full vision-tower re-encode of every history image on the next turn.
+ * The cache is already bounded by max_bytes, so keeping it under WARN is
+ * the memory contract; CRITICAL still drops it as the relief valve. */
 static void server_memory_release_images(server_image_cache *cache) {
-    if (server_memory_pressure() >= DS4_HOST_PRESSURE_WARN) server_image_cache_clear(cache);
+    if (server_memory_pressure() >= DS4_HOST_PRESSURE_CRITICAL)
+        server_image_cache_clear(cache);
 }
 
 static bool server_image_cache_get(server_image_cache *cache,
@@ -10459,7 +10470,7 @@ static bool server_encode_image(server *s, const server_image_input *input,
      * 2560-wide, not 4096; a wrong width over-reads the source in put). */
     server_image_cache_put(&s->image_cache, input, out,
                             (uint32_t)ds4_engine_embd_dim(s->engine),
-                            SERVER_IMAGE_CACHE_BYTES);
+                            s->image_cache.max_bytes);
     server_log(DS4_LOG_KVCACHE, "ds4-server: vision embedding encoded; cache=%zu bytes",
                s->image_cache.bytes);
     return true;
@@ -16108,6 +16119,7 @@ typedef struct {
     bool enable_cors;
     int batched_sessions;
     int mixed_prefill_quantum;
+    int image_cache_mb;
 } server_config;
 
 static int parse_int_arg(const char *s, const char *opt) {
@@ -16257,6 +16269,7 @@ static server_config parse_options(int argc, char **argv) {
         .default_tokens = 393216,
         .tool_memory_max_ids = DS4_TOOL_MEMORY_DEFAULT_MAX_IDS,
         .mixed_prefill_quantum = 128,
+        .image_cache_mb = (int)(SERVER_IMAGE_CACHE_BYTES / (1024u * 1024u)),
     };
     c.kv_cache = kv_cache_default_options();
 
@@ -16352,6 +16365,9 @@ static server_config parse_options(int argc, char **argv) {
         } else if (!strcmp(arg, "--mixed-prefill-quantum")) {
             c.mixed_prefill_quantum =
                 parse_int_arg(need_arg(&i, argc, argv, arg), arg);
+        } else if (!strcmp(arg, "--image-cache-mb")) {
+            c.image_cache_mb =
+                parse_nonneg_int_arg(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--kv-disk-dir")) {
             c.kv_disk_dir = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--kv-disk-space-mb")) {
@@ -16619,6 +16635,7 @@ int main(int argc, char **argv) {
     s.qwen4_batch_mtp = cfg.engine.backend == DS4_BACKEND_METAL &&
                        ds4_engine_is_qwen4(engine) && ds4_engine_mtp_draft_tokens(engine) > 1;
     s.mixed_prefill_quantum = cfg.mixed_prefill_quantum;
+    s.image_cache.max_bytes = (size_t)cfg.image_cache_mb * 1024u * 1024u;
     s.last_prefill_slot = slot_count - 1;
     s.default_tokens = cfg.default_tokens;
     s.disable_exact_dsml_tool_replay = cfg.disable_exact_dsml_tool_replay;
@@ -24466,6 +24483,13 @@ static void test_server_image_embedding_cache(void) {
         ds4_vision_embedding_free(&out);
     }
     server_image_cache_clear(&cache);
+
+    /* A zero budget (--image-cache-mb 0) disables caching end to end. */
+    src.data = data;
+    src.token_count = 1;
+    server_image_cache_put(&cache, &input, &src, 2, 0);
+    TEST_ASSERT(cache.bytes == 0);
+    TEST_ASSERT(!server_image_cache_get(&cache, &input, &out));
 }
 
 static void test_deepseek41_server_stream(void) {
@@ -24679,6 +24703,7 @@ static void ds4_server_unit_tests_run(void) {
     test_server_image_embedding_cache();
     test_batched_prefill_round_robin();
     test_mixed_prefill_quantum_option();
+    test_image_cache_mb_option();
     test_multimodal_prefill_resume_frontier();
     test_batched_live_continuation_slot_binding();
     test_live_continuation_contract();
@@ -24874,3 +24899,23 @@ int main(void) {
 #endif
 
 #endif
+static void test_image_cache_mb_option(void) {
+    char *default_argv[] = {"ds4-server"};
+    server_config defaults = parse_options(1, default_argv);
+    TEST_ASSERT(defaults.image_cache_mb ==
+                (int)(SERVER_IMAGE_CACHE_BYTES / (1024u * 1024u)));
+
+    char *custom_argv[] = {"ds4-server", "--image-cache-mb", "1024"};
+    server_config custom = parse_options(3, custom_argv);
+    TEST_ASSERT(custom.image_cache_mb == 1024);
+
+    char *off_argv[] = {"ds4-server", "--image-cache-mb", "0"};
+    server_config off = parse_options(3, off_argv);
+    TEST_ASSERT(off.image_cache_mb == 0);
+}
+
+    /* WARN is routine on multi-model boxes and must not destroy the
+     * embedding working set; only CRITICAL drops the cache. */
+    server_memory_release_images(&cache);
+    TEST_ASSERT(cache.bytes==1+sizeof(float) && cache.entries[0].encoded!=NULL);
+    server_test_memory_pressure=DS4_HOST_PRESSURE_CRITICAL;
