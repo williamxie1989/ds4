@@ -1,0 +1,41 @@
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 79% total for model + cached experts: 92.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8913 (82.62 GiB)
+ds4: metal SSD streaming cache target 82.62 GiB; effective 82.62 GiB = 7.12 GiB prefill headroom + 75.50 GiB dynamic cache (8145 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.83 GiB (raw 0.63 + compressed 0.20) + buffers 7.68 GiB + resident model 9.37 GiB + expert cache 75.50 GiB + prefill expert reserve 7.12 GiB = 100.50 GiB planned
+ds4: memory detail: ctx=32768 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=32769 backend=metal
+1011 23:50:06 ds4-server: context buffers 8713.55 MiB (ctx=32768, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=32769)
+ds4: V4.1 static context buffers 8713.55 MiB (ctx=32768), Engram disk-only
+1011 23:50:06 ds4-server: host reclaimable memory after session allocation 103.87 GiB (pressure=1)
+1011 23:50:06 ds4-server: KV disk cache speed-bench/M3/m3-3/run-20261011-233845/prewarm-kv (budget=8192 MiB, cross-quant=accept, min=512, cold_max=30000, continued=10000, trim=32, align=2048, hit_half_life=21600s)
+1011 23:50:06 ds4-server: listening on http://127.0.0.1:8057
+1011 23:50:08 ds4-server: chat ctx=0..36:36 prompt start
+1011 23:50:12 ds4-server: chat ctx=0..36:36 prefill chunk 36/36 (100.0%) chunk=0.00 t/s avg=8.58 t/s 4.196s
+1011 23:50:12 ds4-server: chat ctx=0..36:36 prompt done 4.208s
+1011 23:50:12 ds4-server: chat ctx=36..40:4 gen=4 THINKING decoding chunk=6.63 t/s avg=6.63 t/s 0.603s
+ds4-server: thinking not closed, ignoring incomplete DSML in reasoning
+1011 23:50:12 ds4-server: chat ctx=0..36:36 gen=4 THINKING finish=length 4.811s
+1011 23:50:20 ds4-server: shutdown requested, draining requests
+ds4: Metal memory before V4.1 graph free: runtime 7.98 GiB + streaming experts 33.02 GiB = 41.00 GiB tracked live
+ds4:   runtime tensors live 8172.54 MiB peak 8172.54 MiB
+ds4:   macOS task memory footprint 42.13 GiB, resident 42.66 GiB, virtual 647.68 GiB
+ds4:   mmap model wrapper creations 569 buffers 9.38 GiB cumulative, 1.23 GiB max (not copied)
+ds4:   streaming expert cache budget=8145 experts entries=3562 expert=9.49 MiB target=75.50 GiB live=33.02 GiB, hits=9319 misses=3562 hit_rate=0.723 wraps=10686 evictions=0 buffer_allocs=9 buffer_reuses=0 evict_dontneed=0.00 GiB miss_willneed=0.00 GiB miss_pread=33.02 GiB pread_ms=2440.752
+ds4:   streaming expert buffer mlock locked=33.05 GiB failed=0.00 GiB failures=0 time=470.393 ms
+ds4:   model residency requests 0 (ssd-streaming)
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 4.37 MiB (flash mask 0.02, pad 0.13, tmp 4.02, blk 0.00, ring 0.00, kv 0.08, compressor 0.02, router 0.05, indexer 0.00, moe 0.06, f16 0.00, raw-store 0.00)
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)

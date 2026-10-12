@@ -1,0 +1,1 @@
+ds4:   streaming expert cache budget=8145 experts entries=3562 expert=9.49 MiB target=75.50 GiB live=33.02 GiB, hits=9319 misses=3562 hit_rate=0.723 wraps=10686 evictions=0 buffer_allocs=9 buffer_reuses=0 evict_dontneed=0.00 GiB miss_willneed=0.00 GiB miss_pread=33.02 GiB pread_ms=1470.269

@@ -1,0 +1,803 @@
+preflight ok swap=12416.2M avail=105G 23:38:45
+=== LEG bind-parity start 23:38:45 ===
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: metal SSD streaming cache target 16.00 GiB; effective 16.00 GiB = 7.12 GiB prefill headroom + 8.88 GiB dynamic cache (958 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.35 GiB (raw 0.32 + compressed 0.02) + buffers 1.76 GiB + resident model 9.37 GiB + expert cache 8.88 GiB + prefill expert reserve 7.12 GiB = 27.47 GiB planned
+ds4: memory detail: ctx=4096 prefill_cap=2048 raw_kv_rows=128 compressed_kv_rows=4097 backend=metal
+layer 0 rows 2: address-table bind bit-exact vs whole-map bind
+layer 0 rows 5: address-table bind bit-exact vs whole-map bind
+layer 0 rows 8: address-table bind bit-exact vs whole-map bind
+layer 0 rows 32: address-table bind bit-exact vs whole-map bind
+layer 0 rows 256: address-table bind bit-exact vs whole-map bind
+layer 0 rows 511: address-table bind bit-exact vs whole-map bind
+layer 0 rows 512: address-table bind bit-exact vs whole-map bind
+layer 0 rows 831: address-table bind bit-exact vs whole-map bind
+layer 0 rows 1024: address-table bind bit-exact vs whole-map bind
+layer 20 rows 2: address-table bind bit-exact vs whole-map bind
+layer 20 rows 5: address-table bind bit-exact vs whole-map bind
+layer 20 rows 8: address-table bind bit-exact vs whole-map bind
+layer 20 rows 32: address-table bind bit-exact vs whole-map bind
+layer 20 rows 256: address-table bind bit-exact vs whole-map bind
+layer 20 rows 511: address-table bind bit-exact vs whole-map bind
+layer 20 rows 512: address-table bind bit-exact vs whole-map bind
+layer 20 rows 831: address-table bind bit-exact vs whole-map bind
+layer 20 rows 1024: address-table bind bit-exact vs whole-map bind
+layer 39 rows 2: address-table bind bit-exact vs whole-map bind
+layer 39 rows 5: address-table bind bit-exact vs whole-map bind
+layer 39 rows 8: address-table bind bit-exact vs whole-map bind
+layer 39 rows 32: address-table bind bit-exact vs whole-map bind
+layer 39 rows 256: address-table bind bit-exact vs whole-map bind
+layer 39 rows 511: address-table bind bit-exact vs whole-map bind
+layer 39 rows 512: address-table bind bit-exact vs whole-map bind
+layer 39 rows 831: address-table bind bit-exact vs whole-map bind
+layer 39 rows 1024: address-table bind bit-exact vs whole-map bind
+V4.1 MoE bind parity: address-table gather bit-exact at every layer and size
+=== LEG done rc=0 23:38:49 ===
+=== LEG dump223-off start 23:39:09 ===
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,gen_steady_tokens,gen_steady_tps,kvcache_bytes
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+2048,2048,155.04,0,0.00,0.000,0,0.00,0
+2271,223,209.75,0,0.00,0.000,0,0.00,0
+2494,223,230.07,0,0.00,0.000,0,0.00,0
+2717,223,227.70,0,0.00,0.000,0,0.00,0
+2940,223,229.68,0,0.00,0.000,0,0.00,0
+=== LEG done rc=0 23:39:28 ===
+=== LEG dump223-on start 23:39:48 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,gen_steady_tokens,gen_steady_tps,kvcache_bytes
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+2048,2048,148.44,0,0.00,0.000,0,0.00,0
+2271,223,207.41,0,0.00,0.000,0,0.00,0
+2494,223,228.96,0,0.00,0.000,0,0.00,0
+2717,223,229.23,0,0.00,0.000,0,0.00,0
+2940,223,232.06,0,0.00,0.000,0,0.00,0
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:40:08 ===
+=== LEG dump1524-off start 23:40:28 ===
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,gen_steady_tokens,gen_steady_tps,kvcache_bytes
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+2048,2048,148.87,0,0.00,0.000,0,0.00,0
+3572,1524,380.09,0,0.00,0.000,0,0.00,0
+5096,1524,397.61,0,0.00,0.000,0,0.00,0
+6620,1524,384.83,0,0.00,0.000,0,0.00,0
+8144,1524,371.31,0,0.00,0.000,0,0.00,0
+=== LEG done rc=0 23:40:59 ===
+=== LEG dump1524-on start 23:41:19 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,gen_steady_tokens,gen_steady_tps,kvcache_bytes
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+2048,2048,149.70,0,0.00,0.000,0,0.00,0
+3572,1524,347.59,0,0.00,0.000,0,0.00,0
+5096,1524,258.24,0,0.00,0.000,0,0.00,0
+6620,1524,265.42,0,0.00,0.000,0,0.00,0
+8144,1524,267.41,0,0.00,0.000,0,0.00,0
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:41:57 ===
+IDENTICAL: 5 expected frontiers; speed-bench/M3/m3-3/run-20261011-233845/cmp223.json
+IDENTICAL: 5 expected frontiers; speed-bench/M3/m3-3/run-20261011-233845/cmp1524.json
+dump parity 223+1524 IDENTICAL 23:42:18
+=== LEG press643 start 23:42:18 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 18.98 GiB = 40.77 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,gen_steady_tokens,gen_steady_tps,kvcache_bytes
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+2048,2048,166.10,0,0.00,0.000,0,0.00,0
+2691,643,157.91,0,0.00,0.000,0,0.00,0
+3287,596,181.54,0,0.00,0.000,0,0.00,0
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:42:39 ===
+=== LEG press1524 start 23:42:59 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 18.98 GiB = 40.77 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,gen_steady_tokens,gen_steady_tps,kvcache_bytes
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+2048,2048,184.27,0,0.00,0.000,0,0.00,0
+3572,1524,212.80,0,0.00,0.000,0,0.00,0
+5096,1524,246.12,0,0.00,0.000,0,0.00,0
+6620,1524,253.10,0,0.00,0.000,0,0.00,0
+8144,1524,252.23,0,0.00,0.000,0,0.00,0
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:43:37 ===
+IDENTICAL: 5 expected frontiers; speed-bench/M3/m3-3/run-20261011-233845/cmpp1524.json
+small-cache pressure gate IDENTICAL 23:43:58
+=== LEG simA-120 start 23:43:58 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+ds4: Metal memory before V4.1 graph free: runtime 11.81 GiB + streaming experts 72.51 GiB = 84.31 GiB tracked live
+ds4:   runtime tensors live 12088.90 MiB peak 12088.90 MiB
+ds4:   macOS task memory footprint 82.50 GiB, resident 83.57 GiB, virtual 724.12 GiB
+ds4:   mmap model wrapper creations 569 buffers 9.38 GiB cumulative, 1.23 GiB max (not copied)
+ds4:   streaming expert cache budget=7822 experts entries=7822 expert=9.49 MiB target=72.51 GiB live=72.51 GiB, hits=248520 misses=8599 hit_rate=0.967 wraps=25797 evictions=777 buffer_allocs=19 buffer_reuses=777 evict_dontneed=0.00 GiB miss_willneed=0.00 GiB miss_pread=79.71 GiB pread_ms=5469.431
+ds4:   streaming expert buffer mlock locked=72.57 GiB failed=0.00 GiB failures=0 time=1249.800 ms
+ds4:   streaming expert cache per-layer stats:
+ds4:     layer=0 layer_slots=384 cached=212 hits=6600 misses=249 hit_rate=0.964 evictions=37 miss_pread=2.31 GiB pread_ms=77.157
+ds4:     layer=1 layer_slots=384 cached=205 hits=6607 misses=241 hit_rate=0.965 evictions=36 miss_pread=2.23 GiB pread_ms=80.100
+ds4:     layer=2 layer_slots=384 cached=193 hits=6334 misses=217 hit_rate=0.967 evictions=24 miss_pread=2.01 GiB pread_ms=99.353
+ds4:     layer=3 layer_slots=384 cached=195 hits=6265 misses=213 hit_rate=0.967 evictions=18 miss_pread=1.97 GiB pread_ms=105.132
+ds4:     layer=4 layer_slots=384 cached=168 hits=6101 misses=197 hit_rate=0.969 evictions=29 miss_pread=1.83 GiB pread_ms=94.825
+ds4:     layer=5 layer_slots=384 cached=190 hits=6206 misses=203 hit_rate=0.968 evictions=13 miss_pread=1.88 GiB pread_ms=100.875
+ds4:     layer=6 layer_slots=384 cached=164 hits=5958 misses=170 hit_rate=0.972 evictions=6 miss_pread=1.58 GiB pread_ms=91.795
+ds4:     layer=7 layer_slots=384 cached=174 hits=6068 misses=174 hit_rate=0.972 evictions=0 miss_pread=1.61 GiB pread_ms=90.784
+ds4:     layer=8 layer_slots=384 cached=180 hits=6221 misses=194 hit_rate=0.970 evictions=14 miss_pread=1.80 GiB pread_ms=91.623
+ds4:     layer=9 layer_slots=384 cached=188 hits=6207 misses=202 hit_rate=0.968 evictions=14 miss_pread=1.87 GiB pread_ms=94.461
+ds4:     layer=10 layer_slots=384 cached=182 hits=6137 misses=196 hit_rate=0.969 evictions=14 miss_pread=1.82 GiB pread_ms=84.082
+ds4:     layer=11 layer_slots=384 cached=185 hits=6166 misses=191 hit_rate=0.970 evictions=6 miss_pread=1.77 GiB pread_ms=83.867
+ds4:     layer=12 layer_slots=384 cached=210 hits=6167 misses=226 hit_rate=0.965 evictions=16 miss_pread=2.09 GiB pread_ms=93.554
+ds4:     layer=13 layer_slots=384 cached=204 hits=6218 misses=239 hit_rate=0.963 evictions=35 miss_pread=2.22 GiB pread_ms=108.142
+ds4:     layer=14 layer_slots=384 cached=173 hits=5990 misses=177 hit_rate=0.971 evictions=4 miss_pread=1.64 GiB pread_ms=88.136
+ds4:     layer=15 layer_slots=384 cached=196 hits=6284 misses=235 hit_rate=0.964 evictions=39 miss_pread=2.18 GiB pread_ms=106.094
+ds4:     layer=16 layer_slots=384 cached=183 hits=6088 misses=195 hit_rate=0.969 evictions=12 miss_pread=1.81 GiB pread_ms=106.955
+ds4:     layer=17 layer_slots=384 cached=201 hits=6137 misses=218 hit_rate=0.966 evictions=17 miss_pread=2.02 GiB pread_ms=122.251
+ds4:     layer=18 layer_slots=384 cached=198 hits=6093 misses=198 hit_rate=0.969 evictions=0 miss_pread=1.84 GiB pread_ms=101.475
+ds4:     layer=19 layer_slots=384 cached=226 hits=6353 misses=272 hit_rate=0.959 evictions=46 miss_pread=2.52 GiB pread_ms=121.089
+ds4:     layer=20 layer_slots=384 cached=171 hits=5948 misses=177 hit_rate=0.971 evictions=6 miss_pread=1.64 GiB pread_ms=132.970
+ds4:     layer=21 layer_slots=384 cached=175 hits=6040 misses=189 hit_rate=0.970 evictions=14 miss_pread=1.75 GiB pread_ms=144.037
+ds4:     layer=22 layer_slots=384 cached=183 hits=6007 misses=197 hit_rate=0.968 evictions=14 miss_pread=1.83 GiB pread_ms=151.497
+ds4:     layer=23 layer_slots=384 cached=212 hits=6275 misses=239 hit_rate=0.963 evictions=27 miss_pread=2.22 GiB pread_ms=189.546
+ds4:     layer=24 layer_slots=384 cached=190 hits=6070 misses=194 hit_rate=0.969 evictions=4 miss_pread=1.80 GiB pread_ms=149.572
+ds4:     layer=25 layer_slots=384 cached=200 hits=6176 misses=209 hit_rate=0.967 evictions=9 miss_pread=1.94 GiB pread_ms=160.100
+ds4:     layer=26 layer_slots=384 cached=183 hits=6063 misses=194 hit_rate=0.969 evictions=11 miss_pread=1.80 GiB pread_ms=149.613
+ds4:     layer=27 layer_slots=384 cached=209 hits=6310 misses=237 hit_rate=0.964 evictions=28 miss_pread=2.20 GiB pread_ms=180.664
+ds4:     layer=28 layer_slots=384 cached=205 hits=6241 misses=219 hit_rate=0.966 evictions=14 miss_pread=2.03 GiB pread_ms=167.787
+ds4:     layer=29 layer_slots=384 cached=221 hits=6201 misses=240 hit_rate=0.963 evictions=19 miss_pread=2.22 GiB pread_ms=184.825
+ds4:     layer=30 layer_slots=384 cached=189 hits=6176 misses=204 hit_rate=0.968 evictions=15 miss_pread=1.89 GiB pread_ms=155.857
+ds4:     layer=31 layer_slots=384 cached=206 hits=6299 misses=229 hit_rate=0.965 evictions=23 miss_pread=2.12 GiB pread_ms=177.076
+ds4:     layer=32 layer_slots=384 cached=210 hits=6231 misses=226 hit_rate=0.965 evictions=16 miss_pread=2.09 GiB pread_ms=173.705
+ds4:     layer=33 layer_slots=384 cached=204 hits=6287 misses=229 hit_rate=0.965 evictions=25 miss_pread=2.12 GiB pread_ms=177.386
+ds4:     layer=34 layer_slots=384 cached=225 hits=6357 misses=258 hit_rate=0.961 evictions=33 miss_pread=2.39 GiB pread_ms=290.003
+ds4:     layer=35 layer_slots=384 cached=196 hits=6220 misses=211 hit_rate=0.967 evictions=15 miss_pread=1.96 GiB pread_ms=199.261
+ds4:     layer=36 layer_slots=384 cached=195 hits=6179 misses=211 hit_rate=0.967 evictions=16 miss_pread=1.96 GiB pread_ms=182.058
+ds4:     layer=37 layer_slots=384 cached=215 hits=6377 misses=249 hit_rate=0.962 evictions=34 miss_pread=2.31 GiB pread_ms=187.763
+ds4:     layer=38 layer_slots=384 cached=208 hits=6415 misses=245 hit_rate=0.963 evictions=37 miss_pread=2.27 GiB pread_ms=186.485
+ds4:     layer=39 layer_slots=384 cached=198 hits=6448 misses=235 hit_rate=0.965 evictions=37 miss_pread=2.18 GiB pread_ms=187.476
+ds4:   model residency requests 0 (ssd-streaming)
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 1.59 MiB (flash mask 0.00, pad 0.15, tmp 0.00, blk 0.00, ring 0.00, kv 0.69, compressor 0.02, router 0.24, indexer 0.25, moe 0.24, f16 0.00, raw-store 0.00)
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:44:16 ===
+=== LEG simB-120 start 23:44:36 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+ds4: Metal memory before V4.1 graph free: runtime 11.81 GiB + streaming experts 72.51 GiB = 84.31 GiB tracked live
+ds4:   runtime tensors live 12088.90 MiB peak 12088.90 MiB
+ds4:   macOS task memory footprint 82.52 GiB, resident 83.57 GiB, virtual 724.12 GiB
+ds4:   mmap model wrapper creations 569 buffers 9.38 GiB cumulative, 1.23 GiB max (not copied)
+ds4:   streaming expert cache budget=7822 experts entries=7822 expert=9.49 MiB target=72.51 GiB live=72.51 GiB, hits=248520 misses=8599 hit_rate=0.967 wraps=25797 evictions=777 buffer_allocs=19 buffer_reuses=777 evict_dontneed=0.00 GiB miss_willneed=0.00 GiB miss_pread=79.71 GiB pread_ms=6556.036
+ds4:   streaming expert buffer mlock locked=72.57 GiB failed=0.00 GiB failures=0 time=1123.541 ms
+ds4:   streaming expert cache per-layer stats:
+ds4:     layer=0 layer_slots=384 cached=212 hits=6600 misses=249 hit_rate=0.964 evictions=37 miss_pread=2.31 GiB pread_ms=185.316
+ds4:     layer=1 layer_slots=384 cached=205 hits=6607 misses=241 hit_rate=0.965 evictions=36 miss_pread=2.23 GiB pread_ms=178.346
+ds4:     layer=2 layer_slots=384 cached=193 hits=6334 misses=217 hit_rate=0.967 evictions=24 miss_pread=2.01 GiB pread_ms=164.060
+ds4:     layer=3 layer_slots=384 cached=195 hits=6265 misses=213 hit_rate=0.967 evictions=18 miss_pread=1.97 GiB pread_ms=162.259
+ds4:     layer=4 layer_slots=384 cached=168 hits=6101 misses=197 hit_rate=0.969 evictions=29 miss_pread=1.83 GiB pread_ms=149.094
+ds4:     layer=5 layer_slots=384 cached=190 hits=6206 misses=203 hit_rate=0.968 evictions=13 miss_pread=1.88 GiB pread_ms=152.961
+ds4:     layer=6 layer_slots=384 cached=164 hits=5958 misses=170 hit_rate=0.972 evictions=6 miss_pread=1.58 GiB pread_ms=130.178
+ds4:     layer=7 layer_slots=384 cached=174 hits=6068 misses=174 hit_rate=0.972 evictions=0 miss_pread=1.61 GiB pread_ms=129.795
+ds4:     layer=8 layer_slots=384 cached=180 hits=6221 misses=194 hit_rate=0.970 evictions=14 miss_pread=1.80 GiB pread_ms=147.260
+ds4:     layer=9 layer_slots=384 cached=188 hits=6207 misses=202 hit_rate=0.968 evictions=14 miss_pread=1.87 GiB pread_ms=153.984
+ds4:     layer=10 layer_slots=384 cached=182 hits=6137 misses=196 hit_rate=0.969 evictions=14 miss_pread=1.82 GiB pread_ms=146.544
+ds4:     layer=11 layer_slots=384 cached=185 hits=6166 misses=191 hit_rate=0.970 evictions=6 miss_pread=1.77 GiB pread_ms=145.108
+ds4:     layer=12 layer_slots=384 cached=210 hits=6167 misses=226 hit_rate=0.965 evictions=16 miss_pread=2.09 GiB pread_ms=170.154
+ds4:     layer=13 layer_slots=384 cached=204 hits=6218 misses=239 hit_rate=0.963 evictions=35 miss_pread=2.22 GiB pread_ms=179.805
+ds4:     layer=14 layer_slots=384 cached=173 hits=5990 misses=177 hit_rate=0.971 evictions=4 miss_pread=1.64 GiB pread_ms=135.271
+ds4:     layer=15 layer_slots=384 cached=196 hits=6284 misses=235 hit_rate=0.964 evictions=39 miss_pread=2.18 GiB pread_ms=175.935
+ds4:     layer=16 layer_slots=384 cached=183 hits=6088 misses=195 hit_rate=0.969 evictions=12 miss_pread=1.81 GiB pread_ms=145.665
+ds4:     layer=17 layer_slots=384 cached=201 hits=6137 misses=218 hit_rate=0.966 evictions=17 miss_pread=2.02 GiB pread_ms=164.099
+ds4:     layer=18 layer_slots=384 cached=198 hits=6093 misses=198 hit_rate=0.969 evictions=0 miss_pread=1.84 GiB pread_ms=149.148
+ds4:     layer=19 layer_slots=384 cached=226 hits=6353 misses=272 hit_rate=0.959 evictions=46 miss_pread=2.52 GiB pread_ms=199.327
+ds4:     layer=20 layer_slots=384 cached=171 hits=5948 misses=177 hit_rate=0.971 evictions=6 miss_pread=1.64 GiB pread_ms=137.948
+ds4:     layer=21 layer_slots=384 cached=175 hits=6040 misses=189 hit_rate=0.970 evictions=14 miss_pread=1.75 GiB pread_ms=143.828
+ds4:     layer=22 layer_slots=384 cached=183 hits=6007 misses=197 hit_rate=0.968 evictions=14 miss_pread=1.83 GiB pread_ms=152.227
+ds4:     layer=23 layer_slots=384 cached=212 hits=6275 misses=239 hit_rate=0.963 evictions=27 miss_pread=2.22 GiB pread_ms=179.905
+ds4:     layer=24 layer_slots=384 cached=190 hits=6070 misses=194 hit_rate=0.969 evictions=4 miss_pread=1.80 GiB pread_ms=149.856
+ds4:     layer=25 layer_slots=384 cached=200 hits=6176 misses=209 hit_rate=0.967 evictions=9 miss_pread=1.94 GiB pread_ms=161.553
+ds4:     layer=26 layer_slots=384 cached=183 hits=6063 misses=194 hit_rate=0.969 evictions=11 miss_pread=1.80 GiB pread_ms=156.519
+ds4:     layer=27 layer_slots=384 cached=209 hits=6310 misses=237 hit_rate=0.964 evictions=28 miss_pread=2.20 GiB pread_ms=181.867
+ds4:     layer=28 layer_slots=384 cached=205 hits=6241 misses=219 hit_rate=0.966 evictions=14 miss_pread=2.03 GiB pread_ms=166.927
+ds4:     layer=29 layer_slots=384 cached=221 hits=6201 misses=240 hit_rate=0.963 evictions=19 miss_pread=2.22 GiB pread_ms=186.358
+ds4:     layer=30 layer_slots=384 cached=189 hits=6176 misses=204 hit_rate=0.968 evictions=15 miss_pread=1.89 GiB pread_ms=155.815
+ds4:     layer=31 layer_slots=384 cached=206 hits=6299 misses=229 hit_rate=0.965 evictions=23 miss_pread=2.12 GiB pread_ms=174.146
+ds4:     layer=32 layer_slots=384 cached=210 hits=6231 misses=226 hit_rate=0.965 evictions=16 miss_pread=2.09 GiB pread_ms=173.597
+ds4:     layer=33 layer_slots=384 cached=204 hits=6287 misses=229 hit_rate=0.965 evictions=25 miss_pread=2.12 GiB pread_ms=176.273
+ds4:     layer=34 layer_slots=384 cached=225 hits=6357 misses=258 hit_rate=0.961 evictions=33 miss_pread=2.39 GiB pread_ms=207.413
+ds4:     layer=35 layer_slots=384 cached=196 hits=6220 misses=211 hit_rate=0.967 evictions=15 miss_pread=1.96 GiB pread_ms=164.727
+ds4:     layer=36 layer_slots=384 cached=195 hits=6179 misses=211 hit_rate=0.967 evictions=16 miss_pread=1.96 GiB pread_ms=161.003
+ds4:     layer=37 layer_slots=384 cached=215 hits=6377 misses=249 hit_rate=0.962 evictions=34 miss_pread=2.31 GiB pread_ms=187.180
+ds4:     layer=38 layer_slots=384 cached=208 hits=6415 misses=245 hit_rate=0.963 evictions=37 miss_pread=2.27 GiB pread_ms=185.908
+ds4:     layer=39 layer_slots=384 cached=198 hits=6448 misses=235 hit_rate=0.965 evictions=37 miss_pread=2.18 GiB pread_ms=188.677
+ds4:   model residency requests 0 (ssd-streaming)
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 1.59 MiB (flash mask 0.00, pad 0.15, tmp 0.00, blk 0.00, ring 0.00, kv 0.69, compressor 0.02, router 0.24, indexer 0.25, moe 0.24, f16 0.00, raw-store 0.00)
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:44:54 ===
+=== LEG simA-300 start 23:45:14 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+ds4: Metal memory before V4.1 graph free: runtime 11.81 GiB + streaming experts 72.51 GiB = 84.31 GiB tracked live
+ds4:   runtime tensors live 12088.90 MiB peak 12088.90 MiB
+ds4:   macOS task memory footprint 82.58 GiB, resident 83.60 GiB, virtual 724.16 GiB
+ds4:   mmap model wrapper creations 569 buffers 9.38 GiB cumulative, 1.23 GiB max (not copied)
+ds4:   streaming expert cache budget=7822 experts entries=7822 expert=9.49 MiB target=72.51 GiB live=72.51 GiB, hits=478762 misses=9289 hit_rate=0.981 wraps=27867 evictions=1467 buffer_allocs=19 buffer_reuses=1467 evict_dontneed=0.00 GiB miss_willneed=0.00 GiB miss_pread=86.11 GiB pread_ms=7005.268
+ds4:   streaming expert buffer mlock locked=72.57 GiB failed=0.00 GiB failures=0 time=1104.930 ms
+ds4:   streaming expert cache per-layer stats:
+ds4:     layer=0 layer_slots=384 cached=214 hits=12271 misses=266 hit_rate=0.979 evictions=52 miss_pread=2.47 GiB pread_ms=195.931
+ds4:     layer=1 layer_slots=384 cached=206 hits=12279 misses=258 hit_rate=0.979 evictions=52 miss_pread=2.39 GiB pread_ms=185.419
+ds4:     layer=2 layer_slots=384 cached=189 hits=12073 misses=232 hit_rate=0.981 evictions=43 miss_pread=2.15 GiB pread_ms=174.995
+ds4:     layer=3 layer_slots=384 cached=198 hits=12028 misses=239 hit_rate=0.981 evictions=41 miss_pread=2.22 GiB pread_ms=179.936
+ds4:     layer=4 layer_slots=384 cached=163 hits=11872 misses=200 hit_rate=0.983 evictions=37 miss_pread=1.85 GiB pread_ms=155.077
+ds4:     layer=5 layer_slots=384 cached=186 hits=11959 misses=213 hit_rate=0.983 evictions=27 miss_pread=1.97 GiB pread_ms=163.506
+ds4:     layer=6 layer_slots=384 cached=161 hits=11696 misses=177 hit_rate=0.985 evictions=16 miss_pread=1.64 GiB pread_ms=139.139
+ds4:     layer=7 layer_slots=384 cached=179 hits=11827 misses=184 hit_rate=0.985 evictions=5 miss_pread=1.71 GiB pread_ms=141.257
+ds4:     layer=8 layer_slots=384 cached=178 hits=11974 misses=208 hit_rate=0.983 evictions=30 miss_pread=1.93 GiB pread_ms=158.691
+ds4:     layer=9 layer_slots=384 cached=184 hits=11940 misses=215 hit_rate=0.982 evictions=31 miss_pread=1.99 GiB pread_ms=165.637
+ds4:     layer=10 layer_slots=384 cached=185 hits=11911 misses=210 hit_rate=0.983 evictions=25 miss_pread=1.95 GiB pread_ms=158.950
+ds4:     layer=11 layer_slots=384 cached=200 hits=11930 misses=218 hit_rate=0.982 evictions=18 miss_pread=2.02 GiB pread_ms=163.518
+ds4:     layer=12 layer_slots=384 cached=203 hits=11938 misses=235 hit_rate=0.981 evictions=32 miss_pread=2.18 GiB pread_ms=177.090
+ds4:     layer=13 layer_slots=384 cached=207 hits=11965 misses=259 hit_rate=0.979 evictions=52 miss_pread=2.40 GiB pread_ms=194.690
+ds4:     layer=14 layer_slots=384 cached=178 hits=11755 misses=188 hit_rate=0.984 evictions=10 miss_pread=1.74 GiB pread_ms=146.262
+ds4:     layer=15 layer_slots=384 cached=202 hits=12058 misses=253 hit_rate=0.979 evictions=51 miss_pread=2.35 GiB pread_ms=189.396
+ds4:     layer=16 layer_slots=384 cached=184 hits=11861 misses=207 hit_rate=0.983 evictions=23 miss_pread=1.92 GiB pread_ms=158.079
+ds4:     layer=17 layer_slots=384 cached=206 hits=11896 misses=243 hit_rate=0.980 evictions=37 miss_pread=2.25 GiB pread_ms=182.012
+ds4:     layer=18 layer_slots=384 cached=195 hits=11926 misses=211 hit_rate=0.983 evictions=16 miss_pread=1.96 GiB pread_ms=159.852
+ds4:     layer=19 layer_slots=384 cached=226 hits=12159 misses=316 hit_rate=0.975 evictions=90 miss_pread=2.93 GiB pread_ms=216.554
+ds4:     layer=20 layer_slots=384 cached=168 hits=11697 misses=182 hit_rate=0.985 evictions=14 miss_pread=1.69 GiB pread_ms=141.794
+ds4:     layer=21 layer_slots=384 cached=185 hits=11808 misses=206 hit_rate=0.983 evictions=21 miss_pread=1.91 GiB pread_ms=158.055
+ds4:     layer=22 layer_slots=384 cached=184 hits=11777 misses=206 hit_rate=0.983 evictions=22 miss_pread=1.91 GiB pread_ms=159.911
+ds4:     layer=23 layer_slots=384 cached=204 hits=12042 misses=258 hit_rate=0.979 evictions=54 miss_pread=2.39 GiB pread_ms=191.447
+ds4:     layer=24 layer_slots=384 cached=186 hits=11852 misses=199 hit_rate=0.983 evictions=13 miss_pread=1.84 GiB pread_ms=155.681
+ds4:     layer=25 layer_slots=384 cached=199 hits=11936 misses=233 hit_rate=0.981 evictions=34 miss_pread=2.16 GiB pread_ms=184.988
+ds4:     layer=26 layer_slots=384 cached=190 hits=11825 misses=211 hit_rate=0.982 evictions=21 miss_pread=1.96 GiB pread_ms=169.757
+ds4:     layer=27 layer_slots=384 cached=210 hits=12092 misses=260 hit_rate=0.979 evictions=50 miss_pread=2.41 GiB pread_ms=198.126
+ds4:     layer=28 layer_slots=384 cached=201 hits=12003 misses=235 hit_rate=0.981 evictions=34 miss_pread=2.18 GiB pread_ms=182.303
+ds4:     layer=29 layer_slots=384 cached=212 hits=11977 misses=259 hit_rate=0.979 evictions=47 miss_pread=2.40 GiB pread_ms=197.974
+ds4:     layer=30 layer_slots=384 cached=195 hits=11918 misses=220 hit_rate=0.982 evictions=25 miss_pread=2.04 GiB pread_ms=169.844
+ds4:     layer=31 layer_slots=384 cached=207 hits=12075 misses=242 hit_rate=0.980 evictions=35 miss_pread=2.24 GiB pread_ms=182.411
+ds4:     layer=32 layer_slots=384 cached=202 hits=12021 misses=246 hit_rate=0.980 evictions=44 miss_pread=2.28 GiB pread_ms=183.918
+ds4:     layer=33 layer_slots=384 cached=203 hits=12047 misses=254 hit_rate=0.979 evictions=51 miss_pread=2.35 GiB pread_ms=183.975
+ds4:     layer=34 layer_slots=384 cached=229 hits=12112 misses=297 hit_rate=0.976 evictions=68 miss_pread=2.75 GiB pread_ms=217.672
+ds4:     layer=35 layer_slots=384 cached=191 hits=11970 misses=228 hit_rate=0.981 evictions=37 miss_pread=2.11 GiB pread_ms=170.846
+ds4:     layer=36 layer_slots=384 cached=190 hits=11892 misses=220 hit_rate=0.982 evictions=30 miss_pread=2.04 GiB pread_ms=169.838
+ds4:     layer=37 layer_slots=384 cached=213 hits=12120 misses=268 hit_rate=0.978 evictions=55 miss_pread=2.48 GiB pread_ms=194.207
+ds4:     layer=38 layer_slots=384 cached=203 hits=12104 misses=267 hit_rate=0.978 evictions=64 miss_pread=2.48 GiB pread_ms=195.725
+ds4:     layer=39 layer_slots=384 cached=206 hits=12176 misses=266 hit_rate=0.979 evictions=60 miss_pread=2.47 GiB pread_ms=190.805
+ds4:   model residency requests 0 (ssd-streaming)
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 2.71 MiB (flash mask 0.00, pad 0.16, tmp 0.00, blk 0.00, ring 0.00, kv 0.89, compressor 0.02, router 0.42, indexer 0.80, moe 0.42, f16 0.00, raw-store 0.00)
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:45:34 ===
+=== LEG simB-300 start 23:45:54 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+ds4: Metal memory before V4.1 graph free: runtime 11.81 GiB + streaming experts 72.51 GiB = 84.31 GiB tracked live
+ds4:   runtime tensors live 12088.90 MiB peak 12088.90 MiB
+ds4:   macOS task memory footprint 82.58 GiB, resident 83.60 GiB, virtual 724.16 GiB
+ds4:   mmap model wrapper creations 569 buffers 9.38 GiB cumulative, 1.23 GiB max (not copied)
+ds4:   streaming expert cache budget=7822 experts entries=7822 expert=9.49 MiB target=72.51 GiB live=72.51 GiB, hits=478762 misses=9289 hit_rate=0.981 wraps=27867 evictions=1467 buffer_allocs=19 buffer_reuses=1467 evict_dontneed=0.00 GiB miss_willneed=0.00 GiB miss_pread=86.11 GiB pread_ms=6889.577
+ds4:   streaming expert buffer mlock locked=72.57 GiB failed=0.00 GiB failures=0 time=1127.303 ms
+ds4:   streaming expert cache per-layer stats:
+ds4:     layer=0 layer_slots=384 cached=214 hits=12271 misses=266 hit_rate=0.979 evictions=52 miss_pread=2.47 GiB pread_ms=186.429
+ds4:     layer=1 layer_slots=384 cached=206 hits=12279 misses=258 hit_rate=0.979 evictions=52 miss_pread=2.39 GiB pread_ms=185.079
+ds4:     layer=2 layer_slots=384 cached=189 hits=12073 misses=232 hit_rate=0.981 evictions=43 miss_pread=2.15 GiB pread_ms=175.425
+ds4:     layer=3 layer_slots=384 cached=198 hits=12028 misses=239 hit_rate=0.981 evictions=41 miss_pread=2.22 GiB pread_ms=172.825
+ds4:     layer=4 layer_slots=384 cached=163 hits=11872 misses=200 hit_rate=0.983 evictions=37 miss_pread=1.85 GiB pread_ms=153.635
+ds4:     layer=5 layer_slots=384 cached=186 hits=11959 misses=213 hit_rate=0.983 evictions=27 miss_pread=1.97 GiB pread_ms=156.752
+ds4:     layer=6 layer_slots=384 cached=161 hits=11696 misses=177 hit_rate=0.985 evictions=16 miss_pread=1.64 GiB pread_ms=136.163
+ds4:     layer=7 layer_slots=384 cached=179 hits=11827 misses=184 hit_rate=0.985 evictions=5 miss_pread=1.71 GiB pread_ms=137.079
+ds4:     layer=8 layer_slots=384 cached=178 hits=11974 misses=208 hit_rate=0.983 evictions=30 miss_pread=1.93 GiB pread_ms=154.058
+ds4:     layer=9 layer_slots=384 cached=184 hits=11940 misses=215 hit_rate=0.982 evictions=31 miss_pread=1.99 GiB pread_ms=163.727
+ds4:     layer=10 layer_slots=384 cached=185 hits=11911 misses=210 hit_rate=0.983 evictions=25 miss_pread=1.95 GiB pread_ms=154.879
+ds4:     layer=11 layer_slots=384 cached=200 hits=11930 misses=218 hit_rate=0.982 evictions=18 miss_pread=2.02 GiB pread_ms=167.905
+ds4:     layer=12 layer_slots=384 cached=203 hits=11938 misses=235 hit_rate=0.981 evictions=32 miss_pread=2.18 GiB pread_ms=173.485
+ds4:     layer=13 layer_slots=384 cached=207 hits=11965 misses=259 hit_rate=0.979 evictions=52 miss_pread=2.40 GiB pread_ms=189.104
+ds4:     layer=14 layer_slots=384 cached=178 hits=11755 misses=188 hit_rate=0.984 evictions=10 miss_pread=1.74 GiB pread_ms=143.173
+ds4:     layer=15 layer_slots=384 cached=202 hits=12058 misses=253 hit_rate=0.979 evictions=51 miss_pread=2.35 GiB pread_ms=184.178
+ds4:     layer=16 layer_slots=384 cached=184 hits=11861 misses=207 hit_rate=0.983 evictions=23 miss_pread=1.92 GiB pread_ms=154.393
+ds4:     layer=17 layer_slots=384 cached=206 hits=11896 misses=243 hit_rate=0.980 evictions=37 miss_pread=2.25 GiB pread_ms=179.468
+ds4:     layer=18 layer_slots=384 cached=195 hits=11926 misses=211 hit_rate=0.983 evictions=16 miss_pread=1.96 GiB pread_ms=158.028
+ds4:     layer=19 layer_slots=384 cached=226 hits=12159 misses=316 hit_rate=0.975 evictions=90 miss_pread=2.93 GiB pread_ms=212.618
+ds4:     layer=20 layer_slots=384 cached=168 hits=11697 misses=182 hit_rate=0.985 evictions=14 miss_pread=1.69 GiB pread_ms=148.083
+ds4:     layer=21 layer_slots=384 cached=185 hits=11808 misses=206 hit_rate=0.983 evictions=21 miss_pread=1.91 GiB pread_ms=154.750
+ds4:     layer=22 layer_slots=384 cached=184 hits=11777 misses=206 hit_rate=0.983 evictions=22 miss_pread=1.91 GiB pread_ms=157.027
+ds4:     layer=23 layer_slots=384 cached=204 hits=12042 misses=258 hit_rate=0.979 evictions=54 miss_pread=2.39 GiB pread_ms=193.155
+ds4:     layer=24 layer_slots=384 cached=186 hits=11852 misses=199 hit_rate=0.983 evictions=13 miss_pread=1.84 GiB pread_ms=154.791
+ds4:     layer=25 layer_slots=384 cached=199 hits=11936 misses=233 hit_rate=0.981 evictions=34 miss_pread=2.16 GiB pread_ms=174.930
+ds4:     layer=26 layer_slots=384 cached=190 hits=11825 misses=211 hit_rate=0.982 evictions=21 miss_pread=1.96 GiB pread_ms=170.155
+ds4:     layer=27 layer_slots=384 cached=210 hits=12092 misses=260 hit_rate=0.979 evictions=50 miss_pread=2.41 GiB pread_ms=189.476
+ds4:     layer=28 layer_slots=384 cached=201 hits=12003 misses=235 hit_rate=0.981 evictions=34 miss_pread=2.18 GiB pread_ms=175.544
+ds4:     layer=29 layer_slots=384 cached=212 hits=11977 misses=259 hit_rate=0.979 evictions=47 miss_pread=2.40 GiB pread_ms=199.075
+ds4:     layer=30 layer_slots=384 cached=195 hits=11918 misses=220 hit_rate=0.982 evictions=25 miss_pread=2.04 GiB pread_ms=166.831
+ds4:     layer=31 layer_slots=384 cached=207 hits=12075 misses=242 hit_rate=0.980 evictions=35 miss_pread=2.24 GiB pread_ms=178.187
+ds4:     layer=32 layer_slots=384 cached=202 hits=12021 misses=246 hit_rate=0.980 evictions=44 miss_pread=2.28 GiB pread_ms=179.830
+ds4:     layer=33 layer_slots=384 cached=203 hits=12047 misses=254 hit_rate=0.979 evictions=51 miss_pread=2.35 GiB pread_ms=183.637
+ds4:     layer=34 layer_slots=384 cached=229 hits=12112 misses=297 hit_rate=0.976 evictions=68 miss_pread=2.75 GiB pread_ms=209.164
+ds4:     layer=35 layer_slots=384 cached=191 hits=11970 misses=228 hit_rate=0.981 evictions=37 miss_pread=2.11 GiB pread_ms=169.917
+ds4:     layer=36 layer_slots=384 cached=190 hits=11892 misses=220 hit_rate=0.982 evictions=30 miss_pread=2.04 GiB pread_ms=174.724
+ds4:     layer=37 layer_slots=384 cached=213 hits=12120 misses=268 hit_rate=0.978 evictions=55 miss_pread=2.48 GiB pread_ms=192.080
+ds4:     layer=38 layer_slots=384 cached=203 hits=12104 misses=267 hit_rate=0.978 evictions=64 miss_pread=2.48 GiB pread_ms=191.034
+ds4:     layer=39 layer_slots=384 cached=206 hits=12176 misses=266 hit_rate=0.979 evictions=60 miss_pread=2.47 GiB pread_ms=188.784
+ds4:   model residency requests 0 (ssd-streaming)
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 2.71 MiB (flash mask 0.00, pad 0.16, tmp 0.00, blk 0.00, ring 0.00, kv 0.89, compressor 0.02, router 0.42, indexer 0.80, moe 0.42, f16 0.00, raw-store 0.00)
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:46:14 ===
+=== LEG simA-480 start 23:46:34 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+ds4: Metal memory before V4.1 graph free: runtime 11.81 GiB + streaming experts 72.51 GiB = 84.31 GiB tracked live
+ds4:   runtime tensors live 12088.90 MiB peak 12088.90 MiB
+ds4:   macOS task memory footprint 82.69 GiB, resident 83.63 GiB, virtual 724.24 GiB
+ds4:   mmap model wrapper creations 569 buffers 9.38 GiB cumulative, 1.23 GiB max (not copied)
+ds4:   streaming expert cache budget=7822 experts entries=7822 expert=9.49 MiB target=72.51 GiB live=72.51 GiB, hits=821079 misses=9922 hit_rate=0.988 wraps=29766 evictions=2100 buffer_allocs=19 buffer_reuses=2100 evict_dontneed=0.00 GiB miss_willneed=0.00 GiB miss_pread=91.97 GiB pread_ms=7208.084
+ds4:   streaming expert buffer mlock locked=72.57 GiB failed=0.00 GiB failures=0 time=1127.152 ms
+ds4:   streaming expert cache per-layer stats:
+ds4:     layer=0 layer_slots=384 cached=213 hits=20800 misses=269 hit_rate=0.987 evictions=56 miss_pread=2.49 GiB pread_ms=186.793
+ds4:     layer=1 layer_slots=384 cached=209 hits=20795 misses=274 hit_rate=0.987 evictions=65 miss_pread=2.54 GiB pread_ms=187.589
+ds4:     layer=2 layer_slots=384 cached=190 hits=20632 misses=240 hit_rate=0.989 evictions=50 miss_pread=2.22 GiB pread_ms=179.706
+ds4:     layer=3 layer_slots=384 cached=199 hits=20587 misses=250 hit_rate=0.988 evictions=51 miss_pread=2.32 GiB pread_ms=186.405
+ds4:     layer=4 layer_slots=384 cached=164 hits=20441 misses=209 hit_rate=0.990 evictions=45 miss_pread=1.94 GiB pread_ms=161.146
+ds4:     layer=5 layer_slots=384 cached=185 hits=20531 misses=231 hit_rate=0.989 evictions=46 miss_pread=2.14 GiB pread_ms=167.696
+ds4:     layer=6 layer_slots=384 cached=164 hits=20285 misses=192 hit_rate=0.991 evictions=28 miss_pread=1.78 GiB pread_ms=146.423
+ds4:     layer=7 layer_slots=384 cached=175 hits=20382 misses=193 hit_rate=0.991 evictions=18 miss_pread=1.79 GiB pread_ms=145.325
+ds4:     layer=8 layer_slots=384 cached=178 hits=20537 misses=218 hit_rate=0.989 evictions=40 miss_pread=2.02 GiB pread_ms=161.801
+ds4:     layer=9 layer_slots=384 cached=190 hits=20493 misses=229 hit_rate=0.989 evictions=39 miss_pread=2.12 GiB pread_ms=170.418
+ds4:     layer=10 layer_slots=384 cached=185 hits=20462 misses=225 hit_rate=0.989 evictions=40 miss_pread=2.09 GiB pread_ms=164.206
+ds4:     layer=11 layer_slots=384 cached=210 hits=20513 misses=250 hit_rate=0.988 evictions=40 miss_pread=2.32 GiB pread_ms=179.615
+ds4:     layer=12 layer_slots=384 cached=213 hits=20515 misses=263 hit_rate=0.987 evictions=50 miss_pread=2.44 GiB pread_ms=189.279
+ds4:     layer=13 layer_slots=384 cached=211 hits=20520 misses=272 hit_rate=0.987 evictions=61 miss_pread=2.52 GiB pread_ms=192.910
+ds4:     layer=14 layer_slots=384 cached=177 hits=20324 misses=196 hit_rate=0.990 evictions=19 miss_pread=1.82 GiB pread_ms=149.803
+ds4:     layer=15 layer_slots=384 cached=197 hits=20632 misses=254 hit_rate=0.988 evictions=57 miss_pread=2.35 GiB pread_ms=183.671
+ds4:     layer=16 layer_slots=384 cached=173 hits=20404 misses=206 hit_rate=0.990 evictions=33 miss_pread=1.91 GiB pread_ms=154.675
+ds4:     layer=17 layer_slots=384 cached=201 hits=20450 misses=245 hit_rate=0.988 evictions=44 miss_pread=2.27 GiB pread_ms=187.762
+ds4:     layer=18 layer_slots=384 cached=190 hits=20479 misses=226 hit_rate=0.989 evictions=36 miss_pread=2.09 GiB pread_ms=169.569
+ds4:     layer=19 layer_slots=384 cached=230 hits=20700 misses=352 hit_rate=0.983 evictions=122 miss_pread=3.26 GiB pread_ms=235.876
+ds4:     layer=20 layer_slots=384 cached=173 hits=20269 misses=192 hit_rate=0.991 evictions=19 miss_pread=1.78 GiB pread_ms=148.950
+ds4:     layer=21 layer_slots=384 cached=181 hits=20383 misses=212 hit_rate=0.990 evictions=31 miss_pread=1.97 GiB pread_ms=159.610
+ds4:     layer=22 layer_slots=384 cached=175 hits=20335 misses=213 hit_rate=0.990 evictions=38 miss_pread=1.97 GiB pread_ms=163.813
+ds4:     layer=23 layer_slots=384 cached=212 hits=20598 misses=297 hit_rate=0.986 evictions=85 miss_pread=2.75 GiB pread_ms=203.789
+ds4:     layer=24 layer_slots=384 cached=179 hits=20417 misses=208 hit_rate=0.990 evictions=29 miss_pread=1.93 GiB pread_ms=157.110
+ds4:     layer=25 layer_slots=384 cached=203 hits=20532 misses=247 hit_rate=0.988 evictions=44 miss_pread=2.29 GiB pread_ms=178.619
+ds4:     layer=26 layer_slots=384 cached=189 hits=20372 misses=222 hit_rate=0.989 evictions=33 miss_pread=2.06 GiB pread_ms=175.033
+ds4:     layer=27 layer_slots=384 cached=214 hits=20657 misses=294 hit_rate=0.986 evictions=80 miss_pread=2.73 GiB pread_ms=200.958
+ds4:     layer=28 layer_slots=384 cached=197 hits=20555 misses=250 hit_rate=0.988 evictions=53 miss_pread=2.32 GiB pread_ms=183.487
+ds4:     layer=29 layer_slots=384 cached=216 hits=20560 misses=280 hit_rate=0.987 evictions=64 miss_pread=2.60 GiB pread_ms=199.803
+ds4:     layer=30 layer_slots=384 cached=193 hits=20496 misses=238 hit_rate=0.989 evictions=45 miss_pread=2.21 GiB pread_ms=176.089
+ds4:     layer=31 layer_slots=384 cached=210 hits=20647 misses=269 hit_rate=0.987 evictions=59 miss_pread=2.49 GiB pread_ms=192.153
+ds4:     layer=32 layer_slots=384 cached=199 hits=20567 misses=263 hit_rate=0.987 evictions=64 miss_pread=2.44 GiB pread_ms=188.832
+ds4:     layer=33 layer_slots=384 cached=210 hits=20624 misses=265 hit_rate=0.987 evictions=55 miss_pread=2.46 GiB pread_ms=190.351
+ds4:     layer=34 layer_slots=384 cached=226 hits=20655 misses=338 hit_rate=0.984 evictions=112 miss_pread=3.13 GiB pread_ms=227.254
+ds4:     layer=35 layer_slots=384 cached=191 hits=20531 misses=234 hit_rate=0.989 evictions=43 miss_pread=2.17 GiB pread_ms=171.647
+ds4:     layer=36 layer_slots=384 cached=181 hits=20424 misses=230 hit_rate=0.989 evictions=49 miss_pread=2.13 GiB pread_ms=180.181
+ds4:     layer=37 layer_slots=384 cached=210 hits=20637 misses=300 hit_rate=0.986 evictions=90 miss_pread=2.78 GiB pread_ms=204.145
+ds4:     layer=38 layer_slots=384 cached=202 hits=20632 misses=283 hit_rate=0.986 evictions=81 miss_pread=2.62 GiB pread_ms=202.719
+ds4:     layer=39 layer_slots=384 cached=207 hits=20706 misses=293 hit_rate=0.986 evictions=86 miss_pread=2.72 GiB pread_ms=202.873
+ds4:   model residency requests 0 (ssd-streaming)
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 34.62 MiB (flash mask 0.00, pad 0.19, tmp 0.00, blk 0.00, ring 0.00, kv 0.97, compressor 0.02, router 0.76, indexer 1.44, moe 31.24, f16 0.00, raw-store 0.00)
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:46:57 ===
+=== LEG simB-480 start 23:47:17 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+ds4: Metal memory before V4.1 graph free: runtime 11.81 GiB + streaming experts 72.51 GiB = 84.31 GiB tracked live
+ds4:   runtime tensors live 12088.90 MiB peak 12088.90 MiB
+ds4:   macOS task memory footprint 82.69 GiB, resident 83.61 GiB, virtual 724.24 GiB
+ds4:   mmap model wrapper creations 569 buffers 9.38 GiB cumulative, 1.23 GiB max (not copied)
+ds4:   streaming expert cache budget=7822 experts entries=7822 expert=9.49 MiB target=72.51 GiB live=72.51 GiB, hits=821079 misses=9922 hit_rate=0.988 wraps=29766 evictions=2100 buffer_allocs=19 buffer_reuses=2100 evict_dontneed=0.00 GiB miss_willneed=0.00 GiB miss_pread=91.97 GiB pread_ms=7217.679
+ds4:   streaming expert buffer mlock locked=72.57 GiB failed=0.00 GiB failures=0 time=1132.771 ms
+ds4:   streaming expert cache per-layer stats:
+ds4:     layer=0 layer_slots=384 cached=213 hits=20800 misses=269 hit_rate=0.987 evictions=56 miss_pread=2.49 GiB pread_ms=190.532
+ds4:     layer=1 layer_slots=384 cached=209 hits=20795 misses=274 hit_rate=0.987 evictions=65 miss_pread=2.54 GiB pread_ms=187.041
+ds4:     layer=2 layer_slots=384 cached=190 hits=20632 misses=240 hit_rate=0.989 evictions=50 miss_pread=2.22 GiB pread_ms=178.854
+ds4:     layer=3 layer_slots=384 cached=199 hits=20587 misses=250 hit_rate=0.988 evictions=51 miss_pread=2.32 GiB pread_ms=182.900
+ds4:     layer=4 layer_slots=384 cached=164 hits=20441 misses=209 hit_rate=0.990 evictions=45 miss_pread=1.94 GiB pread_ms=166.631
+ds4:     layer=5 layer_slots=384 cached=185 hits=20531 misses=231 hit_rate=0.989 evictions=46 miss_pread=2.14 GiB pread_ms=169.203
+ds4:     layer=6 layer_slots=384 cached=164 hits=20285 misses=192 hit_rate=0.991 evictions=28 miss_pread=1.78 GiB pread_ms=145.595
+ds4:     layer=7 layer_slots=384 cached=175 hits=20382 misses=193 hit_rate=0.991 evictions=18 miss_pread=1.79 GiB pread_ms=145.612
+ds4:     layer=8 layer_slots=384 cached=178 hits=20537 misses=218 hit_rate=0.989 evictions=40 miss_pread=2.02 GiB pread_ms=165.354
+ds4:     layer=9 layer_slots=384 cached=190 hits=20493 misses=229 hit_rate=0.989 evictions=39 miss_pread=2.12 GiB pread_ms=169.996
+ds4:     layer=10 layer_slots=384 cached=185 hits=20462 misses=225 hit_rate=0.989 evictions=40 miss_pread=2.09 GiB pread_ms=161.688
+ds4:     layer=11 layer_slots=384 cached=210 hits=20513 misses=250 hit_rate=0.988 evictions=40 miss_pread=2.32 GiB pread_ms=177.669
+ds4:     layer=12 layer_slots=384 cached=213 hits=20515 misses=263 hit_rate=0.987 evictions=50 miss_pread=2.44 GiB pread_ms=189.013
+ds4:     layer=13 layer_slots=384 cached=211 hits=20520 misses=272 hit_rate=0.987 evictions=61 miss_pread=2.52 GiB pread_ms=195.084
+ds4:     layer=14 layer_slots=384 cached=177 hits=20324 misses=196 hit_rate=0.990 evictions=19 miss_pread=1.82 GiB pread_ms=156.734
+ds4:     layer=15 layer_slots=384 cached=197 hits=20632 misses=254 hit_rate=0.988 evictions=57 miss_pread=2.35 GiB pread_ms=185.289
+ds4:     layer=16 layer_slots=384 cached=173 hits=20404 misses=206 hit_rate=0.990 evictions=33 miss_pread=1.91 GiB pread_ms=152.864
+ds4:     layer=17 layer_slots=384 cached=201 hits=20450 misses=245 hit_rate=0.988 evictions=44 miss_pread=2.27 GiB pread_ms=179.997
+ds4:     layer=18 layer_slots=384 cached=190 hits=20479 misses=226 hit_rate=0.989 evictions=36 miss_pread=2.09 GiB pread_ms=165.958
+ds4:     layer=19 layer_slots=384 cached=230 hits=20700 misses=352 hit_rate=0.983 evictions=122 miss_pread=3.26 GiB pread_ms=230.302
+ds4:     layer=20 layer_slots=384 cached=173 hits=20269 misses=192 hit_rate=0.991 evictions=19 miss_pread=1.78 GiB pread_ms=148.224
+ds4:     layer=21 layer_slots=384 cached=181 hits=20383 misses=212 hit_rate=0.990 evictions=31 miss_pread=1.97 GiB pread_ms=160.996
+ds4:     layer=22 layer_slots=384 cached=175 hits=20335 misses=213 hit_rate=0.990 evictions=38 miss_pread=1.97 GiB pread_ms=163.124
+ds4:     layer=23 layer_slots=384 cached=212 hits=20598 misses=297 hit_rate=0.986 evictions=85 miss_pread=2.75 GiB pread_ms=212.503
+ds4:     layer=24 layer_slots=384 cached=179 hits=20417 misses=208 hit_rate=0.990 evictions=29 miss_pread=1.93 GiB pread_ms=157.958
+ds4:     layer=25 layer_slots=384 cached=203 hits=20532 misses=247 hit_rate=0.988 evictions=44 miss_pread=2.29 GiB pread_ms=183.774
+ds4:     layer=26 layer_slots=384 cached=189 hits=20372 misses=222 hit_rate=0.989 evictions=33 miss_pread=2.06 GiB pread_ms=168.636
+ds4:     layer=27 layer_slots=384 cached=214 hits=20657 misses=294 hit_rate=0.986 evictions=80 miss_pread=2.73 GiB pread_ms=200.612
+ds4:     layer=28 layer_slots=384 cached=197 hits=20555 misses=250 hit_rate=0.988 evictions=53 miss_pread=2.32 GiB pread_ms=180.029
+ds4:     layer=29 layer_slots=384 cached=216 hits=20560 misses=280 hit_rate=0.987 evictions=64 miss_pread=2.60 GiB pread_ms=201.176
+ds4:     layer=30 layer_slots=384 cached=193 hits=20496 misses=238 hit_rate=0.989 evictions=45 miss_pread=2.21 GiB pread_ms=174.820
+ds4:     layer=31 layer_slots=384 cached=210 hits=20647 misses=269 hit_rate=0.987 evictions=59 miss_pread=2.49 GiB pread_ms=197.527
+ds4:     layer=32 layer_slots=384 cached=199 hits=20567 misses=263 hit_rate=0.987 evictions=64 miss_pread=2.44 GiB pread_ms=188.687
+ds4:     layer=33 layer_slots=384 cached=210 hits=20624 misses=265 hit_rate=0.987 evictions=55 miss_pread=2.46 GiB pread_ms=190.298
+ds4:     layer=34 layer_slots=384 cached=226 hits=20655 misses=338 hit_rate=0.984 evictions=112 miss_pread=3.13 GiB pread_ms=227.548
+ds4:     layer=35 layer_slots=384 cached=191 hits=20531 misses=234 hit_rate=0.989 evictions=43 miss_pread=2.17 GiB pread_ms=171.753
+ds4:     layer=36 layer_slots=384 cached=181 hits=20424 misses=230 hit_rate=0.989 evictions=49 miss_pread=2.13 GiB pread_ms=169.909
+ds4:     layer=37 layer_slots=384 cached=210 hits=20637 misses=300 hit_rate=0.986 evictions=90 miss_pread=2.78 GiB pread_ms=205.879
+ds4:     layer=38 layer_slots=384 cached=202 hits=20632 misses=283 hit_rate=0.986 evictions=81 miss_pread=2.62 GiB pread_ms=203.856
+ds4:     layer=39 layer_slots=384 cached=207 hits=20706 misses=293 hit_rate=0.986 evictions=86 miss_pread=2.72 GiB pread_ms=214.054
+ds4:   model residency requests 0 (ssd-streaming)
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 34.62 MiB (flash mask 0.00, pad 0.19, tmp 0.00, blk 0.00, ring 0.00, kv 0.97, compressor 0.02, router 0.76, indexer 1.44, moe 31.24, f16 0.00, raw-store 0.00)
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:47:40 ===
+=== LEG simA-1650 start 23:48:00 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+ds4: Metal memory before V4.1 graph free: runtime 11.81 GiB + streaming experts 72.51 GiB = 84.31 GiB tracked live
+ds4:   runtime tensors live 12088.90 MiB peak 12088.90 MiB
+ds4:   macOS task memory footprint 83.37 GiB, resident 83.34 GiB, virtual 724.68 GiB
+ds4:   mmap model wrapper creations 569 buffers 9.38 GiB cumulative, 1.23 GiB max (not copied)
+ds4:   streaming expert cache budget=7822 experts entries=7822 expert=9.49 MiB target=72.51 GiB live=72.51 GiB, hits=2643069 misses=11273 hit_rate=0.996 wraps=33819 evictions=3451 buffer_allocs=19 buffer_reuses=3451 evict_dontneed=0.00 GiB miss_willneed=0.00 GiB miss_pread=104.50 GiB pread_ms=8015.577
+ds4:   streaming expert buffer mlock locked=72.57 GiB failed=0.00 GiB failures=0 time=1124.838 ms
+ds4:   streaming expert cache per-layer stats:
+ds4:     layer=0 layer_slots=384 cached=216 hits=66296 misses=277 hit_rate=0.996 evictions=61 miss_pread=2.57 GiB pread_ms=192.711
+ds4:     layer=1 layer_slots=384 cached=207 hits=66290 misses=283 hit_rate=0.996 evictions=76 miss_pread=2.62 GiB pread_ms=190.280
+ds4:     layer=2 layer_slots=384 cached=193 hits=66180 misses=257 hit_rate=0.996 evictions=64 miss_pread=2.38 GiB pread_ms=186.154
+ds4:     layer=3 layer_slots=384 cached=205 hits=66132 misses=274 hit_rate=0.996 evictions=69 miss_pread=2.54 GiB pread_ms=199.645
+ds4:     layer=4 layer_slots=384 cached=167 hits=65976 misses=232 hit_rate=0.996 evictions=65 miss_pread=2.15 GiB pread_ms=174.513
+ds4:     layer=5 layer_slots=384 cached=188 hits=66057 misses=247 hit_rate=0.996 evictions=59 miss_pread=2.29 GiB pread_ms=184.692
+ds4:     layer=6 layer_slots=384 cached=162 hits=65838 misses=210 hit_rate=0.997 evictions=48 miss_pread=1.95 GiB pread_ms=162.738
+ds4:     layer=7 layer_slots=384 cached=182 hits=65932 misses=221 hit_rate=0.997 evictions=39 miss_pread=2.05 GiB pread_ms=168.008
+ds4:     layer=8 layer_slots=384 cached=191 hits=66098 misses=250 hit_rate=0.996 evictions=59 miss_pread=2.32 GiB pread_ms=182.352
+ds4:     layer=9 layer_slots=384 cached=197 hits=66032 misses=259 hit_rate=0.996 evictions=62 miss_pread=2.40 GiB pread_ms=189.364
+ds4:     layer=10 layer_slots=384 cached=189 hits=65979 misses=254 hit_rate=0.996 evictions=65 miss_pread=2.35 GiB pread_ms=183.498
+ds4:     layer=11 layer_slots=384 cached=211 hits=66099 misses=317 hit_rate=0.995 evictions=106 miss_pread=2.94 GiB pread_ms=217.806
+ds4:     layer=12 layer_slots=384 cached=221 hits=66125 misses=326 hit_rate=0.995 evictions=105 miss_pread=3.02 GiB pread_ms=224.898
+ds4:     layer=13 layer_slots=384 cached=215 hits=66119 misses=324 hit_rate=0.995 evictions=109 miss_pread=3.00 GiB pread_ms=219.375
+ds4:     layer=14 layer_slots=384 cached=170 hits=65875 misses=211 hit_rate=0.997 evictions=41 miss_pread=1.96 GiB pread_ms=160.628
+ds4:     layer=15 layer_slots=384 cached=194 hits=66152 misses=283 hit_rate=0.996 evictions=89 miss_pread=2.62 GiB pread_ms=205.198
+ds4:     layer=16 layer_slots=384 cached=174 hits=65906 misses=231 hit_rate=0.997 evictions=57 miss_pread=2.14 GiB pread_ms=173.658
+ds4:     layer=17 layer_slots=384 cached=199 hits=66002 misses=273 hit_rate=0.996 evictions=74 miss_pread=2.53 GiB pread_ms=204.664
+ds4:     layer=18 layer_slots=384 cached=198 hits=66037 misses=263 hit_rate=0.996 evictions=65 miss_pread=2.44 GiB pread_ms=198.053
+ds4:     layer=19 layer_slots=384 cached=232 hits=66170 misses=403 hit_rate=0.994 evictions=171 miss_pread=3.74 GiB pread_ms=258.207
+ds4:     layer=20 layer_slots=384 cached=163 hits=65834 misses=209 hit_rate=0.997 evictions=46 miss_pread=1.94 GiB pread_ms=168.704
+ds4:     layer=21 layer_slots=384 cached=172 hits=65931 misses=241 hit_rate=0.996 evictions=69 miss_pread=2.23 GiB pread_ms=181.289
+ds4:     layer=22 layer_slots=384 cached=183 hits=65924 misses=261 hit_rate=0.996 evictions=78 miss_pread=2.42 GiB pread_ms=189.512
+ds4:     layer=23 layer_slots=384 cached=201 hits=66181 misses=328 hit_rate=0.995 evictions=127 miss_pread=3.04 GiB pread_ms=222.855
+ds4:     layer=24 layer_slots=384 cached=180 hits=65987 misses=247 hit_rate=0.996 evictions=67 miss_pread=2.29 GiB pread_ms=187.738
+ds4:     layer=25 layer_slots=384 cached=205 hits=66135 misses=298 hit_rate=0.996 evictions=93 miss_pread=2.76 GiB pread_ms=212.487
+ds4:     layer=26 layer_slots=384 cached=184 hits=65990 misses=265 hit_rate=0.996 evictions=81 miss_pread=2.46 GiB pread_ms=191.999
+ds4:     layer=27 layer_slots=384 cached=208 hits=66218 misses=338 hit_rate=0.995 evictions=130 miss_pread=3.13 GiB pread_ms=226.520
+ds4:     layer=28 layer_slots=384 cached=201 hits=66145 misses=288 hit_rate=0.996 evictions=87 miss_pread=2.67 GiB pread_ms=204.653
+ds4:     layer=29 layer_slots=384 cached=204 hits=66103 misses=315 hit_rate=0.995 evictions=111 miss_pread=2.92 GiB pread_ms=224.806
+ds4:     layer=30 layer_slots=384 cached=189 hits=66078 misses=263 hit_rate=0.996 evictions=74 miss_pread=2.44 GiB pread_ms=193.709
+ds4:     layer=31 layer_slots=384 cached=207 hits=66212 misses=303 hit_rate=0.995 evictions=96 miss_pread=2.81 GiB pread_ms=213.074
+ds4:     layer=32 layer_slots=384 cached=206 hits=66146 misses=310 hit_rate=0.995 evictions=104 miss_pread=2.87 GiB pread_ms=210.786
+ds4:     layer=33 layer_slots=384 cached=206 hits=66170 misses=316 hit_rate=0.995 evictions=110 miss_pread=2.93 GiB pread_ms=214.673
+ds4:     layer=34 layer_slots=384 cached=222 hits=66174 misses=397 hit_rate=0.994 evictions=175 miss_pread=3.68 GiB pread_ms=253.043
+ds4:     layer=35 layer_slots=384 cached=188 hits=66041 misses=264 hit_rate=0.996 evictions=76 miss_pread=2.45 GiB pread_ms=191.862
+ds4:     layer=36 layer_slots=384 cached=173 hits=65960 misses=254 hit_rate=0.996 evictions=81 miss_pread=2.35 GiB pread_ms=185.036
+ds4:     layer=37 layer_slots=384 cached=212 hits=66162 misses=342 hit_rate=0.995 evictions=130 miss_pread=3.17 GiB pread_ms=227.329
+ds4:     layer=38 layer_slots=384 cached=203 hits=66171 misses=330 hit_rate=0.995 evictions=127 miss_pread=3.06 GiB pread_ms=222.193
+ds4:     layer=39 layer_slots=384 cached=204 hits=66212 misses=309 hit_rate=0.995 evictions=105 miss_pread=2.86 GiB pread_ms=216.867
+ds4:   model residency requests 0 (ssd-streaming)
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 116.87 MiB (flash mask 0.00, pad 0.34, tmp 0.00, blk 0.01, ring 0.00, kv 1.87, compressor 0.02, router 2.62, indexer 4.86, moe 107.15, f16 0.00, raw-store 0.00)
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:48:43 ===
+=== LEG simB-1650 start 23:49:03 ===
+ds4: Metal expert locality profiler active (profile: disabled, hotlist: speed-bench/M3/m3-3/hotlist_v2_ranked.txt)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+ds4: Metal memory before V4.1 graph free: runtime 11.81 GiB + streaming experts 72.51 GiB = 84.31 GiB tracked live
+ds4:   runtime tensors live 12088.90 MiB peak 12088.90 MiB
+ds4:   macOS task memory footprint 83.37 GiB, resident 83.02 GiB, virtual 724.68 GiB
+ds4:   mmap model wrapper creations 569 buffers 9.38 GiB cumulative, 1.23 GiB max (not copied)
+ds4:   streaming expert cache budget=7822 experts entries=7822 expert=9.49 MiB target=72.51 GiB live=72.51 GiB, hits=2643069 misses=11273 hit_rate=0.996 wraps=33819 evictions=3451 buffer_allocs=19 buffer_reuses=3451 evict_dontneed=0.00 GiB miss_willneed=0.00 GiB miss_pread=104.50 GiB pread_ms=7993.816
+ds4:   streaming expert buffer mlock locked=72.57 GiB failed=0.00 GiB failures=0 time=1150.380 ms
+ds4:   streaming expert cache per-layer stats:
+ds4:     layer=0 layer_slots=384 cached=216 hits=66296 misses=277 hit_rate=0.996 evictions=61 miss_pread=2.57 GiB pread_ms=192.590
+ds4:     layer=1 layer_slots=384 cached=207 hits=66290 misses=283 hit_rate=0.996 evictions=76 miss_pread=2.62 GiB pread_ms=193.845
+ds4:     layer=2 layer_slots=384 cached=193 hits=66180 misses=257 hit_rate=0.996 evictions=64 miss_pread=2.38 GiB pread_ms=188.899
+ds4:     layer=3 layer_slots=384 cached=205 hits=66132 misses=274 hit_rate=0.996 evictions=69 miss_pread=2.54 GiB pread_ms=195.818
+ds4:     layer=4 layer_slots=384 cached=167 hits=65976 misses=232 hit_rate=0.996 evictions=65 miss_pread=2.15 GiB pread_ms=173.184
+ds4:     layer=5 layer_slots=384 cached=188 hits=66057 misses=247 hit_rate=0.996 evictions=59 miss_pread=2.29 GiB pread_ms=188.181
+ds4:     layer=6 layer_slots=384 cached=162 hits=65838 misses=210 hit_rate=0.997 evictions=48 miss_pread=1.95 GiB pread_ms=156.602
+ds4:     layer=7 layer_slots=384 cached=182 hits=65932 misses=221 hit_rate=0.997 evictions=39 miss_pread=2.05 GiB pread_ms=165.389
+ds4:     layer=8 layer_slots=384 cached=191 hits=66098 misses=250 hit_rate=0.996 evictions=59 miss_pread=2.32 GiB pread_ms=184.951
+ds4:     layer=9 layer_slots=384 cached=197 hits=66032 misses=259 hit_rate=0.996 evictions=62 miss_pread=2.40 GiB pread_ms=189.633
+ds4:     layer=10 layer_slots=384 cached=189 hits=65979 misses=254 hit_rate=0.996 evictions=65 miss_pread=2.35 GiB pread_ms=184.641
+ds4:     layer=11 layer_slots=384 cached=211 hits=66099 misses=317 hit_rate=0.995 evictions=106 miss_pread=2.94 GiB pread_ms=218.317
+ds4:     layer=12 layer_slots=384 cached=221 hits=66125 misses=326 hit_rate=0.995 evictions=105 miss_pread=3.02 GiB pread_ms=222.850
+ds4:     layer=13 layer_slots=384 cached=215 hits=66119 misses=324 hit_rate=0.995 evictions=109 miss_pread=3.00 GiB pread_ms=219.600
+ds4:     layer=14 layer_slots=384 cached=170 hits=65875 misses=211 hit_rate=0.997 evictions=41 miss_pread=1.96 GiB pread_ms=159.350
+ds4:     layer=15 layer_slots=384 cached=194 hits=66152 misses=283 hit_rate=0.996 evictions=89 miss_pread=2.62 GiB pread_ms=202.824
+ds4:     layer=16 layer_slots=384 cached=174 hits=65906 misses=231 hit_rate=0.997 evictions=57 miss_pread=2.14 GiB pread_ms=171.231
+ds4:     layer=17 layer_slots=384 cached=199 hits=66002 misses=273 hit_rate=0.996 evictions=74 miss_pread=2.53 GiB pread_ms=201.671
+ds4:     layer=18 layer_slots=384 cached=198 hits=66037 misses=263 hit_rate=0.996 evictions=65 miss_pread=2.44 GiB pread_ms=187.909
+ds4:     layer=19 layer_slots=384 cached=232 hits=66170 misses=403 hit_rate=0.994 evictions=171 miss_pread=3.74 GiB pread_ms=259.384
+ds4:     layer=20 layer_slots=384 cached=163 hits=65834 misses=209 hit_rate=0.997 evictions=46 miss_pread=1.94 GiB pread_ms=162.906
+ds4:     layer=21 layer_slots=384 cached=172 hits=65931 misses=241 hit_rate=0.996 evictions=69 miss_pread=2.23 GiB pread_ms=177.930
+ds4:     layer=22 layer_slots=384 cached=183 hits=65924 misses=261 hit_rate=0.996 evictions=78 miss_pread=2.42 GiB pread_ms=189.028
+ds4:     layer=23 layer_slots=384 cached=201 hits=66181 misses=328 hit_rate=0.995 evictions=127 miss_pread=3.04 GiB pread_ms=225.067
+ds4:     layer=24 layer_slots=384 cached=180 hits=65987 misses=247 hit_rate=0.996 evictions=67 miss_pread=2.29 GiB pread_ms=178.277
+ds4:     layer=25 layer_slots=384 cached=205 hits=66135 misses=298 hit_rate=0.996 evictions=93 miss_pread=2.76 GiB pread_ms=209.989
+ds4:     layer=26 layer_slots=384 cached=184 hits=65990 misses=265 hit_rate=0.996 evictions=81 miss_pread=2.46 GiB pread_ms=194.974
+ds4:     layer=27 layer_slots=384 cached=208 hits=66218 misses=338 hit_rate=0.995 evictions=130 miss_pread=3.13 GiB pread_ms=229.223
+ds4:     layer=28 layer_slots=384 cached=201 hits=66145 misses=288 hit_rate=0.996 evictions=87 miss_pread=2.67 GiB pread_ms=206.795
+ds4:     layer=29 layer_slots=384 cached=204 hits=66103 misses=315 hit_rate=0.995 evictions=111 miss_pread=2.92 GiB pread_ms=224.990
+ds4:     layer=30 layer_slots=384 cached=189 hits=66078 misses=263 hit_rate=0.996 evictions=74 miss_pread=2.44 GiB pread_ms=189.415
+ds4:     layer=31 layer_slots=384 cached=207 hits=66212 misses=303 hit_rate=0.995 evictions=96 miss_pread=2.81 GiB pread_ms=211.141
+ds4:     layer=32 layer_slots=384 cached=206 hits=66146 misses=310 hit_rate=0.995 evictions=104 miss_pread=2.87 GiB pread_ms=212.701
+ds4:     layer=33 layer_slots=384 cached=206 hits=66170 misses=316 hit_rate=0.995 evictions=110 miss_pread=2.93 GiB pread_ms=220.491
+ds4:     layer=34 layer_slots=384 cached=222 hits=66174 misses=397 hit_rate=0.994 evictions=175 miss_pread=3.68 GiB pread_ms=257.991
+ds4:     layer=35 layer_slots=384 cached=188 hits=66041 misses=264 hit_rate=0.996 evictions=76 miss_pread=2.45 GiB pread_ms=193.541
+ds4:     layer=36 layer_slots=384 cached=173 hits=65960 misses=254 hit_rate=0.996 evictions=81 miss_pread=2.35 GiB pread_ms=186.523
+ds4:     layer=37 layer_slots=384 cached=212 hits=66162 misses=342 hit_rate=0.995 evictions=130 miss_pread=3.17 GiB pread_ms=229.397
+ds4:     layer=38 layer_slots=384 cached=203 hits=66171 misses=330 hit_rate=0.995 evictions=127 miss_pread=3.06 GiB pread_ms=222.571
+ds4:     layer=39 layer_slots=384 cached=204 hits=66212 misses=309 hit_rate=0.995 evictions=105 miss_pread=2.86 GiB pread_ms=213.997
+ds4:   model residency requests 0 (ssd-streaming)
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Max, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 116.87 MiB (flash mask 0.00, pad 0.34, tmp 0.00, blk 0.01, ring 0.00, kv 1.87, compressor 0.02, router 2.62, indexer 4.86, moe 107.15, f16 0.00, raw-store 0.00)
+ds4: wrote Metal expert hotlist to speed-bench/M3/m3-3/hotlist_v2_ranked.txt (0 layer records, 0 selections)
+=== LEG done rc=0 23:49:46 ===
+=== LEG prewarm start 23:50:06 ===
+=== LEG done rc=0 23:50:21 ===
+=== M3-3 WINDOW DONE 23:50:41: speed-bench/M3/m3-3/run-20261011-233845 ===
