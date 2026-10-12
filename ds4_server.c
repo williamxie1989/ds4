@@ -25326,6 +25326,7 @@ static void ds4_server_unit_tests_run(void) {
     test_server_image_embedding_cache();
     test_batched_prefill_round_robin();
     test_mixed_prefill_quantum_option();
+    test_menubar_option();
     test_image_cache_mb_option();
     test_multimodal_prefill_resume_frontier();
     test_batched_live_continuation_slot_binding();
@@ -25523,23 +25524,3 @@ int main(void) {
 #endif
 
 #endif
-static void test_image_cache_mb_option(void) {
-    char *default_argv[] = {"ds4-server"};
-    server_config defaults = parse_options(1, default_argv);
-    TEST_ASSERT(defaults.image_cache_mb ==
-                (int)(SERVER_IMAGE_CACHE_BYTES / (1024u * 1024u)));
-
-    char *custom_argv[] = {"ds4-server", "--image-cache-mb", "1024"};
-    server_config custom = parse_options(3, custom_argv);
-    TEST_ASSERT(custom.image_cache_mb == 1024);
-
-    char *off_argv[] = {"ds4-server", "--image-cache-mb", "0"};
-    server_config off = parse_options(3, off_argv);
-    TEST_ASSERT(off.image_cache_mb == 0);
-}
-
-    /* WARN is routine on multi-model boxes and must not destroy the
-     * embedding working set; only CRITICAL drops the cache. */
-    server_memory_release_images(&cache);
-    TEST_ASSERT(cache.bytes==1+sizeof(float) && cache.entries[0].encoded!=NULL);
-    server_test_memory_pressure=DS4_HOST_PRESSURE_CRITICAL;
