@@ -1,0 +1,660 @@
+diff --git a/ds4.c b/ds4.c
+index b55eee2..30a482c 100644
+--- a/ds4.c
++++ b/ds4.c
+@@ -22768,6 +22768,15 @@ static bool metal_graph_streaming_expert_hotlist_enabled(const ds4_gpu_graph *g)
+                                   "DS4_METAL_DISABLE_STREAMING_EXPERT_HOTLIST");
+ }
+ 
++/* Idle-prewarm gate: the engine owns ssd_streaming state, not a graph.
++ * Mirrors metal_graph_streaming_expert_hotlist_enabled() for the prewarm
++ * entry point; protect mode must be on so the prewarmed candidates survive
++ * the next LRU flush. */
++static bool metal_graph_streaming_expert_hotlist_protect_runtime_active(void) {
++    return ds4_gpu_get_ssd_streaming() &&
++           !getenv("DS4_METAL_DISABLE_STREAMING_EXPERT_HOTLIST");
++}
++
+ static bool metal_graph_streaming_expert_hotlist_add(
+         uint32_t    layer,
+         uint32_t    expert,
+@@ -22789,6 +22798,132 @@ static bool metal_graph_streaming_expert_hotlist_add(
+     return true;
+ }
+ 
++/*
++ * Hotlist v2 (R2a/M3-1): per-layer ranked candidates.  The v1 loader treats
++ * the file as one global ranked list and stops at max_entries, which gives
++ * layer 0 count/DS4_N_LAYER slots — far below the per-layer cache share.
++ * The v2 header ("# ds4 expert hotlist v2 layers N") declares the per-layer
++ * rank; entries are consumed layer-major and per-layer rank-fair, so a
++ * truncated load keeps every layer's top ranks.  Each layer gets at most its
++ * fair share of the preload budget: max(1, preload/layer_count), which
++ * protects K = share/cache_slots of the resident cache (protect bit).  v1
++ * files (no v2 header) keep the exact pre-R2a global behavior.
++ */
++static bool metal_graph_streaming_expert_hotlist_v2_probe(FILE *fp,
++                                                          uint32_t *per_layer) {
++    char line[256];
++    const long pos = ftell(fp);
++    if (pos < 0) return false;
++    while (fgets(line, sizeof(line), fp)) {
++        char *p = line;
++        while (*p && isspace((unsigned char)*p)) p++;
++        if (*p == '\0' || *p != '#') break;
++        if (strstr(line, "# ds4 expert hotlist v2 layers ")) {
++            const char *v = strstr(line, "layers ") + strlen("layers ");
++            errno = 0;
++            const unsigned long layers = strtoul(v, NULL, 10);
++            if (errno != 0 || layers == 0 || layers > DS4_MAX_LAYER) {
++                fseek(fp, pos, SEEK_SET);
++                return false;
++            }
++            *per_layer = (uint32_t)layers;
++            fseek(fp, pos, SEEK_SET);
++            return true;
++        }
++    }
++    fseek(fp, pos, SEEK_SET);
++    return false;
++}
++
++static bool metal_graph_streaming_expert_hotlist_load_file_v2(
++        const char *path,
++        uint32_t    max_entries,
++        uint32_t    layer_count,
++        int32_t     experts[DS4_MAX_LAYER][DS4_MAX_EXPERT],
++        uint32_t    priorities[DS4_MAX_LAYER][DS4_MAX_EXPERT],
++        uint32_t    counts[DS4_MAX_LAYER],
++        bool        seen[DS4_MAX_LAYER][DS4_MAX_EXPERT],
++        uint32_t   *loaded_out) {
++    FILE *fp = fopen(path, "rb");
++    if (!fp) {
++        fprintf(stderr,
++                "ds4: failed to open streaming expert hotlist %s: %s\n",
++                path,
++                strerror(errno));
++        return false;
++    }
++    if (layer_count == 0) layer_count = DS4_N_LAYER;
++    if (layer_count > DS4_MAX_LAYER) layer_count = DS4_MAX_LAYER;
++    uint32_t per_layer_cap = max_entries / layer_count;
++    if (per_layer_cap == 0) per_layer_cap = 1;
++
++    char line[256];
++    uint64_t lineno = 0;
++    uint32_t loaded = 0;
++    uint32_t layer_done = 0;
++    uint32_t current_layer = UINT32_MAX;
++    while (fgets(line, sizeof(line), fp)) {
++        if (loaded >= max_entries || layer_done >= layer_count) break;
++        lineno++;
++        char *p = line;
++        while (*p && isspace((unsigned char)*p)) p++;
++        if (*p == '\0' || *p == '#') continue;
++
++        errno = 0;
++        char *end = NULL;
++        unsigned long layer = strtoul(p, &end, 10);
++        if (end == p || errno != 0) goto bad_line;
++        p = end;
++        while (*p && isspace((unsigned char)*p)) p++;
++
++        errno = 0;
++        unsigned long expert = strtoul(p, &end, 10);
++        if (end == p || errno != 0) goto bad_line;
++        p = end;
++        while (*p && isspace((unsigned char)*p)) p++;
++
++        errno = 0;
++        unsigned long long hits = strtoull(p, &end, 10);
++        if (end == p || errno != 0) goto bad_line;
++        if (hits == 0) continue;
++        if (layer >= layer_count || expert >= DS4_N_EXPERT) continue;
++        if ((uint32_t)layer != current_layer) {
++            current_layer = (uint32_t)layer;
++            if (counts[current_layer] >= per_layer_cap) continue;
++        }
++        if (counts[current_layer] >= per_layer_cap) continue;
++        const uint32_t priority =
++            hits > UINT32_MAX ? UINT32_MAX : (uint32_t)hits;
++        if (!metal_graph_streaming_expert_hotlist_add((uint32_t)layer,
++                                                      (uint32_t)expert,
++                                                      priority,
++                                                      experts,
++                                                      priorities,
++                                                      counts,
++                                                      seen,
++                                                      &loaded)) {
++            goto bad_line;
++        }
++        if (counts[current_layer] == per_layer_cap) layer_done++;
++        continue;
++
++bad_line:
++        fprintf(stderr,
++                "ds4: invalid streaming expert hotlist line %" PRIu64 " in %s\n",
++                lineno,
++                path);
++        fclose(fp);
++        return false;
++    }
++    fclose(fp);
++
++    if (loaded == 0) {
++        fprintf(stderr, "ds4: streaming expert hotlist %s had no usable nonzero entries\n", path);
++    }
++    *loaded_out = loaded;
++    return true;
++}
++
+ static bool metal_graph_streaming_expert_hotlist_load_file(
+         const char *path,
+         uint32_t    max_entries,
+@@ -34379,13 +34514,29 @@ static bool metal_graph_seed_streaming_expert_cache_from_hotlist(
+ 
+     uint32_t loaded = 0;
+     if (from_file) {
+-        if (!metal_graph_streaming_expert_hotlist_load_file(path,
+-                                                           preload_count,
+-                                                           experts,
+-                                                           priorities,
+-                                                           counts,
+-                                                           seen,
+-                                                           &loaded)) {
++        FILE *probe = fopen(path, "rb");
++        uint32_t v2_layers = 0;
++        const bool is_v2 = probe &&
++            metal_graph_streaming_expert_hotlist_v2_probe(probe, &v2_layers);
++        if (probe) fclose(probe);
++        if (is_v2) {
++            if (!metal_graph_streaming_expert_hotlist_load_file_v2(path,
++                                                                   preload_count,
++                                                                   v2_layers,
++                                                                   experts,
++                                                                   priorities,
++                                                                   counts,
++                                                                   seen,
++                                                                   &loaded)) {
++                return false;
++            }
++        } else if (!metal_graph_streaming_expert_hotlist_load_file(path,
++                                                                   preload_count,
++                                                                   experts,
++                                                                   priorities,
++                                                                   counts,
++                                                                   seen,
++                                                                   &loaded)) {
+             return false;
+         }
+     } else if (!metal_graph_streaming_expert_hotlist_load_default(preload_count,
+@@ -34397,6 +34548,29 @@ static bool metal_graph_seed_streaming_expert_cache_from_hotlist(
+         return false;
+     }
+     if (loaded == 0) return true;
++    if (ds4_gpu_stream_expert_cache_hotlist_protect_active()) {
++        /* Strides must match the Metal cache bitmap exactly (see
++         * DS4_GPU_STREAM_EXPERT_CACHE_* in ds4_gpu.h); the engine-side
++         * DS4_MAX_LAYER/DS4_MAX_EXPERT limits are larger. */
++        uint8_t protected_map[DS4_GPU_STREAM_EXPERT_CACHE_MAX_LAYER]
++                             [DS4_GPU_STREAM_EXPERT_CACHE_MAX_EXPERT];
++        memset(protected_map, 0, sizeof(protected_map));
++        for (uint32_t il = 0;
++             il < DS4_N_LAYER &&
++             il < DS4_GPU_STREAM_EXPERT_CACHE_MAX_LAYER;
++             il++) {
++            for (uint32_t k = 0;
++                 k < counts[il] && k < DS4_MAX_EXPERT;
++                 k++) {
++                const int32_t expert = experts[il][k];
++                if (expert >= 0 &&
++                    (uint32_t)expert < DS4_GPU_STREAM_EXPERT_CACHE_MAX_EXPERT) {
++                    protected_map[il][(uint32_t)expert] = 1;
++                }
++            }
++        }
++        ds4_gpu_stream_expert_cache_set_protected_experts(protected_map);
++    }
+ 
+     const double t0 = profile ? now_sec() : 0.0;
+     uint32_t seeded_layers = 0;
+@@ -34448,17 +34622,25 @@ static bool metal_graph_seed_streaming_expert_cache_from_hotlist(
+             source_name = "built-in";
+         }
+         fprintf(stderr,
+-                "ds4: streaming expert hotlist seed source=%s preload=%u loaded=%u layers=%u experts=%u time=%.3f ms\n",
++                "ds4: streaming expert hotlist seed source=%s preload=%u loaded=%u layers=%u experts=%u protect=%d time=%.3f ms\n",
+                 source_name,
+                 preload_count,
+                 loaded,
+                 seeded_layers,
+                 seeded_experts,
++                ds4_gpu_stream_expert_cache_hotlist_protect_active(),
+                 (now_sec() - t0) * 1000.0);
+     }
+     return true;
+ }
+ 
++/*
++ * Idle-window prewarm (R2a/M3-2): re-run the hotlist seed between requests.
++ * The seed path skips work when the cache is already at the preload target,
++ * so a warm server pays one pass over the (layer, expert) counters.  Peeking
++ * an already-resident expert renews its last_used stamp; only evicted
++ * candidates cause preads.  Seeding is idempotent: same file, same budgets,
++ * same expert bytes — no output change (bytes only move, never mutate). */
+ typedef struct {
+     int id0;
+     int id1;
+@@ -75317,6 +75634,39 @@ bool ds4_engine_is_qwen4(ds4_engine *e) {
+     return ds4_model_is_qwen4();
+ }
+ 
++/* Idle-window prewarm (R2a/M3-2): re-run the hotlist seed between requests.
++ * The seed path skips work when the cache is already at the preload target,
++ * so a warm server pays one pass over the (layer, expert) counters.  Peeking
++ * an already-resident expert renews its last_used stamp; only evicted
++ * candidates cause preads.  Seeding is idempotent: same file, same budgets,
++ * same expert bytes — no output change (bytes only move, never mutate). */
++#ifndef DS4_NO_GPU
++bool ds4_engine_prewarm_streaming_hotlist(ds4_engine *e) {
++    if (!e || !e->ssd_streaming || e->backend != DS4_BACKEND_METAL) return false;
++    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_DEEPSEEK41) return false;
++    if (!metal_graph_streaming_expert_hotlist_protect_runtime_active()) return false;
++    /* The seed path gates on graph fields (ssd_streaming/cold/preload), and
++     * preload_count(NULL, ...) is 0 — a NULL graph silently no-ops.  Build a
++     * minimal seed graph from engine-owned streaming state instead (same
++     * pattern as the GLM seed-before-prefill path); with no explicit preload
++     * count the auto cap (DS4_METAL_STREAMING_EXPERT_AUTO_PRELOAD_CAP,
++     * default 4096) sizes the hot seed. */
++    ds4_gpu_graph seed_graph;
++    memset(&seed_graph, 0, sizeof(seed_graph));
++    seed_graph.ssd_streaming = true;
++    seed_graph.ssd_streaming_cold = false;
++    ds4_gpu_stream_expert_cache_note_service_thread();
++    return metal_graph_seed_streaming_expert_cache_from_hotlist(&seed_graph,
++                                                                &e->model,
++                                                                &e->weights);
++}
++#else
++bool ds4_engine_prewarm_streaming_hotlist(ds4_engine *e) {
++    (void)e;
++    return false;
++}
++#endif
++
+ /* The official template's default effort is xhigh; medium adds no text. */
+ const char *ds4_qwen4_reasoning_effort_text(ds4_think_mode mode) {
+     switch (mode) {
+@@ -79013,6 +79495,27 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
+             s->checkpoint.len = 0;
+             s->checkpoint_valid = false;
+         }
++        if (e->ssd_streaming) {
++            /* R2a/M3-3: the V4.1 session prefill path (ds41_graph_*) never
++             * reaches the metal_graph layer-major seeder, so a configured
++             * hotlist file and its protect bits only ever loaded through
++             * the idle-prewarm entry. Seed here, before the first chunk
++             * routes. The seeder is a no-op when the hotlist is disabled
++             * (kill switch / --ssd-streaming-cold), and re-seeding resident
++             * experts only bumps their priority. */
++            ds4_gpu_graph seed_graph;
++            memset(&seed_graph, 0, sizeof(seed_graph));
++            seed_graph.ssd_streaming = true;
++            seed_graph.ssd_streaming_cold = e->ssd_streaming_cold;
++            seed_graph.quality = e->quality;
++            seed_graph.streaming_preload_experts =
++                e->ssd_streaming_preload_experts;
++            if (!metal_graph_seed_streaming_expert_cache_from_hotlist(
++                    &seed_graph, &e->model, &e->weights)) {
++                snprintf(err, errlen, "streaming expert hotlist seed failed");
++                return 1;
++            }
++        }
+         bool pending_logits = false, interrupted = false, decoder_pending = false;
+         ds41_encoder_residency encoder = {0};
+         ds41_encoder_acquire(g, &e->model, &e->weights,
+
+diff --git a/ds4_gpu.h b/ds4_gpu.h
+index b17ed41..ba2624c 100644
+--- a/ds4_gpu.h
++++ b/ds4_gpu.h
+@@ -288,6 +288,7 @@ int ds4_gpu_should_use_managed_kv_cache(uint64_t kv_cache_bytes, uint64_t contex
+ void ds4_gpu_set_quality(bool quality);
+ void ds4_gpu_set_glm_model(bool enabled);
+ void ds4_gpu_set_ssd_streaming(bool enabled);
++bool ds4_gpu_get_ssd_streaming(void);
+ void ds4_gpu_set_glm_streaming_prefill_full_layer(bool enabled);
+ #ifdef __APPLE__
+ int ds4_gpu_device_is_pre_m5_apple_silicon(void);
+@@ -444,6 +445,9 @@ int ds4_gpu_qwen4_batch_mm_q8_tensor(
+ uint64_t ds4_gpu_recommended_working_set_size(void);
+ uint32_t ds4_gpu_stream_expert_cache_configured_count(void);
+ uint32_t ds4_gpu_stream_expert_cache_current_count(void);
++/* Cumulative resident-lookup hits (peek hits); lets tests observe whether a
++ * seeded expert was resident without mutating the cache. */
++uint64_t ds4_gpu_stream_expert_cache_hit_count(void);
+ /* True when the streaming sweep gather can bind the streaming address table
+  * while staying bit-identical to the whole-layer mm-id family (Metal only;
+  * referenced only from __APPLE__ code in ds4.c). */
+@@ -471,6 +475,16 @@ void ds4_gpu_stream_expert_cache_prefetch_finish(bool cancel);
+ /* Reset only the prompt-local eviction heuristic.  The resident SSD expert
+  * cache itself is intentionally kept warm across sessions. */
+ void ds4_gpu_stream_expert_cache_reset_route_hotness(void);
++/* Hotlist-v2 protected slots (R2a/M3-2): mark per-layer expert slots that
++ * eviction scans skip until cleared (NULL clears the whole map).  Only
++ * effective when DS4_V41_HOTLIST_PROTECT=1; cache capacity never changes. */
++/* Streaming expert cache protect map dimensions (shared with the Metal
++ * runtime's internal bitmap; the setter copies exactly these strides). */
++#define DS4_GPU_STREAM_EXPERT_CACHE_MAX_LAYER 80
++#define DS4_GPU_STREAM_EXPERT_CACHE_MAX_EXPERT 384
++void ds4_gpu_stream_expert_cache_set_protected_experts(
++        const uint8_t (*protected)[DS4_GPU_STREAM_EXPERT_CACHE_MAX_EXPERT]);
++int ds4_gpu_stream_expert_cache_hotlist_protect_active(void);
+ void ds4_gpu_stream_expert_cache_release_resident(void);
+ uint32_t ds4_gpu_stream_expert_cache_budget_for_expert_size(
+         uint64_t gate_expert_bytes,
+
+diff --git a/ds4_metal.m b/ds4_metal.m
+index e2c5da4..b538115 100644
+--- a/ds4_metal.m
++++ b/ds4_metal.m
+@@ -1073,8 +1073,10 @@ static void ds4_gpu_print_device_summary(void) {
+ static uint32_t g_model_view_count;
+ 
+ enum {
+-    DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER = 80,
+-    DS4_METAL_STREAM_EXPERT_CACHE_MAX_EXPERT = 384,
++    DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER =
++        DS4_GPU_STREAM_EXPERT_CACHE_MAX_LAYER,
++    DS4_METAL_STREAM_EXPERT_CACHE_MAX_EXPERT =
++        DS4_GPU_STREAM_EXPERT_CACHE_MAX_EXPERT,
+     DS4_METAL_STREAM_EXPERT_CACHE_MAX_SELECTED = DS4_METAL_MAX_ROUTED_EXPERT_USED,
+     DS4_METAL_STREAM_EXPERT_CACHE_MAX_ENTRIES =
+         DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER *
+@@ -1158,6 +1160,51 @@ static void ds4_gpu_print_device_summary(void) {
+ static uint32_t g_stream_expert_cache_free_slot_count;
+ static uint8_t g_stream_expert_cache_slab_slot_locked[DS4_METAL_STREAM_EXPERT_CACHE_MAX_ENTRIES];
+ static uint32_t g_stream_expert_cache_mlock_budget_cap;
++
++/*
++ * Hotlist-v2 protected slots (V41_SSD_STREAMING_ROADMAP R2a / ITERATION_PLAN
++ * M3-2).  A bit per (layer, expert): eviction scans skip protected slots and
++ * reclaim a non-protected victim first, so the calibrated cross-turn hot set
++ * survives multi-turn LRU flushes.  The bit map only changes which *valid*
++ * entry a victim scan may clear — bytes, kernel recipes and cache capacity
++ * are untouched, so greedy outputs stay bit-exact.  Opt in via
++ * DS4_V41_HOTLIST_PROTECT=1; 0 or unset keeps the pre-R2a behavior.
++ */
++static uint8_t
++    g_stream_expert_cache_protected[DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER]
++                                   [DS4_METAL_STREAM_EXPERT_CACHE_MAX_EXPERT];
++
++static int ds4_gpu_stream_expert_hotlist_protect_requested(void) {
++    const char *env = getenv("DS4_V41_HOTLIST_PROTECT");
++    return env && env[0] && env[0] != '0';
++}
++
++static int ds4_gpu_stream_expert_hotlist_protect_active(void) {
++    return ds4_gpu_stream_expert_hotlist_protect_requested() &&
++           getenv("DS4_METAL_DISABLE_STREAMING_EXPERT_HOTLIST") == NULL;
++}
++
++void ds4_gpu_stream_expert_cache_set_protected_experts(
++        const uint8_t (*protected)[DS4_GPU_STREAM_EXPERT_CACHE_MAX_EXPERT]) {
++    /*
++     * The bit map must be empty whenever protection is not active (env off,
++     * or the hotlist kill switch), so the victim scans can test the raw bits:
++     * stale bits must never outlive the switch that armed them.
++     */
++    if (!ds4_gpu_stream_expert_hotlist_protect_active() || !protected) {
++        memset(g_stream_expert_cache_protected,
++               0,
++               sizeof(g_stream_expert_cache_protected));
++        return;
++    }
++    memcpy(g_stream_expert_cache_protected,
++           protected,
++           sizeof(g_stream_expert_cache_protected));
++}
++
++int ds4_gpu_stream_expert_cache_hotlist_protect_active(void) {
++    return ds4_gpu_stream_expert_hotlist_protect_active();
++}
+ static uint8_t g_stream_expert_cache_mlock_relief_applied;
+ static uint64_t g_stream_expert_cache_mlock_bytes;
+ static uint64_t g_stream_expert_cache_mlock_fail_bytes;
+@@ -5159,6 +5206,10 @@ void ds4_gpu_set_glm_streaming_prefill_full_layer(bool enabled) {
+     g_glm_streaming_prefill_full_layer_runtime = enabled ? 1 : 0;
+ }
+ 
++bool ds4_gpu_get_ssd_streaming(void) {
++    return g_ssd_streaming_mode != 0;
++}
++
+ void ds4_gpu_set_streaming_expert_cache_budget(uint32_t experts) {
+     if (experts > DS4_METAL_STREAM_EXPERT_CACHE_MAX_ENTRIES) {
+         experts = DS4_METAL_STREAM_EXPERT_CACHE_MAX_ENTRIES;
+@@ -15162,6 +15213,10 @@ uint32_t ds4_gpu_stream_expert_cache_current_count(void) {
+     return g_stream_expert_cache_entry_count;
+ }
+ 
++uint64_t ds4_gpu_stream_expert_cache_hit_count(void) {
++    return g_stream_expert_cache_hits;
++}
++
+ uint32_t ds4_gpu_stream_expert_cache_budget_for_expert_size(
+         uint64_t gate_expert_bytes,
+         uint64_t down_expert_bytes) {
+@@ -17373,6 +17428,9 @@ static void ds4_gpu_stream_expert_cache_clear_entry(
+ 
+ static void ds4_gpu_stream_expert_cache_clear_all(int reset_stats) {
+     ds4_gpu_stream_expert_pending_load_clear();
++    memset(g_stream_expert_cache_protected,
++           0,
++           sizeof(g_stream_expert_cache_protected));
+     g_stream_expert_cache_done_seq = g_stream_expert_cache_cb_seq;
+     g_stream_expert_cache_batch_seq = 0;
+     g_stream_expert_cache_owned_seq = 0;
+@@ -17551,7 +17609,8 @@ static void ds4_gpu_stream_expert_cache_prune_layer(
+                 &g_stream_expert_cache[layer][expert];
+             if (!e->valid ||
+                 ds4_gpu_stream_expert_cache_entry_inflight(e) ||
+-                ds4_gpu_stream_expert_cache_is_protected(expert, protect_ids, n_protect)) {
++                ds4_gpu_stream_expert_cache_is_protected(expert, protect_ids, n_protect) ||
++                g_stream_expert_cache_protected[layer][expert]) {
+                 continue;
+             }
+             const uint32_t hotness =
+@@ -17660,7 +17719,8 @@ static int ds4_gpu_stream_expert_cache_take_reusable(
+                                                             expert,
+                                                             protect_layer,
+                                                             protect_ids,
+-                                                            n_protect)) {
++                                                            n_protect) ||
++                g_stream_expert_cache_protected[layer][expert]) {
+                 continue;
+             }
+             const uint32_t hotness =
+@@ -17784,7 +17844,8 @@ static uint32_t ds4_gpu_stream_expert_cache_take_reusable_batch(
+                                                             expert,
+                                                             protect_layer,
+                                                             protect_ids,
+-                                                            n_protect)) {
++                                                            n_protect) ||
++                g_stream_expert_cache_protected[layer][expert]) {
+                 continue;
+             }
+ 
+@@ -17927,7 +17988,8 @@ static uint32_t ds4_gpu_stream_expert_cache_release_mlock_margin(
+                                                                 expert,
+                                                                 protect_layer,
+                                                                 protect_ids,
+-                                                                n_protect)) {
++                                                                n_protect) ||
++                    g_stream_expert_cache_protected[layer][expert]) {
+                     continue;
+                 }
+                 const uint32_t hotness =
+@@ -18223,7 +18285,8 @@ static void ds4_gpu_stream_expert_cache_prune_global(
+                                                                 expert,
+                                                                 protect_layer,
+                                                                 protect_ids,
+-                                                                n_protect)) {
++                                                                n_protect) ||
++                    g_stream_expert_cache_protected[layer][expert]) {
+                     continue;
+                 }
+                 const uint32_t hotness =
+
+diff --git a/tests/test_metal_ssd_experts.c b/tests/test_metal_ssd_experts.c
+index 897fee2..87c7be9 100644
+--- a/tests/test_metal_ssd_experts.c
++++ b/tests/test_metal_ssd_experts.c
+@@ -208,6 +208,103 @@ static int check_seed_release(void *model, uint64_t bytes, uint64_t expert) {
+     return 1;
+ }
+ 
++/* Hotlist-v2 protect bit truth table (R2a/M3-2).  Same seed sequence and
++ * same eviction pressure in both arms; only the protect bitmap differs.
++ * The probes (experts 0,1) are seeded FIRST so plain LRU reclaims them
++ * first: the later eight-expert seed overflows budget 8 and its end-of-seed
++ * global prune must pick victims — the bit spares the probes (they survive,
++ * a reseed peek hits) and without the bit they are the first victims (the
++ * reseed peek misses).  Observation uses the cumulative hit counter: the
++ * end-of-seed prune trims the count back to budget, so count alone cannot
++ * distinguish hit from miss. */
++static int check_protect_eviction(void *model, uint64_t bytes, uint64_t expert) {
++    const int32_t probe_ids[2] = {0, 1};
++    int32_t rest[8];
++    for (int i = 0; i < 8; i++) rest[i] = i + 2;
++    const ds4_gpu_stream_expert_table table = {
++        .model_map = model, .model_size = bytes, .layer = 1, .n_total_expert = E,
++        .gate_offset = 0, .up_offset = E * expert, .down_offset = 2 * E * expert,
++        .gate_expert_bytes = expert, .down_expert_bytes = expert,
++    };
++    int ok = 1;
++
++    /* Arm 1 — protect ON: the probes survive the over-budget prune. */
++    setenv("DS4_V41_HOTLIST_PROTECT", "1", 1);
++    ok = ok && ds4_gpu_stream_expert_cache_hotlist_protect_active();
++    uint8_t protected_map[DS4_GPU_STREAM_EXPERT_CACHE_MAX_LAYER]
++                     [DS4_GPU_STREAM_EXPERT_CACHE_MAX_EXPERT] = {{0}};
++    protected_map[table.layer][probe_ids[0]] = 1;
++    protected_map[table.layer][probe_ids[1]] = 1;
++    /* Arm the map AFTER the budget clear: clear_all wipes the bitmap, and
++     * the engine arms it after its startup clear for the same reason. */
++    ds4_gpu_set_streaming_expert_cache_budget(8);
++    ds4_gpu_stream_expert_cache_reset_route_hotness();
++    ds4_gpu_stream_expert_cache_set_protected_experts(protected_map);
++    ok = ok && ds4_gpu_begin_commands() &&
++         ds4_gpu_stream_expert_cache_seed_experts(&table,
++                                                  probe_ids,
++                                                  NULL,
++                                                  2) &&
++         ds4_gpu_stream_expert_cache_seed_experts(&table, rest, NULL, 8) &&
++         ds4_gpu_end_commands();
++    ok = ok && ds4_gpu_stream_expert_cache_current_count() == 8u;
++    uint64_t hits_before = ds4_gpu_stream_expert_cache_hit_count();
++    ok = ok && ds4_gpu_begin_commands() &&
++         ds4_gpu_stream_expert_cache_seed_experts(&table,
++                                                  probe_ids,
++                                                  NULL,
++                                                  2) &&
++         ds4_gpu_end_commands();
++    const uint64_t hits_on = ds4_gpu_stream_expert_cache_hit_count() -
++                             hits_before;
++    if (hits_on != 2u) {
++        fprintf(stderr,
++                "Metal SSD protect: probes should have survived (peek hits=%llu, want 2)\n",
++                (unsigned long long)hits_on);
++        ok = 0;
++    }
++
++    /* Arm 2 — protect OFF: identical pressure reclaims the probes and the
++     * reseed peeks miss.  Feeding the arm-1 map while inactive must CLEAR
++     * the bits (kill-switch semantics). */
++    unsetenv("DS4_V41_HOTLIST_PROTECT");
++    ok = ok && !ds4_gpu_stream_expert_cache_hotlist_protect_active();
++    ds4_gpu_set_streaming_expert_cache_budget(8);
++    ds4_gpu_stream_expert_cache_reset_route_hotness();
++    /* Feeding the arm-1 map while inactive must CLEAR the bits (kill-switch
++     * semantics): the same pressure must now evict the probes. */
++    ds4_gpu_stream_expert_cache_set_protected_experts(protected_map);
++    ok = ok && ds4_gpu_begin_commands() &&
++         ds4_gpu_stream_expert_cache_seed_experts(&table,
++                                                  probe_ids,
++                                                  NULL,
++                                                  2) &&
++         ds4_gpu_stream_expert_cache_seed_experts(&table, rest, NULL, 8) &&
++         ds4_gpu_end_commands();
++    ok = ok && ds4_gpu_stream_expert_cache_current_count() == 8u;
++    hits_before = ds4_gpu_stream_expert_cache_hit_count();
++    ok = ok && ds4_gpu_begin_commands() &&
++         ds4_gpu_stream_expert_cache_seed_experts(&table,
++                                                  probe_ids,
++                                                  NULL,
++                                                  2) &&
++         ds4_gpu_end_commands();
++    const uint64_t hits_off = ds4_gpu_stream_expert_cache_hit_count() -
++                              hits_before;
++    if (hits_off != 0u) {
++        fprintf(stderr,
++                "Metal SSD protect-off: probes should have been evicted (peek hits=%llu, want 0)\n",
++                (unsigned long long)hits_off);
++        ok = 0;
++    }
++    ds4_gpu_set_streaming_expert_cache_budget(E);
++    ds4_gpu_stream_expert_cache_set_protected_experts(NULL);
++    if (ok) {
++        fprintf(stderr, "Metal SSD hotlist protect eviction order: PASS\n");
++    }
++    return ok;
++}
++
+ int main(int argc, char **argv) {
+     if (argc == 2 && !strcmp(argv[1], "--table-admission")) {
+         const int ok = ds4_gpu_init() && check_streaming_table_admission();
+@@ -334,6 +431,7 @@ int main(int argc, char **argv) {
+     ds4_gpu_tensor_free(down); ds4_gpu_tensor_free(out);
+     if (ok) ok = check_batch_cache(model, bytes, expert);
+     if (ok && D == 256) ok = check_seed_release(model, bytes, expert);
++    if (ok) ok = check_protect_eviction(model, bytes, expert);
+     ds4_gpu_print_memory_report("SSD expert test");
+     if (ok) ok = check_mapping_lifetime();
+     ds4_gpu_cleanup();
+
+diff --git a/tests/test_deepseek41_dspark.c b/tests/test_deepseek41_dspark.c
+index b2b9bf4..08eed2c 100644
+--- a/tests/test_deepseek41_dspark.c
++++ b/tests/test_deepseek41_dspark.c
+@@ -1065,8 +1065,19 @@ static int check_moe_bind_parity(const char *model) {
+     /* Sweep past the family thresholds: mul_mv tiny pair (2..8), plain
+      * mm-id TensorOps (32..511), packed TensorOps mm-id (512..1024).
+      * 511/512 straddle the packed switch; 831/1024 are the live sweep
+-     * append sizes and the selected-addr auto_max cap (HANDOFF-V41 13.4). */
+-    const uint32_t row_sets[] = {2, 5, 8, 9, 16, 31, 32, 256, 511, 512, 831, 1024};
++     * append sizes and the selected-addr auto_max cap (HANDOFF-V41 13.4).
++     * DS4_TEST_BIND_PARITY_GATE1=1 restores the P0c/P0g gate-1 set (9 sets,
++     * 27/27) without the E0.1 registered-red band rows {9,16,31} — that
++     * [9,31] addr-vs-whole-map drift is the adjudicated long-term red
++     * (HANDOFF-V41 15.2b, user ruling 2026-10-05: option iii, tool stays
++     * rc=1 on the full set). */
++    const bool gate1 = getenv("DS4_TEST_BIND_PARITY_GATE1") != NULL;
++    const uint32_t row_sets_full[] = {2, 5, 8, 9, 16, 31, 32, 256, 511, 512, 831, 1024};
++    const uint32_t row_sets_gate1[] = {2, 5, 8, 32, 256, 511, 512, 831, 1024};
++    const uint32_t *row_sets = gate1 ? row_sets_gate1 : row_sets_full;
++    const size_t n_row_sets = gate1 ?
++        sizeof(row_sets_gate1) / sizeof(row_sets_gate1[0]) :
++        sizeof(row_sets_full) / sizeof(row_sets_full[0]);
+     int drifts = 0;
+     for (size_t li = 0; li < sizeof(layers) / sizeof(layers[0]); li++) {
+         const uint32_t il = layers[li];
+@@ -1077,7 +1088,7 @@ static int check_moe_bind_parity(const char *model) {
+         const uint64_t gate_row = routed_expert_row_bytes(l->ffn_gate_exps);
+         const uint64_t down_row = routed_expert_row_bytes(l->ffn_down_exps);
+         REQUIRE(gate_row && down_row);
+-        for (size_t ri = 0; ri < sizeof(row_sets) / sizeof(row_sets[0]); ri++) {
++        for (size_t ri = 0; ri < n_row_sets; ri++) {
+             const uint32_t rows = row_sets[ri];
+             const uint64_t pairs = (uint64_t)rows * DS4_N_EXPERT_USED;
+             /* Distinct selected ids within each token (routing never repeats

@@ -1,0 +1,261 @@
+{
+  "format_version": 1,
+  "status": "identical",
+  "strict_float32_identity": true,
+  "complete_finite_coverage": true,
+  "scope": "selected prefill frontiers only; no model quality or decode correctness verdict",
+  "expected_frontiers": [
+    2048,
+    2271,
+    2494,
+    2717,
+    2940
+  ],
+  "expected_metadata": {
+    "source": "ds4-bench",
+    "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+    "backend": "metal",
+    "quality": false,
+    "quant_bits": 2,
+    "ctx": 393216,
+    "vocab": 129280
+  },
+  "errors": [],
+  "frontiers": [
+    {
+      "frontier": 2048,
+      "filename": "frontier_002048.logits.json",
+      "errors": [],
+      "complete_finite_validation": true,
+      "strict_float32_identity": true,
+      "baseline": {
+        "metadata": {
+          "source": "ds4-bench",
+          "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+          "backend": "metal",
+          "quality": false,
+          "quant_bits": 2,
+          "prompt_tokens": 2048,
+          "frontier_tokens": 2048,
+          "prefill_tokens": 2048,
+          "ctx": 393216,
+          "vocab": 129280,
+          "argmax_id": 7038,
+          "argmax_logit": 28.16490364074707
+        },
+        "file_sha256": "c2c82b3e8d5cf1f4fed7b01a054ece3b794345894845b257fd4b0a25593a5265",
+        "logits_float32_sha256": "d34ab037ec7e9746f535d79a55de6bcdbc9264da3e907d407ed7844d38d09f6e"
+      },
+      "candidate": {
+        "metadata": {
+          "source": "ds4-bench",
+          "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+          "backend": "metal",
+          "quality": false,
+          "quant_bits": 2,
+          "prompt_tokens": 2048,
+          "frontier_tokens": 2048,
+          "prefill_tokens": 2048,
+          "ctx": 393216,
+          "vocab": 129280,
+          "argmax_id": 7038,
+          "argmax_logit": 28.16490364074707
+        },
+        "file_sha256": "c2c82b3e8d5cf1f4fed7b01a054ece3b794345894845b257fd4b0a25593a5265",
+        "logits_float32_sha256": "d34ab037ec7e9746f535d79a55de6bcdbc9264da3e907d407ed7844d38d09f6e"
+      },
+      "values": 129280,
+      "changed_count": 0,
+      "first_change": null,
+      "max_abs": 0.0
+    },
+    {
+      "frontier": 2271,
+      "filename": "frontier_002271.logits.json",
+      "errors": [],
+      "complete_finite_validation": true,
+      "strict_float32_identity": true,
+      "baseline": {
+        "metadata": {
+          "source": "ds4-bench",
+          "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+          "backend": "metal",
+          "quality": false,
+          "quant_bits": 2,
+          "prompt_tokens": 2271,
+          "frontier_tokens": 2271,
+          "prefill_tokens": 223,
+          "ctx": 393216,
+          "vocab": 129280,
+          "argmax_id": 1554,
+          "argmax_logit": 25.68259048461914
+        },
+        "file_sha256": "bf4f63aff1379e9cdfe9041e1088ce662200a51882238598f7852012666145ed",
+        "logits_float32_sha256": "f1cfa0f471985e10a51419b821d90281aa26ab8b2644fedecae4c40f4ca84256"
+      },
+      "candidate": {
+        "metadata": {
+          "source": "ds4-bench",
+          "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+          "backend": "metal",
+          "quality": false,
+          "quant_bits": 2,
+          "prompt_tokens": 2271,
+          "frontier_tokens": 2271,
+          "prefill_tokens": 223,
+          "ctx": 393216,
+          "vocab": 129280,
+          "argmax_id": 1554,
+          "argmax_logit": 25.68259048461914
+        },
+        "file_sha256": "bf4f63aff1379e9cdfe9041e1088ce662200a51882238598f7852012666145ed",
+        "logits_float32_sha256": "f1cfa0f471985e10a51419b821d90281aa26ab8b2644fedecae4c40f4ca84256"
+      },
+      "values": 129280,
+      "changed_count": 0,
+      "first_change": null,
+      "max_abs": 0.0
+    },
+    {
+      "frontier": 2494,
+      "filename": "frontier_002494.logits.json",
+      "errors": [],
+      "complete_finite_validation": true,
+      "strict_float32_identity": true,
+      "baseline": {
+        "metadata": {
+          "source": "ds4-bench",
+          "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+          "backend": "metal",
+          "quality": false,
+          "quant_bits": 2,
+          "prompt_tokens": 2494,
+          "frontier_tokens": 2494,
+          "prefill_tokens": 223,
+          "ctx": 393216,
+          "vocab": 129280,
+          "argmax_id": 982,
+          "argmax_logit": 24.746116638183594
+        },
+        "file_sha256": "93637cd1c810ae56657f77fd2bdc6c2168c49ad9341b83e3857712ba3e7032a2",
+        "logits_float32_sha256": "a25485ac7bad925e76b85506cd17c74a0547bbb38cccac1b4d96175a7deb60d6"
+      },
+      "candidate": {
+        "metadata": {
+          "source": "ds4-bench",
+          "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+          "backend": "metal",
+          "quality": false,
+          "quant_bits": 2,
+          "prompt_tokens": 2494,
+          "frontier_tokens": 2494,
+          "prefill_tokens": 223,
+          "ctx": 393216,
+          "vocab": 129280,
+          "argmax_id": 982,
+          "argmax_logit": 24.746116638183594
+        },
+        "file_sha256": "93637cd1c810ae56657f77fd2bdc6c2168c49ad9341b83e3857712ba3e7032a2",
+        "logits_float32_sha256": "a25485ac7bad925e76b85506cd17c74a0547bbb38cccac1b4d96175a7deb60d6"
+      },
+      "values": 129280,
+      "changed_count": 0,
+      "first_change": null,
+      "max_abs": 0.0
+    },
+    {
+      "frontier": 2717,
+      "filename": "frontier_002717.logits.json",
+      "errors": [],
+      "complete_finite_validation": true,
+      "strict_float32_identity": true,
+      "baseline": {
+        "metadata": {
+          "source": "ds4-bench",
+          "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+          "backend": "metal",
+          "quality": false,
+          "quant_bits": 2,
+          "prompt_tokens": 2717,
+          "frontier_tokens": 2717,
+          "prefill_tokens": 223,
+          "ctx": 393216,
+          "vocab": 129280,
+          "argmax_id": 1529,
+          "argmax_logit": 27.98959732055664
+        },
+        "file_sha256": "0971f6d1154ea2c6c54ec5fe5d2e9b6c10436e042d01ba18e06efd92fcf18916",
+        "logits_float32_sha256": "8ad634b8f505bc2936ae29232b4d7f6c21ae6511c83e675b91969329c852abe7"
+      },
+      "candidate": {
+        "metadata": {
+          "source": "ds4-bench",
+          "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+          "backend": "metal",
+          "quality": false,
+          "quant_bits": 2,
+          "prompt_tokens": 2717,
+          "frontier_tokens": 2717,
+          "prefill_tokens": 223,
+          "ctx": 393216,
+          "vocab": 129280,
+          "argmax_id": 1529,
+          "argmax_logit": 27.98959732055664
+        },
+        "file_sha256": "0971f6d1154ea2c6c54ec5fe5d2e9b6c10436e042d01ba18e06efd92fcf18916",
+        "logits_float32_sha256": "8ad634b8f505bc2936ae29232b4d7f6c21ae6511c83e675b91969329c852abe7"
+      },
+      "values": 129280,
+      "changed_count": 0,
+      "first_change": null,
+      "max_abs": 0.0
+    },
+    {
+      "frontier": 2940,
+      "filename": "frontier_002940.logits.json",
+      "errors": [],
+      "complete_finite_validation": true,
+      "strict_float32_identity": true,
+      "baseline": {
+        "metadata": {
+          "source": "ds4-bench",
+          "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+          "backend": "metal",
+          "quality": false,
+          "quant_bits": 2,
+          "prompt_tokens": 2940,
+          "frontier_tokens": 2940,
+          "prefill_tokens": 223,
+          "ctx": 393216,
+          "vocab": 129280,
+          "argmax_id": 31,
+          "argmax_logit": 24.513458251953125
+        },
+        "file_sha256": "98374330ffb68e03562a023e0c3187cb60d7db71a671f4095d5b24dbf4db4f77",
+        "logits_float32_sha256": "e4a143cae2007b58cf1249eba2f20c24d4988fc595f91fcac680ebafc65c7057"
+      },
+      "candidate": {
+        "metadata": {
+          "source": "ds4-bench",
+          "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+          "backend": "metal",
+          "quality": false,
+          "quant_bits": 2,
+          "prompt_tokens": 2940,
+          "frontier_tokens": 2940,
+          "prefill_tokens": 223,
+          "ctx": 393216,
+          "vocab": 129280,
+          "argmax_id": 31,
+          "argmax_logit": 24.513458251953125
+        },
+        "file_sha256": "98374330ffb68e03562a023e0c3187cb60d7db71a671f4095d5b24dbf4db4f77",
+        "logits_float32_sha256": "e4a143cae2007b58cf1249eba2f20c24d4988fc595f91fcac680ebafc65c7057"
+      },
+      "values": 129280,
+      "changed_count": 0,
+      "first_change": null,
+      "max_abs": 0.0
+    }
+  ]
+}

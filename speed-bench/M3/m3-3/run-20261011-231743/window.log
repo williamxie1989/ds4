@@ -1,0 +1,51 @@
+preflight ok swap=12462.2M avail=105G 23:17:43
+=== LEG bind-parity start 23:17:43 ===
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: metal SSD streaming cache target 16.00 GiB; effective 16.00 GiB = 7.12 GiB prefill headroom + 8.88 GiB dynamic cache (958 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.35 GiB (raw 0.32 + compressed 0.02) + buffers 1.76 GiB + resident model 9.37 GiB + expert cache 8.88 GiB + prefill expert reserve 7.12 GiB = 27.47 GiB planned
+ds4: memory detail: ctx=4096 prefill_cap=2048 raw_kv_rows=128 compressed_kv_rows=4097 backend=metal
+V4.1 MoE bind parity: 9 case(s) drift -- the gather kernel itself changes the bits
+layer 0 rows 2: address-table bind bit-exact vs whole-map bind
+layer 0 rows 5: address-table bind bit-exact vs whole-map bind
+layer 0 rows 8: address-table bind bit-exact vs whole-map bind
+layer 0 rows 9: address-table bind DRIFTS vs whole-map bind (worst 9.53674e-07)
+layer 0 rows 16: address-table bind DRIFTS vs whole-map bind (worst 1.19209e-06)
+layer 0 rows 31: address-table bind DRIFTS vs whole-map bind (worst 1.19209e-06)
+layer 0 rows 32: address-table bind bit-exact vs whole-map bind
+layer 0 rows 256: address-table bind bit-exact vs whole-map bind
+layer 0 rows 511: address-table bind bit-exact vs whole-map bind
+layer 0 rows 512: address-table bind bit-exact vs whole-map bind
+layer 0 rows 831: address-table bind bit-exact vs whole-map bind
+layer 0 rows 1024: address-table bind bit-exact vs whole-map bind
+layer 20 rows 2: address-table bind bit-exact vs whole-map bind
+layer 20 rows 5: address-table bind bit-exact vs whole-map bind
+layer 20 rows 8: address-table bind bit-exact vs whole-map bind
+layer 20 rows 9: address-table bind DRIFTS vs whole-map bind (worst 9.53674e-07)
+layer 20 rows 16: address-table bind DRIFTS vs whole-map bind (worst 9.53674e-07)
+layer 20 rows 31: address-table bind DRIFTS vs whole-map bind (worst 9.53674e-07)
+layer 20 rows 32: address-table bind bit-exact vs whole-map bind
+layer 20 rows 256: address-table bind bit-exact vs whole-map bind
+layer 20 rows 511: address-table bind bit-exact vs whole-map bind
+layer 20 rows 512: address-table bind bit-exact vs whole-map bind
+layer 20 rows 831: address-table bind bit-exact vs whole-map bind
+layer 20 rows 1024: address-table bind bit-exact vs whole-map bind
+layer 39 rows 2: address-table bind bit-exact vs whole-map bind
+layer 39 rows 5: address-table bind bit-exact vs whole-map bind
+layer 39 rows 8: address-table bind bit-exact vs whole-map bind
+layer 39 rows 9: address-table bind DRIFTS vs whole-map bind (worst 1.90735e-06)
+layer 39 rows 16: address-table bind DRIFTS vs whole-map bind (worst 3.8147e-06)
+layer 39 rows 31: address-table bind DRIFTS vs whole-map bind (worst 7.62939e-06)
+layer 39 rows 32: address-table bind bit-exact vs whole-map bind
+layer 39 rows 256: address-table bind bit-exact vs whole-map bind
+layer 39 rows 511: address-table bind bit-exact vs whole-map bind
+layer 39 rows 512: address-table bind bit-exact vs whole-map bind
+layer 39 rows 831: address-table bind bit-exact vs whole-map bind
+layer 39 rows 1024: address-table bind bit-exact vs whole-map bind
+=== LEG done rc=1 23:17:47 ===
+ABORT: bind-parity gate FAILED 23:18:07

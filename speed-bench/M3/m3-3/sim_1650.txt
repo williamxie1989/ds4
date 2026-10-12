@@ -1,0 +1,414 @@
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.
+Tool call: read_file(path="src/router/hotlist.c") -> ok bytes=4178 lines=112 sha=f3a91c
+Tool result: static uint32_t hotlist_slots(const ds4_layer *l) { return l->n_expert / 6; }
+Review note: slot math divides by top-k; guard n_expert==0 before use.

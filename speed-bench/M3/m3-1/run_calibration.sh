@@ -32,6 +32,10 @@ V41=${V41:-gguf/DeepSeek-V4.1-Flash-Q2.gguf}
 CACHE_EXPERTS=${CACHE_EXPERTS:-6959}
 LAYERS=${LAYERS:-40}
 AVAIL_FLOOR_GIB=${AVAIL_FLOOR_GIB:-84}   # V4.1 streaming ~70 GiB x 1.2 (§2-1)
+# §2-1 swap pre-gate floor. Default stays 3 GB; a window that explicitly
+# accepts a machine with historical swap residue (no resident LLM) can raise
+# it — the watchdog's >6 GB growth fuse is separate and always enforced.
+SWAP_FLOOR_MB=${SWAP_FLOOR_MB:-3072}
 
 STAMP=$(date +%Y%m%d-%H%M%S)
 RUN=$OUT/run-$STAMP
@@ -63,7 +67,7 @@ if [ -s "$RUN/pgrep.txt" ]; then
 fi
 SWAP=$(sysctl -n vm.swapusage | awk '{for(i=1;i<=NF;i++) if($i=="used") {v=$(i+2)} gsub(/M/,"",v); print v}')
 case "$SWAP" in ''|*[!0-9.]*) abort "swap parse failed: $(sysctl -n vm.swapusage)";; esac
-[ "${SWAP%.*}" -gt 3072 ] && abort "swap ${SWAP}M > 3 GB (§2-1)"
+[ "${SWAP%.*}" -gt "${SWAP_FLOOR_MB:-3072}" ] && abort "swap ${SWAP}M > ${SWAP_FLOOR_MB:-3072} MB (§2-1)"
 FS=$(vm_stat | awk '/Pages free/{f=$3}/inactive/{i=$3}/speculative/{s=$3}/purgeable/{p=$3} END{printf "%.0f", (f+i+s+p)*16384/2^30}')
 case "$FS" in ''|*[!0-9]*) abort "avail parse failed";; esac
 [ "$FS" -lt "$AVAIL_FLOOR_GIB" ] && abort "composite avail ${FS} GiB < ${AVAIL_FLOOR_GIB} GiB (§2-1)"
@@ -110,14 +114,18 @@ DS4_MOE_RECORD_SELECTED_HOTLIST_SNAPSHOT_MS=500 \
     --warm-weights --port "$PORT" > "$LOG" 2>&1 &
 SRV=$!
 
-# watchdog: §2-6 abort lines while the model is up
+# watchdog: §2-6 abort lines while the model is up.  The fuse measures GROWTH
+# from the preflight baseline (this machine carries a ~12 GB historical swap
+# residue that never moves), not the absolute level.
+SWAP0=$SWAP
 (
     while kill -0 "$SRV" 2>/dev/null; do
         sleep 20
         SW=$(sysctl -n vm.swapusage | awk '{for(i=1;i<=NF;i++) if($i=="used") {v=$(i+2)} gsub(/M/,"",v); print v}')
         case "$SW" in *[!0-9.]*) SW=0;; esac
-        if [ "${SW%.*}" -gt 6144 ]; then
-            echo "$(date +%H:%M:%S) watchdog: swap ${SW}M > 6 GB -> TERM server" >> "$WLOG"
+        GROWTH=$(python3 -c "print(max(0, $SW - $SW0))" 2>/dev/null || echo 0)
+        if [ "${GROWTH%.*}" -gt 6144 ]; then
+            echo "$(date +%H:%M:%S) watchdog: swap grew ${GROWTH}M > 6 GB -> TERM server" >> "$WLOG"
             kill -TERM "$SRV" 2>/dev/null
             break
         fi

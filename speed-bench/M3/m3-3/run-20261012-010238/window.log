@@ -1,0 +1,79 @@
+preflight ok swap=13085.4M avail=106G 01:02:38
+=== LEG bind-parity start 01:02:38 ===
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: metal SSD streaming cache target 16.00 GiB; effective 16.00 GiB = 7.12 GiB prefill headroom + 8.88 GiB dynamic cache (958 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.35 GiB (raw 0.32 + compressed 0.02) + buffers 1.76 GiB + resident model 9.37 GiB + expert cache 8.88 GiB + prefill expert reserve 7.12 GiB = 27.47 GiB planned
+ds4: memory detail: ctx=4096 prefill_cap=2048 raw_kv_rows=128 compressed_kv_rows=4097 backend=metal
+layer 0 rows 2: address-table bind bit-exact vs whole-map bind
+layer 0 rows 5: address-table bind bit-exact vs whole-map bind
+layer 0 rows 8: address-table bind bit-exact vs whole-map bind
+layer 0 rows 32: address-table bind bit-exact vs whole-map bind
+layer 0 rows 256: address-table bind bit-exact vs whole-map bind
+layer 0 rows 511: address-table bind bit-exact vs whole-map bind
+layer 0 rows 512: address-table bind bit-exact vs whole-map bind
+layer 0 rows 831: address-table bind bit-exact vs whole-map bind
+layer 0 rows 1024: address-table bind bit-exact vs whole-map bind
+layer 20 rows 2: address-table bind bit-exact vs whole-map bind
+layer 20 rows 5: address-table bind bit-exact vs whole-map bind
+layer 20 rows 8: address-table bind bit-exact vs whole-map bind
+layer 20 rows 32: address-table bind bit-exact vs whole-map bind
+layer 20 rows 256: address-table bind bit-exact vs whole-map bind
+layer 20 rows 511: address-table bind bit-exact vs whole-map bind
+layer 20 rows 512: address-table bind bit-exact vs whole-map bind
+layer 20 rows 831: address-table bind bit-exact vs whole-map bind
+layer 20 rows 1024: address-table bind bit-exact vs whole-map bind
+layer 39 rows 2: address-table bind bit-exact vs whole-map bind
+layer 39 rows 5: address-table bind bit-exact vs whole-map bind
+layer 39 rows 8: address-table bind bit-exact vs whole-map bind
+layer 39 rows 32: address-table bind bit-exact vs whole-map bind
+layer 39 rows 256: address-table bind bit-exact vs whole-map bind
+layer 39 rows 511: address-table bind bit-exact vs whole-map bind
+layer 39 rows 512: address-table bind bit-exact vs whole-map bind
+layer 39 rows 831: address-table bind bit-exact vs whole-map bind
+layer 39 rows 1024: address-table bind bit-exact vs whole-map bind
+V4.1 MoE bind parity: address-table gather bit-exact at every layer and size
+=== LEG done rc=0 01:02:41 ===
+=== LEG dump223-off start 01:03:01 ===
+env: -u: No such file or directory
+=== LEG done rc=127 01:03:01 ===
+=== LEG dump223-on start 01:03:21 ===
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 116.00 GiB working set
+ds4:   using 77% total for model + cached experts: 89.00 GiB
+ds4:   non-routed weights: 9.37 GiB
+ds4:   routed expert size: 9.49 MiB
+ds4:   expert budget before prefill reserve: 8590 (79.63 GiB)
+ds4: metal SSD streaming cache target 79.63 GiB; effective 79.63 GiB = 7.12 GiB prefill headroom + 72.51 GiB dynamic cache (7822 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 2.98 GiB (raw 0.63 + compressed 2.34) + buffers 9.44 GiB + resident model 9.37 GiB + expert cache 72.51 GiB + prefill expert reserve 7.12 GiB = 101.42 GiB planned
+ds4: memory detail: ctx=393216 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=393217 backend=metal
+ds4-bench: context buffers 12717.91 MiB (ctx=393216, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=393217)
+ds4: V4.1 static context buffers 12717.91 MiB (ctx=393216), Engram disk-only
+ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,gen_steady_tokens,gen_steady_tps,kvcache_bytes
+ds4: streaming expert hotlist seed source=speed-bench/M3/m3-3/hotlist_v2_ranked.txt preload=5156 loaded=5156 layers=40 experts=5156 protect=1 time=3971.737 ms
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+2048,2048,144.09,0,0.00,0.000,0,0.00,0
+ds4: streaming expert hotlist seed source=speed-bench/M3/m3-3/hotlist_v2_ranked.txt preload=5156 loaded=5156 layers=40 experts=5156 protect=1 time=0.110 ms
+2271,223,116.10,0,0.00,0.000,0,0.00,0
+ds4: streaming expert hotlist seed source=speed-bench/M3/m3-3/hotlist_v2_ranked.txt preload=5156 loaded=5156 layers=40 experts=5156 protect=1 time=0.110 ms
+2494,223,142.89,0,0.00,0.000,0,0.00,0
+ds4: streaming expert hotlist seed source=speed-bench/M3/m3-3/hotlist_v2_ranked.txt preload=5156 loaded=5156 layers=40 experts=5156 protect=1 time=0.113 ms
+2717,223,146.37,0,0.00,0.000,0,0.00,0
+ds4: streaming expert hotlist seed source=speed-bench/M3/m3-3/hotlist_v2_ranked.txt preload=5156 loaded=5156 layers=40 experts=5156 protect=1 time=0.124 ms
+2940,223,153.53,0,0.00,0.000,0,0.00,0
+=== LEG done rc=0 01:03:44 ===
+=== LEG dump1524-off start 01:04:04 ===
+env: -u: No such file or directory
+=== LEG done rc=127 01:04:04 ===

@@ -1,0 +1,85 @@
+{
+  "format_version": 1,
+  "status": "invalid",
+  "strict_float32_identity": false,
+  "complete_finite_coverage": false,
+  "scope": "selected prefill frontiers only; no model quality or decode correctness verdict",
+  "expected_frontiers": [
+    2048,
+    2691,
+    3334,
+    3977
+  ],
+  "expected_metadata": {
+    "source": "ds4-bench",
+    "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+    "backend": "metal",
+    "quality": false,
+    "quant_bits": 2,
+    "ctx": 393216,
+    "vocab": 129280
+  },
+  "errors": [
+    "baseline file coverage: missing=['frontier_002048.logits.json', 'frontier_002691.logits.json', 'frontier_003334.logits.json', 'frontier_003977.logits.json'], extra=[]",
+    "candidate file coverage: missing=['frontier_002691.logits.json', 'frontier_003334.logits.json', 'frontier_003977.logits.json'], extra=['frontier_002271.logits.json', 'frontier_002494.logits.json', 'frontier_002717.logits.json', 'frontier_002940.logits.json']"
+  ],
+  "frontiers": [
+    {
+      "frontier": 2048,
+      "filename": "frontier_002048.logits.json",
+      "errors": [
+        "baseline: dump must be an existing regular file, not a symlink"
+      ],
+      "complete_finite_validation": false,
+      "strict_float32_identity": false,
+      "candidate": {
+        "metadata": {
+          "source": "ds4-bench",
+          "model": "gguf/DeepSeek-V4.1-Flash-Q2.gguf",
+          "backend": "metal",
+          "quality": false,
+          "quant_bits": 2,
+          "prompt_tokens": 2048,
+          "frontier_tokens": 2048,
+          "prefill_tokens": 2048,
+          "ctx": 393216,
+          "vocab": 129280,
+          "argmax_id": 7038,
+          "argmax_logit": 28.16490364074707
+        },
+        "file_sha256": "c2c82b3e8d5cf1f4fed7b01a054ece3b794345894845b257fd4b0a25593a5265",
+        "logits_float32_sha256": "d34ab037ec7e9746f535d79a55de6bcdbc9264da3e907d407ed7844d38d09f6e"
+      }
+    },
+    {
+      "frontier": 2691,
+      "filename": "frontier_002691.logits.json",
+      "errors": [
+        "baseline: dump must be an existing regular file, not a symlink",
+        "candidate: dump must be an existing regular file, not a symlink"
+      ],
+      "complete_finite_validation": false,
+      "strict_float32_identity": false
+    },
+    {
+      "frontier": 3334,
+      "filename": "frontier_003334.logits.json",
+      "errors": [
+        "baseline: dump must be an existing regular file, not a symlink",
+        "candidate: dump must be an existing regular file, not a symlink"
+      ],
+      "complete_finite_validation": false,
+      "strict_float32_identity": false
+    },
+    {
+      "frontier": 3977,
+      "filename": "frontier_003977.logits.json",
+      "errors": [
+        "baseline: dump must be an existing regular file, not a symlink",
+        "candidate: dump must be an existing regular file, not a symlink"
+      ],
+      "complete_finite_validation": false,
+      "strict_float32_identity": false
+    }
+  ]
+}
