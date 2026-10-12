@@ -1,15 +1,18 @@
 #include "ds4_gpu.h"
 #include "ds4_engram.h"
 static __typeof__(ds4_gpu_device_is_m3_ultra) test_device_is_m3_ultra;
+static __typeof__(ds4_gpu_device_is_m5_apple_silicon) test_device_is_m5_apple_silicon;
 static __typeof__(ds4_engram_read_batch) test_read_batch;
 static __typeof__(ds4_engram_read_step) test_read_step;
 static __typeof__(ds4_engram_read_step_begin) test_read_step_begin;
 #define ds4_gpu_device_is_m3_ultra test_device_is_m3_ultra
+#define ds4_gpu_device_is_m5_apple_silicon test_device_is_m5_apple_silicon
 #define ds4_engram_read_batch test_read_batch
 #define ds4_engram_read_step test_read_step
 #define ds4_engram_read_step_begin test_read_step_begin
 #include "../ds4.c"
 #undef ds4_gpu_device_is_m3_ultra
+#undef ds4_gpu_device_is_m5_apple_silicon
 #undef ds4_engram_read_batch
 #undef ds4_engram_read_step
 #undef ds4_engram_read_step_begin
@@ -19,10 +22,11 @@ static __typeof__(ds4_engram_read_step_begin) test_read_step_begin;
 } } while (0)
 
 enum { ORDINARY, STEP, OVERLAPPED, READERS };
-static bool m3_ultra;
+static bool m3_ultra, m5_class;
 static unsigned calls[READERS], cases;
 
 static int test_device_is_m3_ultra(void) { return m3_ultra; }
+static int test_device_is_m5_apple_silicon(void) { return m5_class; }
 
 static bool test_read_batch(const ds4_engram_table *table, const uint32_t *rows,
                             size_t tokens, size_t stride, float *out) {
@@ -82,17 +86,28 @@ int main(void) {
         w.layer[il].ffn_up_exps = &q4;
         w.layer[il].ffn_down_exps = &q4;
     }
-    for (unsigned device = 0; device < 2; device++) {
-        m3_ultra = device != 0;
+    /* Upstream #1090 (with the fork's #1041 reconciliation) widened the
+     * decode queue and the pipeline/step-reader admission to single-box text
+     * decode on M5-class machines, so the base device no longer reaches the
+     * step readers while an M5-class device mirrors the measured M3 Ultra:
+     * disable the pipeline or the overlap and the reader steps; the resident
+     * queue rollback no longer changes the reader (the single-box queue
+     * clause keeps queue_layers true). Stub the M5 detection or a real M5
+     * host silently takes the port path in every "non-M3" expectation. */
+    for (unsigned device = 0; device < 3; device++) {
+        m3_ultra = device == 1;
+        m5_class = device == 2;
         for (unsigned mask = 0; mask < 16; mask++) {
             for (unsigned i = 0; i < 4; i++) {
                 if (mask & (1u << i)) CHECK(setenv(rollbacks[i], "1", 1) == 0);
                 else CHECK(unsetenv(rollbacks[i]) == 0);
             }
-            check_reader(&g, &w, !m3_ultra || (mask & 8u) ? ORDINARY :
-                         (mask & 7u) ? STEP : OVERLAPPED);
+            check_reader(&g, &w, !m3_ultra && !m5_class ? ORDINARY :
+                         (mask & 8u) ? ORDINARY :
+                         (mask & 6u) ? STEP : OVERLAPPED);
         }
     }
+    m3_ultra = true; m5_class = false;
     for (unsigned i = 0; i < 4; i++) CHECK(unsetenv(rollbacks[i]) == 0);
     g.quality = true; check_reader(&g, &w, ORDINARY); g.quality = false;
     g.streaming = true; check_reader(&g, &w, ORDINARY); g.streaming = false;
