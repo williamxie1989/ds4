@@ -180,3 +180,36 @@ IQ2XXS 权重已不在 `gguf/`（环境既有问题，与本次改动无关）�
 **下一客户端形态依赖**：heal 命中要求下一请求把中断轮 assistant 消息**重放回历史**
 （DSH 有 tools 时 preserve reasoning 的渲染形态满足：key 尾部 assistant 起始头+think 开标记
 是其字节前缀）。完全丢弃中断轮历史的客户端会 miss——回落现行为，不劣化。
+
+### 11.1 完整回归补账（2026-10-13 窗，用户批准测试窗口）
+
+权重事实：`ds4flash.gguf` 断链的 IQ2XXS 专属权重已迁离本机；**本机制式 = 台账
+`de65ed9` 行登记的 91G vision-exp 权重**（`DS4_TEST_MODEL=gguf/DeepSeek-V4-Flash-Vision-Exp-…
+gguf`，常驻）。结果：
+
+- **零权重全量（make test 配方 29 项，含 ds4-eval×2 / ds4_agent_test / test_session_state /
+  tp×3 / engram / host-memory / sampling / glm53_kda / ds41-exact×5 / metal_graph_capture /
+  prompt_prefix / vision_image / image_decode / gpu_args×2 / layer_pack / web-recovery[python
+  驱动形态] / q4k·mxfp4-dot）**：全绿，除 `test_deepseek41_fusions`（matvec bf16
+  draw=0 word=0 old=c6ae0000 new=c6ae7b36）与 `test_deepseek41_engram_admission`
+  （line 56 `calls[i]==(i==reader)`）——两红经 `2576049` 基线 worktree 重编重跑**签名逐字
+  一致，存量红**（新登记，未见台账先前记录，处置待定）。
+- **DeepSeek 族模型层（vision-exp 常驻，台账配方）**：session-snapshot / session-rewind /
+  session-rewind-resample / tool-call-quality / think-tool-recovery / long-context /
+  control-token-roundtrip / metal-short-prefill / metal-tensor-equivalence /
+  **logprob-vectors(官方向量)** / dspark-verify-depth(vexp-support 配套，单跑) 全绿；
+  `local-golden-vectors` 红 = 台账已登记的 fixture-量化不匹配存量红（top1 逐位等、仅尾部
+  overlap 不过阈值），非回归。
+- **GLM 族（GLM-5.3-Flash-Q2，`DS4_TEST_SSD_STREAMING=1` 缓存限 24GiB）**：session×3 /
+  tool-call-quality / control-token-roundtrip / glm53-continued-prefill / server 全绿。
+  两红定性：`--logprob-vectors`（glm-openrouter 向量）step0 top token 即缺 = 权重↔向量
+  版本不匹配的未登记组合（行为组全绿佐证非回归；要跑需按 `fetch_openrouter_glm_vectors.py`
+  对本地量化重采向量）；`--metal-ssd-streaming-cache-pressure` = 该组自身要求 16GiB 缓存
+  与更大 session ctx，24GiB 限档下 `ds4_session_create` 准入不过 = 运行条件红。
+- **qwen4-prefill-checkpoints / qwen4-restore-reuse**：本机无 Qwen3.8 权重，结构性不可跑。
+- **生产窗口 E2E（§11 正文）**与 `--server`（含 cancel-heal 测试）各两轮全绿。
+- 内存纪律：全程无 LLM 并发驻留，swap 增量 0（6.3G 均为用户声明的历史残留）。
+
+操作备忘（防下个会话踩坑）：macOS 无 `timeout` 命令，回归脚本别用它（rc=127 假失败）；
+`tests/test_web_recovery` 必须走 `python3 tests/test_web_recovery.py ./tests/test_web_recovery`；
+测试 server 用 V4.1 权重时 `--power` 必须 100（引擎校验）。
