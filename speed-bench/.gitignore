@@ -4,8 +4,8 @@ local-runs/
 metal_decode_schedule_bench
 metal_prefill_variant_bench
 session_concurrency_bench
-m3-3/run-*/dumps_*/
-m3-3/run-*/prewarm-kv/
-m3-1/run-*/kv-cache/
-m3-1/run-*/turns/
-m3-1/run-*/session.jsonl
+M3/m3-3/run-*/dumps_*/
+M3/m3-3/run-*/prewarm-kv/
+M3/m3-1/run-*/kv-cache/
+M3/m3-1/run-*/turns/
+M3/m3-1/run-*/session.jsonl
