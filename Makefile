@@ -76,7 +76,7 @@ DS4_LINK_LIBS ?= $(CUDA_LDLIBS)
 METAL_LDLIBS := $(LDLIBS)
 endif
 
-.PHONY: all help clean test test-rocm test-glm53-kda-rocm test-metal-session-batch test-mxfp4-cuda test-mxfp4-rocm test-cuda-session-batch test-cuda-mixed-batch dspark-acceptance dspark-verify-depth mtp-verify-depth cpu cuda cuda-spark cuda-generic cuda-regression strix-halo rocm
+.PHONY: all help clean test test-rocm test-glm53-kda-rocm test-metal-session-batch test-mxfp4-cuda test-mxfp4-rocm test-cuda-session-batch test-cuda-mixed-batch dspark-acceptance dspark-verify-depth dspark-verify-parity mtp-verify-depth cpu cuda cuda-spark cuda-generic cuda-regression strix-halo rocm
 
 ifeq ($(UNAME_S),Darwin)
 .PHONY: metal-decode-schedule-bench metal-prefill-variant-bench session-concurrency-bench check-mxfp4-half-lut
@@ -98,6 +98,7 @@ help:
 	@echo "  make test-qwen4-q2       Check exact low-bit decode and prefill tile parity"
 	@echo "  make test-qwen4-vision  Compare the Qwen3.8 vision tower with HF (set DS4_QWEN4_SNAPSHOT, DS4_QWEN4_MMPROJ, DS4_QWEN4_IMAGE)"
 	@echo "  make dspark-verify-depth  Run DSpark speculative verification smoke if support GGUF is present"
+	@echo "  make dspark-verify-parity Verify rows must equal one-token decode bit for bit"
 	@echo "  make mtp-verify-depth  Run legacy MTP speculative verification smoke if MTP GGUF is present"
 	@echo "  make clean        Remove build outputs"
 
@@ -339,6 +340,12 @@ tests/test_deepseek41_dspark.o: tests/test_deepseek41_dspark.c ds4.c ds4_deepsee
 tests/test_deepseek41_dspark: tests/test_deepseek41_dspark.o $(filter-out ds4.o,$(CORE_OBJS))
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(METAL_LDLIBS)
 
+tests/test_dspark_verify_parity.o: tests/test_dspark_verify_parity.c ds4.c ds4_deepseek41_dspark.h ds4_gpu.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -DDS4_TEST_HOOKS -I. -c -o $@ $<
+
+tests/test_dspark_verify_parity: tests/test_dspark_verify_parity.o $(filter-out ds4.o,$(CORE_OBJS))
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -o $@ $^ $(METAL_LDLIBS)
+
 tests/test_deepseek41_prefill.o: tests/test_deepseek41_prefill.c ds4.c ds4_gpu.h ds4_engram.h
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o $@ $<
 
@@ -387,6 +394,7 @@ help:
 	@echo "  make cpu                 Build CPU-only ./ds4, ./ds4-server, ./ds4-bench, ./ds4-eval, and ./ds4-agent"
 	@echo "  make test                Build and run tests"
 	@echo "  make dspark-verify-depth Run DSpark speculative verification smoke if support GGUF is present"
+	@echo "  make dspark-verify-parity Verify rows must equal one-token decode bit for bit"
 	@echo "  make mtp-verify-depth    Run legacy MTP speculative verification smoke if MTP GGUF is present"
 	@echo "  make clean               Remove build outputs"
 
@@ -1472,6 +1480,19 @@ dspark-acceptance: ds4
 	DS4_DSPARK_SUPPORT="$(DS4_DSPARK_SUPPORT)" \
 	sh tests/dspark_acceptance_fixture.sh
 
+dspark-verify-parity: tests/test_dspark_verify_parity
+	@if [ ! -f "$(DS4_TEST_MODEL)" ]; then \
+		echo "dspark-verify-parity: skipped, missing model $(DS4_TEST_MODEL)"; \
+	elif [ ! -f "$(DS4_DSPARK_SUPPORT)" ]; then \
+		echo "dspark-verify-parity: skipped, missing DSpark support $(DS4_DSPARK_SUPPORT)"; \
+		echo "dspark-verify-parity: run ./download_model.sh ds4f-dspark or set DS4_DSPARK_SUPPORT=FILE"; \
+	else \
+		DS4_TEST_MODEL="$(DS4_TEST_MODEL)" DS4_TEST_DSPARK="$(DS4_DSPARK_SUPPORT)" \
+			./tests/test_dspark_verify_parity --lengths 2048,4096,8192 --rows 5 && \
+		DS4_TEST_MODEL="$(DS4_TEST_MODEL)" DS4_TEST_DSPARK="$(DS4_DSPARK_SUPPORT)" \
+			./tests/test_dspark_verify_parity --lengths 4096 --rows 5 --sweep 16; \
+	fi
+
 dspark-verify-depth: ds4_test
 	@if [ ! -f "$(DS4_TEST_MODEL)" ]; then \
 		echo "dspark-verify-depth: skipped, missing model $(DS4_TEST_MODEL)"; \
@@ -1524,6 +1545,7 @@ clean:
 	rm -f tests/test_deepseek41_engram_admission
 	rm -f tests/test_deepseek41_live_edges
 	rm -f tests/test_deepseek41_dspark
+	rm -f tests/test_dspark_verify_parity
 	rm -f tests/test_qwen4_ngrams
 	rm -f tests/test_qwen4_ngram_state
 	rm -f tests/test_web_recovery
@@ -1569,6 +1591,7 @@ clean:
 	rm -f tests/test_deepseek41_gguf
 	rm -f tests/test_deepseek41_graph tests/test_deepseek41_cli
 	rm -f tests/test_deepseek41_dspark
+	rm -f tests/test_dspark_verify_parity
 	rm -f tests/test_deepseek41_rocm gguf-tools/quality-testing/score_official_verify gguf-tools/quality-testing/score_official_verify.o
 	rm -f tests/test_deepseek41_prefill
 	rm -f tests/test_metal_tp_bulk
