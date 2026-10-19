@@ -808,7 +808,15 @@ kernel void kernel_dsv41_router_select(
         float s = -INFINITY;
         if (i < args.n_expert) {
             const float v = lg[i];
-            const float sp = select(log(1.0f + exp(v)), v, v > 20.0f);
+            /* Same softplus as the reference kernel_unary and
+             * kernel_dsv41_router, small-exp polynomial included: without it
+             * the route probabilities move by an ulp or two on experts whose
+             * logit is below log(1/32), and 40 MoE layers amplify that past
+             * BF16, which breaks the verify/decode bit-exact invariant. */
+            const float ex = exp(v);
+            const float em = min(ex, 0.03125f);
+            const float poly = em*(1.0f - em*(0.5f - em*(1.0f/3.0f - 0.25f*em)));
+            const float sp = select(select(log(1.0f + ex), poly, ex < 0.03125f), v, v > 20.0f);
             const float p = sqrt(sp);
             probs[i] = p;
             s = args.has_bias ? p + bias[i] : p;
