@@ -41540,7 +41540,7 @@ static bool ds41_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
         ds41_bf16(out, (uint32_t)weight->dim[0]);
 }
 
-static bool ds41_hc_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+static DS4_MAYBE_UNUSED bool ds41_hc_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
                         const ds4_gpu_tensor *weights, bool split) {
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
     if (!getenv("DS4_CUDA_DISABLE_V41_POINTWISE_FUSION"))
@@ -41551,7 +41551,7 @@ static bool ds41_hc_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
         ds41_bf16(out, DS4_N_EMBD);
 }
 
-static bool ds41_hc_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *block,
+static DS4_MAYBE_UNUSED bool ds41_hc_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *block,
                           const ds4_gpu_tensor *residual, const ds4_gpu_tensor *split) {
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
     if (!getenv("DS4_CUDA_DISABLE_V41_POINTWISE_FUSION"))
@@ -43994,9 +43994,11 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch_spec(ds41_gpu_graph *const *g
         if (ok && spec) ok = ds41_spec_layer_begin(graphs[0], spec, &active, il);
         if (ok) ok = ds41_before_attention_batch(g, &active, model, l, il, rows) &&
             ds41_attention_project_batch(g, model, l, rows);
+        /* Verification rows share one output projection unless the exact
+         * small-row paths below claim them first. */
         bool batch_output = false;
 #ifndef DS4_ROCM_BUILD
-        batch_output =
+        batch_output = !verify_oa_rows && !verify_attn_out_rows &&
             l->attn_output_a->type == DS4_TENSOR_Q8_0 &&
             l->attn_output_b->type == DS4_TENSOR_Q8_0 &&
             !getenv("DS4_DISABLE_V41_BATCH_OUTPUT");
@@ -44010,9 +44012,18 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch_spec(ds41_gpu_graph *const *g
             row.q = queries[i];
             row.heads = heads[i];
             ok = ds41_attention(&row, model, l, il, true) &&
-                (verify_oa_rows || (verify_attn_out_rows ? ds41_attention_low(&row, model, l) :
-                 ds41_attention_output(&row, model, l, false)));
+                (batch_output || verify_oa_rows ||
+                 (verify_attn_out_rows ? ds41_attention_low(&row, model, l) :
+                  ds41_attention_output(&row, model, l, false)));
         }
+        if (ok && batch_output)
+            ok = g->tp_world == 2 ?
+                ds4_gpu_dsv41_attention_output_tp_batch(active.block, active.low,
+                    model->map, model->size, l->attn_output_a->abs_offset,
+                    l->attn_output_b->abs_offset, g->batch.heads, rows, g->tp_rank) :
+                ds4_gpu_dsv41_attention_output_batch(active.block, active.low,
+                    model->map, model->size, l->attn_output_a->abs_offset,
+                    l->attn_output_b->abs_offset, g->batch.heads, rows);
 #ifdef __APPLE__
         if (ok && verify_oa_rows) {
             const int fused = ds4_gpu_dsv41_verify_oa_rows(active.low,model->map,model->size,
@@ -44027,7 +44038,7 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch_spec(ds41_gpu_graph *const *g
         if (ok && verify_attn_out_rows)
             ok = ds41_matmul_batch(active.block, model, l->attn_output_b, active.low, rows, false);
         if (ok && spec) ok = ds41_spec_layer_pairs(g, spec, il);
-        if (ok) ok = ds41_sum_partial_batch(g, active.block, il, rows);
+        if (ok) ok = ds41_sum_partial_batch(g, active.block, il, DS4_TP_GATE_ATTN, rows);
         if (ok) ok = ds4_gpu_dsv41_quantize(active.block, DS4_N_EMBD, rows, DS4_V41_BF16) &&
             ds41_after_attention_batch(&active, model, l, rows) &&
             ds41_moe_batch(g, model, l, il, rows, shared_owner, gather_moe) &&
@@ -88839,6 +88850,8 @@ fail:
     snprintf(err, errlen, "V4.1 DSpark draft/verification failed at position %u", g->pos);
     if (e->tp.active) ds4_tp_mark_failed(e->tp.ctx);
     return -1;
+}
+
 /* The windows follow the session only while every position arrives through
  * this cycle. After a prefill, a restore or an ordinary step they describe
  * another history; start them again rather than draft from it. */
