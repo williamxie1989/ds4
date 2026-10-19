@@ -41802,6 +41802,35 @@ static bool ds41_graph_rewind(ds41_gpu_graph *g, const int *tokens, uint32_t pos
     return true;
 }
 
+#ifdef DS4_TEST_HOOKS
+/* Parity bisect probe (tests/test_dspark_verify_parity): record one layer's
+ * pre-attention activations and its output residual so a test can compare a
+ * decode row against the same row inside a verification block.  Test-only:
+ * without the tensors installed every copy is skipped. */
+ds4_gpu_tensor *ds4_test_probe_norm, *ds4_test_probe_q;
+ds4_gpu_tensor *ds4_test_probe_kv, *ds4_test_probe_res;
+uint32_t ds4_test_probe_rows = 6u;
+uint32_t ds4_test_probe_row;
+
+static bool ds41_test_probe_attention(ds41_gpu_graph *g, uint32_t il) {
+    if (!ds4_test_probe_norm || ds4_test_probe_row >= ds4_test_probe_rows) return true;
+    const uint64_t slot = (uint64_t)il * ds4_test_probe_rows + ds4_test_probe_row;
+    const uint64_t q_bytes = (uint64_t)DS4_N_HEAD * DS4_N_HEAD_DIM * sizeof(float);
+    return ds4_gpu_tensor_copy(ds4_test_probe_norm, slot * DS4_N_EMBD * sizeof(float),
+                               g->norm, 0, (uint64_t)DS4_N_EMBD * sizeof(float)) &&
+           ds4_gpu_tensor_copy(ds4_test_probe_q, slot * q_bytes, g->q, 0, q_bytes) &&
+           ds4_gpu_tensor_copy(ds4_test_probe_kv, slot * DS4_N_HEAD_DIM * sizeof(float),
+                               g->kv, 0, (uint64_t)DS4_N_HEAD_DIM * sizeof(float));
+}
+
+static bool ds41_test_probe_residual(uint32_t il, const ds4_gpu_tensor *res, uint32_t rows) {
+    if (!ds4_test_probe_res || rows > ds4_test_probe_rows) return true;
+    const uint64_t rb = (uint64_t)DS4_N_HC * DS4_N_EMBD * sizeof(float);
+    return ds4_gpu_tensor_copy(ds4_test_probe_res, (uint64_t)il * ds4_test_probe_rows * rb,
+                               (ds4_gpu_tensor *)res, 0, (uint64_t)rows * rb);
+}
+#endif
+
 static bool ds41_attention(ds41_gpu_graph *g, const ds4_model *m,
                            const ds4_layer_weights *l, uint32_t il, bool projected) {
     const uint32_t pos = g->pos, ratio = ds4_layer_compress_ratio(il);
@@ -41810,6 +41839,9 @@ static bool ds41_attention(ds41_gpu_graph *g, const ds4_model *m,
     const uint32_t heads = DS4_N_HEAD / g->tp_world;
     const uint32_t head0 = g->tp_rank * heads;
     if (!projected && !ds41_attention_project(g, m, l)) return false;
+#ifdef DS4_TEST_HOOKS
+    if (!ds41_test_probe_attention(g, il)) return false;
+#endif
     if (!ds41_rope(g->q, heads, DS4_N_HEAD_DIM, il, pos, false) ||
         !ds41_rope(g->kv, 1, DS4_N_HEAD_DIM, il, pos, false) ||
         !ds4_gpu_dsv41_quantize(g->kv, DS4_N_HEAD_DIM, 1, DS4_V41_FP8_E8M0) ||
@@ -42458,7 +42490,11 @@ static bool ds41_graph_after_moe(ds41_gpu_graph *g, const ds4_model *m,
 static bool ds41_graph_layer(ds41_gpu_graph *g, const ds4_model *m,
                             const ds4_layer_weights *l, uint32_t il, int token) {
     return ds41_graph_before_moe(g, m, l, il) && ds41_moe(g, m, l, il, (uint32_t)token) &&
-        ds41_graph_after_moe(g, m, l);
+        ds41_graph_after_moe(g, m, l)
+#ifdef DS4_TEST_HOOKS
+        && ds41_test_probe_residual(il, g->residual, 1)
+#endif
+        ;
 }
 
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
@@ -43443,7 +43479,15 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
             if (il == 20u)
                 ok = ds41_decoder_prepare(g, m, &w->layer[il], il, initial_start,
                     0, total_count, true, batch_hc, batch_attention, cancel, cancel_ud);
-            const uint32_t needed = (g->dspark ? 128u : 1u) + (DS4_N_LAYER - 1u - il) * 127u;
+            /* The dependency window is deliberately independent of the
+             * drafter.  Widening it by the drafter's 128-row feature window
+             * moved `first`, which re-partitions the suffix GEMMs and so
+             * changes their rounding: --dspark prefill then no longer matched
+             * plain prefill bit for bit (4K+ prompts, decoder suffix active).
+             * The drafter starts with a shorter seeded window instead and
+             * warms it from ordinary decode; correctness of the target output
+             * comes first. */
+            const uint32_t needed = 1u + (DS4_N_LAYER - 1u - il) * 127u;
             first = total_count - needed;
             if (ok) ok = ds41_decoder_prepare(g, m, &w->layer[il], il, initial_start,
                 first - 127u, 127u, false, batch_hc, batch_attention, cancel, cancel_ud);
@@ -43849,6 +43893,9 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
         for (int i = 0; ok && i < count; i++) {
             ds41_gpu_graph row = *graphs[i];
             row.pos = positions[i];
+#ifdef DS4_TEST_HOOKS
+            ds4_test_probe_row = (uint32_t)i;
+#endif
 #define DS41_SESSION_ROW(name, width) row.name = g->rows_view[i].name;
             DS41_PREFILL_ROWS(DS41_SESSION_ROW)
 #undef DS41_SESSION_ROW
@@ -43875,7 +43922,11 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
             ds4_gpu_dsv41_quantize(active.block, DS4_N_EMBD, rows, DS4_V41_BF16) &&
             ds4_gpu_hc_expand_split_tensor(active.residual, active.block, active.after_attn,
                 active.ffn_split, DS4_N_EMBD, DS4_N_HC) &&
-            ds4_gpu_dsv41_quantize(active.residual, DS4_N_EMBD * DS4_N_HC, rows, DS4_V41_BF16);
+            ds4_gpu_dsv41_quantize(active.residual, DS4_N_EMBD * DS4_N_HC, rows, DS4_V41_BF16)
+#ifdef DS4_TEST_HOOKS
+            && ds41_test_probe_residual(il, active.residual, rows)
+#endif
+            ;
         /* The second Engram upload reuses the first one's input storage. */
         if (ok && il == 13) ok = ds4_gpu_end_commands() && ds4_gpu_begin_commands();
     }
