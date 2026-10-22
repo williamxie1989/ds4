@@ -405,6 +405,7 @@ static id<MTLComputePipelineState> g_moe_sum6_pipeline;
 static id<MTLComputePipelineState> g_moe_sum8_pipeline;
 static id<MTLComputePipelineState> g_mul_pipeline;
 static id<MTLComputePipelineState> g_rms_norm_pipeline;
+static id<MTLComputePipelineState> g_rms_norm_bf16_pipeline;
 static id<MTLComputePipelineState> g_rms_norm_plain_pipeline;
 static id<MTLComputePipelineState> g_add_rms_norm_pipeline;
 static id<MTLComputePipelineState> g_rms_norm_scale_pipeline;
@@ -1788,7 +1789,12 @@ static int ds4_gpu_finish_command_buffer(id<MTLCommandBuffer> cb, int owned, con
                 (cb.GPUEndTime - cb.GPUStartTime) * 1e3,
                 cb.GPUStartTime * 1e3 - (mono_ms - (t_done - t_commit)),
                 (unsigned long long)((uintptr_t)__builtin_return_address(0) - (uintptr_t)_dyld_get_image_vmaddr_slide(0)));
-        if (t_done - t_commit > 100.0 && (cb.GPUEndTime - cb.GPUStartTime) * 1e3 < 10.0) {
+        static double stall_ms = -1.0;
+        if (stall_ms < 0.0) {
+            const char *e = getenv("DS4_METAL_CB_STALL_MS");
+            stall_ms = e ? atof(e) : 100.0;
+        }
+        if (t_done - t_commit > stall_ms && (cb.GPUEndTime - cb.GPUStartTime) * 1e3 < 10.0) {
             void *frames[12];
             const int n = backtrace(frames, 12);
             fprintf(stderr, "ds4: cb stall backtrace:");
@@ -13671,6 +13677,99 @@ int ds4_gpu_synchronize(void) {
 static void qwen4_nax_release_scratch(void);
 static void qwen4_batch_release_scratch(void);
 
+/* Explicit prefill expert buffers: the engine preads one layer's gate/up/down
+ * experts into three shared buffers and binds them at their original model
+ * offsets, so the routed dispatch reads them exactly as it would read the mmap
+ * view. All-NULL detaches them; the caller drains the GPU first. */
+static id<MTLBuffer> g_stream_prefill_layer_views[3];
+
+int ds4_gpu_stream_prefill_discard_buffer(ds4_gpu_tensor *tensor) {
+    if (!tensor || !g_ssd_streaming_mode || g_batch_cb || [g_pending_cbs count] != 0) return 0;
+    @autoreleasepool {
+        DS4MetalTensor *obj = ds4_gpu_tensor_obj(tensor);
+        id<MTLBuffer> buffer = obj.buffer;
+        if (!obj.owner || obj.offset != 0 || !buffer ||
+            obj.bytes != (uint64_t)[buffer length] ||
+            [buffer storageMode] != MTLStorageModeShared || [buffer heap]) return 0;
+        for (unsigned j = 0; j < 3; j++)
+            if (buffer == g_stream_prefill_layer_views[j]) return 0;
+        for (uint32_t i = 0; i < g_model_view_count; i++)
+            if (buffer == g_model_views[i].buffer) return 0;
+        /* The caller has joined readers, drained GPU work, detached bindings,
+         * and unlocked these disposable layer buffers. Discard their storage
+         * before release so a driver allocation cache cannot retain its cost.
+         * Metal returns the previous purgeability state, not a success flag. */
+        (void)[buffer setPurgeableState:MTLPurgeableStateEmpty];
+        return 1;
+    }
+}
+
+int ds4_gpu_stream_prefill_bind_layer(
+        const ds4_gpu_stream_expert_table *table,
+        const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
+        const ds4_gpu_tensor *down) {
+    @autoreleasepool {
+        if (g_batch_cb || [g_pending_cbs count] != 0) return 0;
+        const ds4_gpu_tensor *tensors[] = {gate, up, down};
+        uint64_t offsets[3] = {0}, bytes[3] = {0};
+        id<MTLBuffer> buffers[3] = {nil, nil, nil};
+        if (table) {
+            if (!g_ssd_streaming_mode || !table->model_map || !table->model_size ||
+                !table->n_total_expert || !table->gate_expert_bytes || !table->down_expert_bytes ||
+                table->gate_expert_bytes > UINT64_MAX / table->n_total_expert ||
+                table->down_expert_bytes > UINT64_MAX / table->n_total_expert) return 0;
+            offsets[0] = table->gate_offset;
+            offsets[1] = table->up_offset;
+            offsets[2] = table->down_offset;
+            bytes[0] = bytes[1] = table->gate_expert_bytes * table->n_total_expert;
+            bytes[2] = table->down_expert_bytes * table->n_total_expert;
+            for (unsigned j = 0; j < 3; j++) {
+                if (!tensors[j] || ds4_gpu_tensor_offset(tensors[j]) != 0 ||
+                    ds4_gpu_tensor_bytes(tensors[j]) < bytes[j] ||
+                    offsets[j] > table->model_size || bytes[j] > table->model_size - offsets[j]) return 0;
+                buffers[j] = ds4_gpu_tensor_buffer(tensors[j]);
+                if (!buffers[j]) return 0;
+            }
+        } else if (gate || up || down) return 0;
+        if (!table && !g_stream_prefill_layer_views[0] &&
+            !g_stream_prefill_layer_views[1] && !g_stream_prefill_layer_views[2]) return 1;
+
+        uint32_t kept = 0;
+        for (uint32_t i = 0; i < g_model_view_count; i++) {
+            id<MTLBuffer> buffer = g_model_views[i].buffer;
+            if (buffer != g_stream_prefill_layer_views[0] &&
+                buffer != g_stream_prefill_layer_views[1] &&
+                buffer != g_stream_prefill_layer_views[2]) kept++;
+        }
+        if (table && kept > DS4_METAL_MAX_MODEL_VIEWS - 3u) return 0;
+        ds4_gpu_model_residency_clear();
+        uint32_t dst = 0;
+        for (uint32_t i = 0; i < g_model_view_count; i++) {
+            id<MTLBuffer> buffer = g_model_views[i].buffer;
+            if (buffer != g_stream_prefill_layer_views[0] &&
+                buffer != g_stream_prefill_layer_views[1] &&
+                buffer != g_stream_prefill_layer_views[2]) g_model_views[dst++] = g_model_views[i];
+        }
+        for (uint32_t i = dst; i < g_model_view_count; i++) g_model_views[i] = (ds4_gpu_model_view){0};
+        g_model_view_count = dst;
+        for (unsigned j = 0; j < 3; j++) g_stream_prefill_layer_views[j] = nil;
+        /* Exact loaded tensors take precedence over page padding in mmap views.
+         * Keep auxiliary models and all static weights under their existing IDs. */
+        if (table) {
+            for (uint32_t i = dst; i > 0; i--) g_model_views[i + 2u] = g_model_views[i - 1u];
+            for (unsigned j = 0; j < 3; j++) {
+                g_stream_prefill_layer_views[j] = buffers[j];
+                g_model_views[j] = (ds4_gpu_model_view){buffers[j], table->model_map,
+                    table->model_size, offsets[j], bytes[j]};
+            }
+            g_model_view_count += 3u;
+        }
+        /* The exact-range fast path must not reuse an aggregate mapping key. */
+        g_model_map_ptr = NULL;
+        return 1;
+    }
+}
+
 void ds4_gpu_cleanup(void) {
     if (!g_initialized) return;
     ds4_gpu_queue_keepalive_stop_thread();
@@ -13689,6 +13788,8 @@ void ds4_gpu_cleanup(void) {
             g_stream_expert_cache_batch_seq = 0;
         }
         (void)ds4_gpu_wait_pending_command_buffers("cleanup");
+        (void)ds4_gpu_stream_prefill_copy_wait();
+        (void)ds4_gpu_stream_prefill_bind_layer(NULL, NULL, NULL, NULL);
         if (ds4_gpu_stream_expert_timing_summary_enabled() &&
             getenv("DS4_METAL_MEMORY_REPORT") == NULL) {
             ds4_gpu_print_memory_report("at cleanup");
@@ -18268,6 +18369,66 @@ static int ds4_gpu_stream_expert_cache_entry_matches(
            e->gate_expert_bytes == gate_expert_bytes &&
            e->down_expert_bytes == down_expert_bytes &&
            e->gate_buffer && e->up_buffer && e->down_buffer;
+}
+
+static id<MTLCommandBuffer> g_stream_prefill_copy_cb;
+
+/* Blit the decode cache's ready experts for this layer into the slot before the
+ * disk readers start, so a sweep only pays for what RAM does not already hold.
+ * The copy does not touch hit, recency or hotness counters: it is not a use. */
+int ds4_gpu_stream_prefill_copy_cached(
+        const ds4_gpu_stream_expert_table *table,
+        ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4_gpu_tensor *down,
+        uint8_t *ready, uint64_t *bytes) {
+    if (!table || !gate || !up || !down || !ready || !bytes || g_stream_prefill_copy_cb ||
+        table->layer >= DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER ||
+        table->n_total_expert > DS4_METAL_STREAM_EXPERT_CACHE_MAX_EXPERT) return 0;
+    const uint32_t n = table->n_total_expert;
+    const uint64_t per[3] = {table->gate_expert_bytes, table->gate_expert_bytes,
+                             table->down_expert_bytes};
+    const uint64_t offsets[3] = {table->gate_offset, table->up_offset, table->down_offset};
+    ds4_gpu_tensor *dst[3] = {gate, up, down};
+    memset(ready, 0, n);
+    *bytes = 0;
+    for (unsigned j = 0; j < 3; j++)
+        if (!per[j] || per[j] > UINT64_MAX / n || ds4_gpu_tensor_bytes(dst[j]) < per[j] * n) return 0;
+    if (!g_ssd_streaming_mode) return 1;
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = nil;
+        id<MTLBlitCommandEncoder> blit = nil;
+        for (uint32_t e = 0; e < n; e++) {
+            const ds4_gpu_stream_expert_cache_entry *x = &g_stream_expert_cache[table->layer][e];
+            if (!ds4_gpu_stream_expert_cache_entry_matches(x, table->model_map, table->model_size,
+                    offsets[0] + e * per[0], offsets[1] + e * per[1], offsets[2] + e * per[2],
+                    per[0], per[2]) || ds4_gpu_stream_expert_cache_entry_inflight(x)) continue;
+            if (!blit) {
+                cb = ds4_gpu_new_command_buffer();
+                blit = cb ? [cb blitCommandEncoder] : nil;
+                if (!blit) return 0;
+            }
+            id<MTLBuffer> src[3] = {x->gate_buffer, x->up_buffer, x->down_buffer};
+            const NSUInteger inner[3] = {x->gate_inner, x->up_inner, x->down_inner};
+            for (unsigned j = 0; j < 3; j++)
+                [blit copyFromBuffer:src[j] sourceOffset:inner[j]
+                            toBuffer:ds4_gpu_tensor_buffer(dst[j])
+                   destinationOffset:(NSUInteger)(ds4_gpu_tensor_offset(dst[j]) + e * per[j])
+                                size:(NSUInteger)per[j]];
+            ready[e] = 1;
+            *bytes += per[0] + per[1] + per[2];
+        }
+        if (!blit) return 1;
+        [blit endEncoding];
+        [cb commit];
+        g_stream_prefill_copy_cb = cb;
+    }
+    return 1;
+}
+
+int ds4_gpu_stream_prefill_copy_wait(void) {
+    id<MTLCommandBuffer> cb = g_stream_prefill_copy_cb;
+    if (!cb) return 1;
+    g_stream_prefill_copy_cb = nil;
+    return ds4_gpu_wait_command_buffer(cb, "prefill cache copy");
 }
 
 static ds4_gpu_stream_expert_cache_entry *ds4_gpu_stream_expert_cache_peek(
@@ -24722,7 +24883,9 @@ int ds4_gpu_rms_norm_weight_tensor(
     return ds4_gpu_rms_norm_weight_rows_tensor(out, x, model_map, model_size, weight_offset, n, 1, eps);
 }
 
-int ds4_gpu_rms_norm_weight_rows_tensor(
+/* bf16_store selects the kernel variant that rounds the normalized row on
+ * store; the caller then skips the separate BF16 convert dispatch. */
+static int ds4_gpu_rms_norm_weight_rows_impl(
         ds4_gpu_tensor       *out,
         const ds4_gpu_tensor *x,
         const void             *model_map,
@@ -24730,7 +24893,8 @@ int ds4_gpu_rms_norm_weight_rows_tensor(
         uint64_t                weight_offset,
         uint32_t                n,
         uint32_t                rows,
-        float                   eps) {
+        float                   eps,
+        bool                    bf16_store) {
     if (!g_initialized && !ds4_gpu_init()) return 0;
     if (n == 0 || rows == 0 || (n & 3u) != 0) return 0;
 
@@ -24763,8 +24927,25 @@ int ds4_gpu_rms_norm_weight_rows_tensor(
         id<MTLCommandBuffer> cb = ds4_gpu_command_buffer(&owned);
         if (!cb) return 0;
 
+        id<MTLComputePipelineState> pipeline = g_rms_norm_pipeline;
+        if (bf16_store) {
+            if (!g_rms_norm_bf16_pipeline) {
+                id<MTLFunction> bf16_fn =
+                    [g_library newFunctionWithName:@"kernel_rms_norm_mul_f32_4_bf16"];
+                NSError *bf16_error = nil;
+                if (bf16_fn)
+                    g_rms_norm_bf16_pipeline =
+                        [g_device newComputePipelineStateWithFunction:bf16_fn error:&bf16_error];
+                if (!g_rms_norm_bf16_pipeline) {
+                    fprintf(stderr, "ds4: Metal kernel_rms_norm_mul_f32_4_bf16 pipeline failed: %s\n",
+                            [[bf16_error localizedDescription] UTF8String]);
+                    return 0;
+                }
+            }
+            pipeline = g_rms_norm_bf16_pipeline;
+        }
         id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
-        [enc setComputePipelineState:g_rms_norm_pipeline];
+        [enc setComputePipelineState:pipeline];
         [enc setBytes:&args length:sizeof(args) atIndex:0];
         [enc setBuffer:xbuf offset:ds4_gpu_tensor_offset(x) atIndex:1];
         [enc setBuffer:wbuf offset:(NSUInteger)inner_offset atIndex:2];
@@ -24779,6 +24960,34 @@ int ds4_gpu_rms_norm_weight_rows_tensor(
     }
 
     return 1;
+}
+
+int ds4_gpu_rms_norm_weight_rows_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *x,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint32_t                n,
+        uint32_t                rows,
+        float                   eps) {
+    return ds4_gpu_rms_norm_weight_rows_impl(out, x, model_map, model_size,
+                                             weight_offset, n, rows, eps, false);
+}
+
+/* One row, rounded to BF16 on store: 1 when the fused dispatch ran, 0 when the
+ * caller must use the norm plus a separate convert. */
+int ds4_gpu_rms_norm_weight_bf16_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *x,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint32_t                n,
+        float                   eps) {
+    if (getenv("DS4_METAL_DISABLE_V41_NORM_BF16_STORE")) return 0;
+    return ds4_gpu_rms_norm_weight_rows_impl(out, x, model_map, model_size,
+                                             weight_offset, n, 1, eps, true);
 }
 
 int ds4_gpu_add_rms_norm_weight_tensor(
@@ -43646,6 +43855,97 @@ static inline bool ds4_gpu_m5_glm53_q2_down_shape_args_match(
            args->tp_expert_base == 0 && !args->tp_addend;
 }
 
+/* ---- decode router selected-id mailbox -------------------------------
+ * The streaming routed MoE needs the router's selected expert ids on the host
+ * to build the expert address table and to decide which experts to read. The
+ * tree learns them by ending the command buffer and reading the tensor back,
+ * which makes the host and the GPU alternate one layer at a time: 41 command
+ * buffers per token, each commit->done ~0.9 ms for ~0.6 ms of GPU work. The
+ * mailbox publishes the ids from the GPU into a CPU-visible ring and the host
+ * polls it, so the command buffer stays open (one commit per layer, no wait)
+ * and the host's encode of the next layer overlaps the GPU's current one.
+ * Falls back to the blocking readback whenever a publish was not encoded, the
+ * tag does not appear within the deadline, or the checksum does not match. */
+#define DS4_SELECTED_MAILBOX_SLOTS 64u
+#define DS4_SELECTED_MAILBOX_WORDS 8u
+#define DS4_SELECTED_MAILBOX_MAX_IDS 6u
+
+static id<MTLBuffer> g_selected_mailbox;
+static uint32_t g_selected_mailbox_tag;
+static uint32_t g_selected_mailbox_pending;
+
+static int ds4_gpu_dsv41_selected_mailbox_admitted(void) {
+    return g_ssd_streaming_mode && !g_quality_mode &&
+           getenv("DS4_METAL_DISABLE_V41_SELECTED_MAILBOX") == NULL;
+}
+
+/* Encode the publish for this layer's router result. 1 when it was encoded. */
+int ds4_gpu_dsv41_selected_publish(const ds4_gpu_tensor *selected, uint32_t n) {
+    if (!g_initialized && !ds4_gpu_init()) return 0;
+    if (!ds4_gpu_dsv41_selected_mailbox_admitted()) return 0;
+    if (!selected || n == 0 || n > DS4_SELECTED_MAILBOX_MAX_IDS ||
+        ds4_gpu_tensor_bytes(selected) < (uint64_t)n * sizeof(int32_t)) return 0;
+    if (!g_selected_mailbox) {
+        g_selected_mailbox = [g_device newBufferWithLength:
+                DS4_SELECTED_MAILBOX_SLOTS * DS4_SELECTED_MAILBOX_WORDS * sizeof(uint32_t)
+            options:MTLResourceStorageModeShared];
+        if (!g_selected_mailbox) return 0;
+        memset([g_selected_mailbox contents], 0,
+               DS4_SELECTED_MAILBOX_SLOTS * DS4_SELECTED_MAILBOX_WORDS * sizeof(uint32_t));
+    }
+    id<MTLComputePipelineState> pipeline = ds4_gpu_get_pipeline("kernel_dsv41_selected_publish");
+    if (!pipeline) return 0;
+    int owned = 0;
+    id<MTLCommandBuffer> cb = ds4_gpu_command_buffer(&owned);
+    id<MTLComputeCommandEncoder> enc = cb ? ds4_gpu_compute_encoder(cb) : nil;
+    if (!enc) return 0;
+    const uint32_t tag = ++g_selected_mailbox_tag;
+    const struct { uint32_t tag, n; } args = {tag, n};
+    [enc setComputePipelineState:pipeline];
+    [enc setBytes:&args length:sizeof(args) atIndex:0];
+    [enc setBuffer:ds4_gpu_tensor_buffer(selected)
+            offset:ds4_gpu_tensor_offset(selected) atIndex:1];
+    [enc setBuffer:g_selected_mailbox offset:0 atIndex:2];
+    [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+         threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+    ds4_gpu_end_compute_encoder(cb, enc);
+    if (owned && !ds4_gpu_finish_command_buffer(cb, 1, "V4.1 selected publish")) return 0;
+    g_selected_mailbox_pending = tag;
+    return 1;
+}
+
+/* Wait for the pending publish and copy its ids out. Commits the open batch
+ * first (without waiting) so the GPU can actually reach the publish; the caller
+ * keeps encoding into the next buffer. 1 when the ids are valid. */
+int ds4_gpu_dsv41_selected_take(int32_t *ids, uint32_t n) {
+    const uint32_t tag = g_selected_mailbox_pending;
+    if (!tag || !g_selected_mailbox || !ids ||
+        n == 0 || n > DS4_SELECTED_MAILBOX_MAX_IDS) return 0;
+    if (g_batch_cb && !ds4_gpu_flush_commands()) return 0;
+    volatile uint32_t *slot = (volatile uint32_t *)[g_selected_mailbox contents] +
+        (tag & (DS4_SELECTED_MAILBOX_SLOTS - 1u)) * DS4_SELECTED_MAILBOX_WORDS;
+    /* The work ahead of the publish inside this buffer is one layer's
+     * attention, so the normal wait is a few hundred microseconds. Give up
+     * after 20 ms and let the caller drain, so a stall can never hang. */
+    const double deadline = ds4_gpu_now_ms() + 20.0;
+    uint32_t spins = 0;
+    while (slot[0] != tag) {
+        /* The tag is a shared-memory word a few hundred microseconds away;
+         * read it tight and check the clock once per 1024 polls, so the
+         * clock call does not become the wait. */
+        if (((++spins) & 0x3ffu) == 0u && ds4_gpu_now_ms() > deadline) return 0;
+    }
+    uint32_t sum = tag * 2654435761u;
+    for (uint32_t i = 0; i < n; i++) {
+        const int32_t id = (int32_t)slot[1u + i];
+        ids[i] = id;
+        sum = (sum ^ (uint32_t)id) * 16777619u;
+    }
+    if (sum != slot[7]) return 0;
+    g_selected_mailbox_pending = 0;
+    return 1;
+}
+
 int ds4_gpu_routed_moe_one_tensor(
         ds4_gpu_tensor       *out,
         ds4_gpu_tensor       *gate,
@@ -44901,6 +45201,13 @@ int ds4_gpu_routed_moe_one_tensor(
                         validator_invalid_mask != 0 ? "validator-invalid" :
                         (validator_miss_mask != 0 ? "validator-miss" :
                         (validator_all_cached != 0 ? "validator-hit" : "validator-miss"));
+                } else if (g_batch_cb != nil &&
+                           ds4_gpu_dsv41_selected_take(selected_ids, n_expert)) {
+                    /* The GPU published this layer's ids into the mailbox, so
+                     * the batch keeps running: no commit-and-wait, no reopen.
+                     * The ids are the router's own, already validated below. */
+                    selected_id_source = "mailbox";
+                    g_routed_moe_selected_override_n = 0;
                 } else {
                     g_routed_moe_selected_override_n = 0;
                     if (g_batch_cb != nil) {
@@ -55054,6 +55361,61 @@ int ds4_gpu_dsv41_matmul_q8_0_bf16(ds4_gpu_tensor *out, const void *model_map,
         ds4_gpu_end_compute_encoder(cb, enc);
         if (g_test_flags & DS4_GPU_TEST_V41_FUSIONS) g_test_v41_fusions_dispatches |= 16u;
         return ds4_gpu_finish_command_buffer(cb, owned, "V4.1 Q8_0 BF16 matvec") ? 1 : -1;
+    }
+}
+
+/* One-token Q8_0 projection that ends at a BF16 boundary. The mul_mv kernel
+ * stores the reduced row as BF16, so the caller skips the separate convert
+ * dispatch that the M5 path otherwise pays after every dense projection.
+ * Geometry, pipeline lookup and reduction are the f32 matvec's; only the store
+ * differs, which keeps the result bit-identical to matvec + ds41_bf16.
+ * Returns 1 when the fused dispatch ran, 0 when the caller must use the plain
+ * chain (unsupported shape or missing pipeline), -1 on a dispatch failure. */
+int ds4_gpu_matmul_q8_0_bf16_tensor(
+        ds4_gpu_tensor       *out,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                in_dim,
+        uint64_t                out_dim,
+        const ds4_gpu_tensor *x) {
+    if (!g_initialized && !ds4_gpu_init()) return 0;
+    if (getenv("DS4_METAL_DISABLE_V41_MATVEC_BF16_STORE")) return 0;
+    if (!out || !x || !model_map || in_dim == 0 || out_dim == 0 ||
+        (in_dim & 31u) != 0 || in_dim > UINT32_MAX || out_dim > UINT32_MAX ||
+        out_dim > 65536u) return 0;
+    if (ds4_gpu_tensor_bytes(x) < in_dim * sizeof(float) ||
+        ds4_gpu_tensor_bytes(out) < out_dim * sizeof(float)) return 0;
+    const uint64_t row_bytes = (in_dim / 32u) * 34u;
+    if (out_dim > UINT64_MAX / row_bytes) return 0;
+    const uint64_t weight_bytes = out_dim * row_bytes;
+    if (weight_offset > model_size || weight_bytes > model_size - weight_offset) return 0;
+    @autoreleasepool {
+        ds4_gpu_mv_dispatch dispatch = ds4_gpu_make_q8_0_mv_dispatch();
+        id<MTLComputePipelineState> pipeline =
+            ds4_gpu_get_mul_mv_pipeline("kernel_mul_mv_q8_0_f32_bf16", dispatch.nsg);
+        if (!pipeline) return 0;
+        uint64_t inner = 0;
+        id<MTLBuffer> wbuf = ds4_gpu_wrap_model_range(model_map, model_size, weight_offset,
+                                                     weight_bytes, &inner);
+        if (!wbuf) return 0;
+        ds4_gpu_q8_0_matvec_args args = ds4_gpu_make_q8_0_mv_args(in_dim, out_dim);
+        args.nr0 = dispatch.nr0;
+        int owned = 0;
+        id<MTLCommandBuffer> cb = ds4_gpu_command_buffer(&owned);
+        if (!cb) return -1;
+        id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
+        [enc setComputePipelineState:pipeline];
+        [enc setBytes:&args length:sizeof(args) atIndex:0];
+        [enc setBuffer:wbuf offset:(NSUInteger)inner atIndex:1];
+        [enc setBuffer:ds4_gpu_tensor_buffer(x) offset:ds4_gpu_tensor_offset(x) atIndex:2];
+        [enc setBuffer:ds4_gpu_tensor_buffer(out) offset:ds4_gpu_tensor_offset(out) atIndex:3];
+        [enc setThreadgroupMemoryLength:dispatch.smem atIndex:0];
+        [enc dispatchThreadgroups:MTLSizeMake(((NSUInteger)out_dim + (NSUInteger)dispatch.nr0 - 1u) /
+                                                  (NSUInteger)dispatch.nr0, 1, 1)
+             threadsPerThreadgroup:MTLSizeMake(32, (NSUInteger)dispatch.nsg, 1)];
+        ds4_gpu_end_compute_encoder(cb, enc);
+        return ds4_gpu_finish_command_buffer(cb, owned, "Q8_0 BF16 matvec") ? 1 : -1;
     }
 }
 

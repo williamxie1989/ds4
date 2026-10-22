@@ -244,6 +244,9 @@ int ds4_engine_create_with_gpu_config(ds4_engine **out,
                                        const struct ds4_gpu_config *gpu_cfg);
 void ds4_engine_close(ds4_engine *e);
 void ds4_engine_summary(ds4_engine *e);
+/* Print the backend memory report, including the streaming expert-cache
+ * counters, under a caller-chosen label. Benchmarks use it per frontier. */
+void ds4_engine_memory_report(ds4_engine *e, const char *label);
 int ds4_engine_vocab_size(ds4_engine *e);
 uint32_t ds4_engine_prefill_chunk(ds4_engine *e);
 int ds4_engine_power(ds4_engine *e);

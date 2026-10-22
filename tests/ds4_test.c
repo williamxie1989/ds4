@@ -8,7 +8,7 @@
 #include <math.h>
 
 bool ds4_test_dspark_cache_window_crop(void);
-bool ds4_test_dspark_prefix_capture(ds4_engine *engine, const ds4_tokens *prompt);
+bool ds4_test_dspark_conf_sched(void);
 bool ds4_test_control_token_roundtrip(ds4_engine *engine);
 
 static ds4_engine *test_engine_fast;
@@ -1277,6 +1277,12 @@ static void test_metal_store_raw_kv_batch_wrap(void) {
 
 static void test_dspark_cache_window_crop(void) {
     TEST_ASSERT(ds4_test_dspark_cache_window_crop());
+}
+
+/* Model-free: the confidence-length rule is pure arithmetic over the
+ * survival product, so it runs without loading a model. */
+static void test_dspark_conf_sched(void) {
+    TEST_ASSERT(ds4_test_dspark_conf_sched());
 }
 
 static void test_metal_q8_0_decode_pair_exact_case(
@@ -5261,6 +5267,7 @@ static void test_metal_kernel_group(void) {
     test_metal_pack_slot_rows_f32();
     test_metal_store_raw_kv_batch_wrap();
     test_dspark_cache_window_crop();
+    test_dspark_conf_sched();
     test_metal_q8_0_decode_pair_exact();
 #if defined(__APPLE__)
     test_metal_f16_compressor_pair_state_store_exact();
@@ -7289,6 +7296,11 @@ static void test_dspark_verify_depth(void) {
 
     char *saved_scheduler = test_save_env("DS4_DSPARK_SCHEDULER");
     setenv("DS4_DSPARK_SCHEDULER", "0", 1);
+    /* This gate exercises the verification mechanism, not the cost model:
+     * pin the draft width policy to the fixed threshold so a measured cost
+     * curve cannot decide that no block is worth verifying today. */
+    char *saved_conf_sched = test_save_env("DS4_DSPARK_CONF_SCHED");
+    setenv("DS4_DSPARK_CONF_SCHED", "0", 1);
 
     ds4_engine *engine = test_open_dspark_engine(support);
     ds4_tokens prompt = {0};
@@ -7303,7 +7315,11 @@ static void test_dspark_verify_depth(void) {
         ds4_chat_append_assistant_prefix(engine, &prompt, DS4_THINK_NONE);
         TEST_ASSERT(prompt.len > 0);
 
-        TEST_ASSERT(ds4_test_dspark_prefix_capture(engine, &prompt));
+        /* The retired fork-era prefix capture is not this path: V4.1 sessions
+         * own ds41_graph, and the live drafter is ds41_session_speculate.  The
+         * checks below drive that path through the public API: a multi-row
+         * verification must happen (max_chunk), and every committed token must
+         * still be the target's near-argmax. */
 
         spec = malloc((size_t)TEST_DSPARK_MAXGEN * sizeof(*spec));
         TEST_ASSERT(spec != NULL);
@@ -7334,6 +7350,7 @@ static void test_dspark_verify_depth(void) {
     free(spec);
     ds4_tokens_free(&prompt);
     ds4_engine_close(engine);
+    test_restore_env("DS4_DSPARK_CONF_SCHED", saved_conf_sched);
     test_restore_env("DS4_DSPARK_SCHEDULER", saved_scheduler);
 }
 #endif
@@ -7372,6 +7389,7 @@ static const ds4_test_entry test_entries[] = {
     {"--streaming-decode-prefill-correctness", "streaming-decode-prefill-correctness", "streaming decode-style cold prefill drift and repeatability", test_streaming_decode_prefill_correctness},
     {"--mtp-verify-depth", "mtp-verify-depth", "MTP speculative verify commits autoregressive-identical tokens at draft depth > 2", test_mtp_verify_depth},
     {"--dspark-verify-depth", "dspark-verify-depth", "DSpark speculative verify commits autoregressive-identical tokens at draft depth > 2", test_dspark_verify_depth},
+    {"--dspark-conf-sched", "dspark-conf-sched", "DSpark confidence-scheduled verification length truth table", test_dspark_conf_sched},
 #endif
     {"--server", "server", "server parser/rendering/cache unit tests", test_server_unit_group},
 };

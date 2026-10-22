@@ -220,6 +220,24 @@ kernel void kernel_mul_mv_q8_0_f32(
     kernel_mul_mv_q8_0_f32_impl<N_R0_Q8_0, constant ds4_metal_args_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
 }
 
+// Same K walk, accumulation order and reduction tree as
+// kernel_mul_mv_q8_0_f32, storing the reduced row as BF16. A projection whose
+// output boundary is BF16 (every V4.1 attention/shared projection) then costs
+// one dispatch instead of a matvec plus a separate convert.
+[[host_name("kernel_mul_mv_q8_0_f32_bf16")]]
+kernel void kernel_mul_mv_q8_0_f32_bf16(
+        constant ds4_metal_args_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    kernel_mul_mv_q8_0_f32_impl<N_R0_Q8_0, constant ds4_metal_args_mul_mv &, false, true>(
+        args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
+}
+
 // Same Q8 dot and reduction for the guarded one-token GLM 5.3 KDA output.
 [[host_name("kernel_mul_mv_q8_0_glm53_kda_output_f32")]]
 kernel void kernel_mul_mv_q8_0_glm53_kda_output_f32(

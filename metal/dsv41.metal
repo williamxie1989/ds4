@@ -59,6 +59,34 @@ kernel void kernel_dsv41_rope(
     x[i + 1u] = dsv41_bf16(re * s + im * c);
 }
 
+struct ds4_metal_args_selected_publish {
+    uint tag, n;
+};
+
+// Publishes the decode router's selected expert ids into a shared box the CPU
+// polls. The host needs those ids to build the expert address table for the
+// SSD-streaming gather; learning them by ending the command buffer makes the
+// host and the GPU alternate one layer at a time, which is the whole decode
+// gap. The tag is stored last, and the checksum over the tag and the ids makes
+// a read that raced the stores fail instead of being acted on.
+kernel void kernel_dsv41_selected_publish(
+        constant ds4_metal_args_selected_publish & args,
+        device const int32_t * selected,
+        device uint * box) {
+    device uint * slot = box + (ulong)(args.tag & 63u) * 8u;
+    uint sum = args.tag * 2654435761u;
+    for (uint i = 0; i < args.n; i++) {
+        const uint id = uint(selected[i]);
+        slot[1u + i] = id;
+        sum = (sum ^ id) * 16777619u;
+    }
+    slot[7] = sum;
+    /* This toolchain defines only the relaxed order. The checksum over the tag
+     * and the ids is what makes a read that raced the stores fail: a CPU that
+     * sees the new tag with old ids cannot reproduce slot[7]. */
+    atomic_store_explicit((device atomic_uint *)(slot + 0), args.tag, memory_order_relaxed);
+}
+
 // The reduce writes F32 first, just as the unfused chain does. Its noinline
 // body is shared with the reference; materialize BF16 before the RoPE pair.
 static inline void dsv41_attention_epilogue(

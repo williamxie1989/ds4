@@ -22,6 +22,14 @@ struct ds41_dspark {
     ds41_gpu_graph verified[DS41_VERIFY_ROWS + 1u];
     float *host_verified;
     uint32_t verify_start, verify_count, rewind_end;
+    /* Where one verification block spends its time: state copies and row-graph
+     * setup, the batched layer pass, and the readback that waits for the GPU.
+     * The fixed share of a block is what makes a draft cycle cost more than the
+     * decode steps it replaces, so it is measured, not guessed. */
+    double verify_prepare_ms, verify_layer_ms, verify_read_ms;
+    /* Split of the batched layer pass: the per-row attention encode stream and
+     * the routed-expert gather (which pages experts from the streaming cache). */
+    double verify_attn_ms, verify_moe_ms;
 };
 
 static void ds41_dspark_reset(ds41_dspark *d) {
@@ -116,6 +124,14 @@ static DS4_MAYBE_UNUSED ds41_dspark *ds41_dspark_alloc(const ds4_dspark_weights 
 fail:
     ds41_dspark_free(d);
     return NULL;
+}
+
+/* Accumulate the verify block's encode split. Defined here because the layer
+ * pass runs before this struct is complete. */
+static void ds41_dspark_note_verify_split(ds41_dspark *d, double attn_ms, double moe_ms) {
+    if (!d) return;
+    if (attn_ms > 0.0 && isfinite(attn_ms)) d->verify_attn_ms += attn_ms;
+    if (moe_ms > 0.0 && isfinite(moe_ms)) d->verify_moe_ms += moe_ms;
 }
 
 static bool ds41_dspark_capture(ds41_dspark *d, uint32_t layer, uint32_t pos,
@@ -362,6 +378,7 @@ static DS4_MAYBE_UNUSED bool ds41_dspark_verify(ds41_dspark *d, ds41_gpu_graph *
         gates != 2)) return false;
     const uint64_t kv = DS4_N_HEAD_DIM * 4u, feature = DS4_N_EMBD * 4u;
     ds41_gpu_graph *graphs[DS41_VERIFY_ROWS];
+    const double t_enter = now_sec();
     bool ok = ds4_gpu_begin_commands();
     d->verify_start = g->pos;
     d->verify_count = 0;
@@ -417,7 +434,9 @@ static DS4_MAYBE_UNUSED bool ds41_dspark_verify(ds41_dspark *d, ds41_gpu_graph *
                     ds4_gpu_tensor_copy(row->verify_previous_score[owner], 0, g->previous_score[owner], 0, kv);
         }
     }
+    const double t_prepare = now_sec();
     if (ok) ok = ds41_graph_step_batch(graphs, tokens, (int)count, count, m, w);
+    const double t_layer = now_sec();
     if (ds4_gpu_commands_active() && !ds4_gpu_end_commands()) ok = false;
     if (tp_block && (!ok || !ds4_tp_batch_block_end(g_tp_block_ctx))) {
         ds4_tp_mark_failed(g_tp_block_ctx);
@@ -427,6 +446,10 @@ static DS4_MAYBE_UNUSED bool ds41_dspark_verify(ds41_dspark *d, ds41_gpu_graph *
         (uint64_t)count * DS4_N_VOCAB * 4u) &&
         ds4_gpu_tensor_read(d->verify_logits, (uint64_t)DS41_VERIFY_ROWS * DS4_N_VOCAB * 4u,
             d->host_verified + (uint64_t)DS41_VERIFY_ROWS * DS4_N_VOCAB, DS4_N_VOCAB * 4u);
+    const double t_read = now_sec();
+    d->verify_prepare_ms = (t_prepare - t_enter) * 1000.0;
+    d->verify_layer_ms = (t_layer - t_prepare) * 1000.0;
+    d->verify_read_ms = (t_read - t_layer) * 1000.0;
     if (ok) d->verify_count = count;
     else g->valid = false;
     return ok;

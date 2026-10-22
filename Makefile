@@ -736,6 +736,10 @@ test-dspark-history:
 	python3 tests/test_dspark_eos_contract.py
 	python3 tests/test_dspark_rewind.py
 
+.PHONY: test-ab-bench
+test-ab-bench:
+	python3 tests/test_ab_bench.py
+
 tests/test_cuda_topk_stream.o: tests/test_cuda_topk_stream.cu ds4_gpu.h ds4_deepseek41_gpu.h
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -c -o $@ $<
 
@@ -1471,6 +1475,7 @@ test: ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test test-session-
 	./tests/test_sampling
 	./tests/test_deepseek4_vision_image
 	./tests/test_image_decode
+	python3 tests/test_ab_bench.py
 	@if [ -n "$(GLM53_KDA_DEFAULT_TEST)" ]; then ./$(GLM53_KDA_TEST); fi
 	@for t in $(DEEPSEEK41_EXACT_DEFAULT_TESTS); do ./$$t || exit 1; done
 	@if [ "$(UNAME_S)" = "Darwin" ]; then ./tests/test_metal_graph_capture; fi

@@ -459,6 +459,25 @@ typedef struct ds4_gpu_stream_expert_table {
     uint64_t    gate_expert_bytes;
     uint64_t    down_expert_bytes;
 } ds4_gpu_stream_expert_table;
+/* Discard dead, detached, complete prefill storage after GPU drain and munlock.
+ * The caller still owns the tensor handle and must free it normally. */
+int ds4_gpu_stream_prefill_discard_buffer(ds4_gpu_tensor *tensor);
+/* Blit the decode cache's ready experts into a prefill slot before its disk
+ * readers start. ready[e] marks the experts RAM covered; bytes gets their size.
+ * Not a cache use: no hit, recency or hotness update. */
+int ds4_gpu_stream_prefill_copy_cached(
+        const ds4_gpu_stream_expert_table *table,
+        ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4_gpu_tensor *down,
+        uint8_t *ready, uint64_t *bytes);
+/* Wait for the copy issued by copy_cached; also drains it at cleanup. */
+int ds4_gpu_stream_prefill_copy_wait(void);
+/* Bind explicitly loaded full-layer weights at their original model offsets.
+ * All NULL detaches them. The caller must drain GPU work before either call. */
+int ds4_gpu_stream_prefill_bind_layer(
+        const ds4_gpu_stream_expert_table *table,
+        const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
+        const ds4_gpu_tensor *down);
+
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
 /* Optional CUDA look-ahead between completed layers, inside the existing
  * expert cache. The foreground owns slots; the reader cannot publish them
@@ -785,6 +804,16 @@ int ds4_gpu_matmul_q8_0_tensor(
         uint64_t                out_dim,
         const ds4_gpu_tensor *x,
         uint64_t                n_tok);
+/* One-token Q8_0 projection stored directly as BF16: 1 when the fused dispatch
+ * ran, 0 when the caller must use matvec + convert. */
+int ds4_gpu_matmul_q8_0_bf16_tensor(
+        ds4_gpu_tensor       *out,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                in_dim,
+        uint64_t                out_dim,
+        const ds4_gpu_tensor *x);
 #if !defined(DS4_ROCM_BUILD)
 /* Qwen projections preserve FP32 activations on both GPU backends. */
 int ds4_gpu_qwen4_matmul_q8_0_tensor(
@@ -1225,6 +1254,17 @@ int ds4_gpu_rms_norm_plain_rows_tensor(
         const ds4_gpu_tensor *x,
         uint32_t                n,
         uint32_t                rows,
+        float                   eps);
+
+/* One-row weighted RMS norm stored directly as BF16: 1 when the fused
+ * dispatch ran, 0 when the caller must add the separate convert. */
+int ds4_gpu_rms_norm_weight_bf16_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *x,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint32_t                n,
         float                   eps);
 
 int ds4_gpu_rms_norm_weight_tensor(

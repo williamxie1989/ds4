@@ -33,6 +33,8 @@ extern int cudaProfilerStop(void) __attribute__((weak));
 #endif
 
 #define DS4_BENCH_DEFAULT_SNAPSHOT_MAX_BYTES (UINT64_C(1) << 30)
+/* --frontiers: the A/B harness measures an arbitrary frontier list in one load. */
+#define DS4_BENCH_MAX_FRONTIERS 16
 
 typedef struct {
     const char *model_path;
@@ -49,6 +51,8 @@ typedef struct {
     int ctx_start;
     int ctx_max;
     int ctx_alloc;
+    int frontiers[DS4_BENCH_MAX_FRONTIERS];
+    int n_frontiers;
     int step_incr;
     int gen_tokens;
     int power_percent;
@@ -69,6 +73,7 @@ typedef struct {
     bool ssd_streaming_full_layers_set;
     bool cuda_tensor_parallel;
     bool show_output;
+    bool cache_stats;
     bool teacher_forced_decode;
     bool dspark;
     bool dspark_confidence_threshold_set;
@@ -212,6 +217,30 @@ static char *read_file(const char *path) {
     return buf;
 }
 
+/* --frontiers: a strictly increasing list of positive context frontiers. */
+static void parse_frontiers(const char *s, bench_config *c) {
+    c->n_frontiers = 0;
+    const char *p = s;
+    for (;;) {
+        char *end = NULL;
+        errno = 0;
+        const long v = strtol(p, &end, 10);
+        if (end == p || errno != 0 || v <= 0 || v > INT_MAX ||
+            (c->n_frontiers > 0 && v <= c->frontiers[c->n_frontiers - 1]) ||
+            c->n_frontiers == DS4_BENCH_MAX_FRONTIERS ||
+            (*end != ',' && *end != '\0')) {
+            fprintf(stderr,
+                    "ds4-bench: --frontiers must be at most %d strictly increasing positive "
+                    "token counts, e.g. 2048,8192: %s\n",
+                    DS4_BENCH_MAX_FRONTIERS, s);
+            exit(2);
+        }
+        c->frontiers[c->n_frontiers++] = (int)v;
+        if (*end == '\0') return;
+        p = end + 1;
+    }
+}
+
 static bench_config parse_options(int argc, char **argv) {
     bench_config c = {
         .model_path = "ds4flash.gguf",
@@ -293,6 +322,8 @@ static bench_config parse_options(int argc, char **argv) {
             c.ctx_max = parse_int(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--ctx-alloc")) {
             c.ctx_alloc = parse_int(need_arg(&i, argc, argv, arg), arg);
+        } else if (!strcmp(arg, "--frontiers")) {
+            parse_frontiers(need_arg(&i, argc, argv, arg), &c);
         } else if (!strcmp(arg, "--step-incr")) {
             c.step_incr = parse_int(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--step-mul")) {
@@ -373,6 +404,8 @@ static bench_config parse_options(int argc, char **argv) {
             c.warm_weights = true;
         } else if (!strcmp(arg, "--show-output")) {
             c.show_output = true;
+        } else if (!strcmp(arg, "--cache-stats")) {
+            c.cache_stats = true;
         } else if (!strcmp(arg, "--teacher-forced-decode")) {
             c.teacher_forced_decode = true;
         } else {
@@ -395,6 +428,10 @@ static bench_config parse_options(int argc, char **argv) {
                 "ds4-bench: --dspark cannot be combined with "
                 "--teacher-forced-decode\n");
         exit(2);
+    }
+    if (c.n_frontiers > 0) {
+        c.ctx_start = c.frontiers[0];
+        c.ctx_max = c.frontiers[c.n_frontiers - 1];
     }
     if (c.ctx_start > c.ctx_max) {
         fprintf(stderr, "ds4-bench: --ctx-start must be <= --ctx-max\n");
@@ -536,6 +573,12 @@ static int write_frontier_logits_json(
 static int next_frontier(const bench_config *c, int cur) {
     if (cur >= c->ctx_max) return c->ctx_max;
     int next;
+    if (c->n_frontiers > 0) {
+        for (int i = 0; i < c->n_frontiers; i++) {
+            if (c->frontiers[i] > cur) return c->frontiers[i];
+        }
+        return c->ctx_max;
+    }
     if (c->step_mul == 1.0) {
         if (cur > INT_MAX - c->step_incr) next = c->ctx_max;
         else next = cur + c->step_incr;
@@ -995,6 +1038,12 @@ int main(int argc, char **argv) {
             fprintf(stderr, "\"\n");
             fflush(stderr);
         }
+        if (cfg.show_output) {
+            fprintf(stderr, "ds4-bench: gen[ctx=%d] token ids:", frontier);
+            for (int i = 0; i < gen_token_count; i++) fprintf(stderr, " %d", gen_token_buf[i]);
+            fputc('\n', stderr);
+            fflush(stderr);
+        }
         free(gen_token_buf);
         if (rc != 0) break;
 
@@ -1029,6 +1078,13 @@ int main(int argc, char **argv) {
                 gen_steady_sec > 0.0 ? (double)gen_steady_tokens / gen_steady_sec : 0.0,
                 (unsigned long long)(have_snapshot ? snap.len : 0));
         fflush(out);
+        if (cfg.cache_stats) {
+            /* The A/B harness reads the expert-cache counters per frontier from
+             * this report; label it so the parser can split the run. */
+            char label[64];
+            snprintf(label, sizeof(label), "after frontier %d", frontier);
+            ds4_engine_memory_report(engine, label);
+        }
 
         previous = frontier;
         if (frontier >= cfg.ctx_max) break;

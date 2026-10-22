@@ -3102,6 +3102,178 @@ static void model_print_dspark_summary(const ds4_model *m) {
     }
 }
 
+/* -------------------------------------------------------------------------
+ * Confidence-scheduled verification length.
+ * -------------------------------------------------------------------------
+ *
+ * The DSpark drafter scores every proposal with its confidence head. The
+ * existing policy turns that score into one fixed probability threshold, which
+ * says nothing about what a verified row costs. A row only pays for itself
+ * when the proposal prefix before it was accepted, so the expected number of
+ * tokens a k-row verification replaces with ordinary decoding is
+ *
+ *     sum_{j=1..k} prod_{i=1..j} p_i        p_i = sigmoid(confidence_i)
+ *
+ * while row k costs one sequential draft row (Markov bias plus a full
+ * vocabulary readback) plus one batched verify row. Row k therefore earns its
+ * place when the surviving prefix still covers one decode step:
+ *
+ *     prod_{i=1..k} p_i * decode_ms >= safety * (draft_row_ms + verify_row_ms)
+ *
+ * The survival product, not the per-token confidence, is the quantity that
+ * decides the length: at p = 0.8 the first row owes 0.8 of a decode step and
+ * the fifth only 0.33. That is the DeepInfer mtp_varlen selection reduced to a
+ * single stream; the caller's static threshold stays as a hard floor and this
+ * only ever shortens the block. Costs are measured per session (decode, draft
+ * row, verify row) and the rule stays inactive until all three have samples,
+ * so an unmeasured run keeps the old fixed-threshold behaviour.
+ */
+typedef struct {
+    double decode_ms;      /* one ordinary target decode step */
+    double draft_row_ms;   /* one sequential draft row */
+    double verify_row_ms;  /* one verified row inside the batch */
+    double safety;         /* > 1 demands more than break-even; 1.0 is neutral */
+} ds4_dspark_conf_cost;
+
+typedef struct {
+    double   survive;      /* prod p_i over the rows already accepted */
+    double   expected;     /* sum of survive over the rows kept so far */
+    double   break_even;   /* survival a row needs to pay for itself */
+    bool     modeled;      /* false: no usable cost curve, admit every row */
+} ds4_dspark_conf_probe;
+
+typedef struct {
+    double   ema;
+    uint32_t samples;
+} ds4_dspark_cost_ema;
+
+static DS4_MAYBE_UNUSED void ds4_dspark_cost_note(ds4_dspark_cost_ema *ema,
+                                                  double ms) {
+    if (!ema || !(ms > 0.0) || !isfinite(ms)) return;
+    /* Four-sample memory: the streaming expert cache and the SSD queue move,
+     * so a lifetime average would keep a cold first cycle authoritative. */
+    ema->ema = ema->samples ? ema->ema + 0.25 * (ms - ema->ema) : ms;
+    if (ema->samples != UINT32_MAX) ema->samples++;
+}
+
+static DS4_MAYBE_UNUSED double ds4_dspark_conf_break_even(
+        const ds4_dspark_conf_cost *cost) {
+    if (!cost || !(cost->decode_ms > 0.0) || !isfinite(cost->decode_ms)) {
+        return 0.0;
+    }
+    const double row_ms = cost->draft_row_ms + cost->verify_row_ms;
+    if (!(row_ms > 0.0) || !isfinite(row_ms)) return 0.0;
+    const double safety = cost->safety > 0.0 ? cost->safety : 1.0;
+    double be = safety * row_ms / cost->decode_ms;
+    if (!(be > 0.0)) return 0.0;
+    return be < 1.0 ? be : 1.0;
+}
+
+static DS4_MAYBE_UNUSED void ds4_dspark_conf_probe_init(
+        ds4_dspark_conf_probe *probe,
+        const ds4_dspark_conf_cost *cost) {
+    if (!probe) return;
+    memset(probe, 0, sizeof(*probe));
+    probe->survive = 1.0;
+    probe->break_even = ds4_dspark_conf_break_even(cost);
+    probe->modeled = probe->break_even > 0.0;
+}
+
+/* One more draft row clears the cost bar when the prefix survives with enough
+ * probability. Unmodelled sessions admit every row, leaving the static
+ * threshold in charge. `expected` accumulates the tokens this prefix is worth,
+ * which prices the next cycle's admission test. */
+static DS4_MAYBE_UNUSED bool ds4_dspark_conf_probe_step(
+        ds4_dspark_conf_probe *probe,
+        float                  probability) {
+    if (!probe) return false;
+    const double p = probability > 0.0f ?
+        (probability < 1.0f ? (double)probability : 1.0) : 0.0;
+    probe->survive *= p;
+    if (probe->modeled && probe->survive < probe->break_even) return false;
+    probe->expected += probe->survive;
+    return true;
+}
+
+/* Batch form for the offline curve and the unit test: the number of draft rows
+ * worth verifying, stopping at the first row the prefix can no longer pay for.
+ * Returns cap when no cost curve is supplied. */
+static DS4_MAYBE_UNUSED uint32_t ds4_dspark_conf_len(
+        const float                *probability,
+        uint32_t                    cap,
+        const ds4_dspark_conf_cost *cost) {
+    if (!probability || cap == 0) return 0;
+    ds4_dspark_conf_probe probe;
+    ds4_dspark_conf_probe_init(&probe, cost);
+    uint32_t len = 0;
+    for (uint32_t i = 0; i < cap; i++) {
+        if (!ds4_dspark_conf_probe_step(&probe, probability[i])) break;
+        len = i + 1u;
+    }
+    return len;
+}
+
+/* Model-free truth table for the length rule: the survival product, not the
+ * per-token confidence, sets the row where verification stops. */
+bool ds4_test_dspark_conf_sched(void) {
+    const ds4_dspark_conf_cost curve = {
+        .decode_ms = 80.0, .draft_row_ms = 10.0, .verify_row_ms = 30.0,
+        .safety = 1.0,
+    };
+    /* Break-even is (10 + 30) / 80 = 0.5 of one decode step. */
+    const float high[] = {0.9f, 0.9f, 0.9f, 0.9f, 0.9f};
+    if (ds4_dspark_conf_len(high, 5, &curve) != 5) return false;
+    /* The same chain prices the next cycle: 0.9 + 0.81 + ... + 0.9^5. */
+    ds4_dspark_conf_probe probe;
+    ds4_dspark_conf_probe_init(&probe, &curve);
+    for (int i = 0; i < 5; i++) {
+        if (!ds4_dspark_conf_probe_step(&probe, high[i])) return false;
+    }
+    if (probe.expected < 3.6 || probe.expected > 3.8) return false;
+    const float mid[] = {0.6f, 0.6f, 0.6f, 0.6f, 0.6f};
+    if (ds4_dspark_conf_len(mid, 5, &curve) != 1) return false;
+    const float low[] = {0.4f, 0.99f, 0.99f, 0.99f, 0.99f};
+    if (ds4_dspark_conf_len(low, 5, &curve) != 0) return false;
+    /* A rejected first row cannot be repaired by later, more confident rows. */
+    const float recover[] = {0.1f, 1.0f, 1.0f};
+    if (ds4_dspark_conf_len(recover, 3, &curve) != 0) return false;
+    /* Row 0 pays, row 1 no longer does: 0.7 * 0.7 = 0.49 < 0.5. */
+    const float edge[] = {0.7f, 0.7f, 0.7f};
+    if (ds4_dspark_conf_len(edge, 3, &curve) != 1) return false;
+    /* No curve: the caller's threshold decides, so every row is admitted. */
+    const ds4_dspark_conf_cost none = {.safety = 1.0};
+    if (ds4_dspark_conf_len(edge, 3, &none) != 3) return false;
+    /* A row that costs a whole decode step needs a certain prefix. */
+    const ds4_dspark_conf_cost flat = {
+        .decode_ms = 40.0, .draft_row_ms = 40.0, .verify_row_ms = 0.0,
+        .safety = 1.0,
+    };
+    const float certain[] = {1.0f, 1.0f};
+    if (ds4_dspark_conf_len(certain, 2, &flat) != 2) return false;
+    const float almost[] = {0.99f};
+    if (ds4_dspark_conf_len(almost, 1, &flat) != 0) return false;
+    /* Safety margin raises the bar in the same direction. */
+    const ds4_dspark_conf_cost cautious = {
+        .decode_ms = 80.0, .draft_row_ms = 10.0, .verify_row_ms = 30.0,
+        .safety = 1.5,
+    };
+    if (ds4_dspark_conf_len(mid, 5, &cautious) != 0) return false;
+    const float barely[] = {0.8f};
+    if (ds4_dspark_conf_len(barely, 1, &curve) != 1) return false;
+    if (ds4_dspark_conf_len(barely, 1, &cautious) != 1) return false;
+    if (ds4_dspark_conf_len(high, 0, &curve) != 0) return false;
+    if (ds4_dspark_conf_len(NULL, 5, &curve) != 0) return false;
+    /* The four-sample cost memory must follow the latest measurement. */
+    ds4_dspark_cost_ema ema = {0};
+    ds4_dspark_cost_note(&ema, 20.0);
+    ds4_dspark_cost_note(&ema, 40.0);
+    if (ema.samples != 2 || ema.ema < 24.0 || ema.ema > 26.0) return false;
+    ds4_dspark_cost_note(&ema, 0.0);
+    ds4_dspark_cost_note(&ema, -5.0);
+    if (ema.samples != 2) return false;
+    return true;
+}
+
 static void model_summary(const ds4_model *m) {
     ds4_str name = {0};
     ds4_str arch = {0};
@@ -41036,6 +41208,7 @@ static void ds41_dspark_free(ds41_dspark *d);
 static void ds41_dspark_reset(ds41_dspark *d);
 static bool ds41_dspark_capture(ds41_dspark *d, uint32_t layer, uint32_t pos,
                                 const ds4_gpu_tensor *residual, uint32_t rows);
+static void ds41_dspark_note_verify_split(ds41_dspark *d, double attn_ms, double moe_ms);
 
 static uint32_t ds41_prefill_limit(uint32_t ctx) {
     const uint32_t limit = ctx < 8192u || getenv("DS4_METAL_DISABLE_V41_WIDE_CHUNK") ? 2048u :
@@ -41129,8 +41302,14 @@ typedef struct {
     ds41_prefill_row carry;
     ds4_gpu_tensor *prefill_tokens;
     ds41_dspark *dspark;
+    /* False for --dspark-strict: the drafter stays resident as a control arm
+     * but never drafts, so decode must not pay the feature-ring dispatches. */
+    bool dspark_capture;
     /* True only inside the one-token sweep; row copies elsewhere must see false. */
     bool gather_reuse;
+    /* Prefill reserve the loader already holds for two expert layers; the
+     * explicit prefill slots spend exactly this budget. */
+    uint64_t streaming_prefill_bytes;
 #define DS41_FIELD(name, count) ds4_gpu_tensor *name;
     DS41_SCRATCH(DS41_FIELD)
 #undef DS41_FIELD
@@ -41396,8 +41575,13 @@ static bool ds41_bf16(ds4_gpu_tensor *x, uint32_t width) {
 static bool ds41_matmul(ds4_gpu_tensor *out, const ds4_model *m,
                         const ds4_tensor *weight, const ds4_gpu_tensor *in, bool round) {
 #ifdef __APPLE__
-    /* The measured configuration rounds a Q8_0 projection where it is stored. */
+    /* The measured configuration rounds a Q8_0 projection where it is stored.
+     * The mul_mv store variant runs the plain matvec geometry and writes the
+     * reduced row as BF16, so this one dispatch replaces matvec + convert. */
     if (round && weight->type == DS4_TENSOR_Q8_0) {
+        const int fused = ds4_gpu_matmul_q8_0_bf16_tensor(out, m->map, m->size,
+            weight->abs_offset, weight->dim[0], weight->dim[1], in);
+        if (fused) return fused > 0;
         const int rc = ds4_gpu_dsv41_matmul_q8_0_bf16(out, m->map, m->size,
             weight->abs_offset, weight->dim[0], weight->dim[1], in);
         if (rc) return rc > 0;
@@ -41533,6 +41717,13 @@ static bool ds41_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
     if (!getenv("DS4_CUDA_DISABLE_V41_POINTWISE_FUSION"))
         return ds4_gpu_dsv41_norm(out, in, m->map, m->size, weight->abs_offset,
             (uint32_t)weight->dim[0], 1, DS4_RMS_EPS);
+#endif
+#ifdef __APPLE__
+    /* The kernel variant rounds the row on store, so the BF16 boundary this
+     * caller always takes next needs no second dispatch. */
+    const int fused = ds4_gpu_rms_norm_weight_bf16_tensor(out, in, m->map, m->size,
+        weight->abs_offset, (uint32_t)weight->dim[0], DS4_RMS_EPS);
+    if (fused) return fused > 0;
 #endif
     return ds4_gpu_rms_norm_weight_tensor(out, in, m->map, m->size,
         weight->abs_offset, (uint32_t)weight->dim[0], DS4_RMS_EPS) &&
@@ -41970,6 +42161,17 @@ static bool ds41_moe_fused(const ds41_gpu_graph *g, const ds4_layer_weights *l) 
 }
 #endif
 
+/* Diagnostic: cut the decode layer into one command buffer per section so
+ * DS4_METAL_CB_TIMES reports the GPU span of each. Changes only where the
+ * buffers are split, never what is encoded. */
+static void ds41_section_boundary(void) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("DS4_METAL_V41_SECTION_PROFILE") != NULL;
+    /* end+begin, not flush: only the waited buffer prints a CB_TIMES line,
+     * and the per-buffer GPU span is the measurement. */
+    if (enabled && ds4_gpu_end_commands()) (void)ds4_gpu_begin_commands();
+}
+
 static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
                      const ds4_layer_weights *l, uint32_t il, uint32_t token) {
     uint64_t gate_row = 0, down_row = 0;
@@ -41987,6 +42189,11 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
                 g->route_logits, g->norm, m->map, m->size, l->ffn_gate_inp->abs_offset,
                 bias->abs_offset, true, DS4_N_EMBD, DS4_N_EXPERT, DS4_N_EXPERT_USED,
                 DS4_EXPERT_WEIGHT_SCALE)) return false;
+        /* Publish the ids for the host-side expert address table. The
+         * streaming MoE then reads them without ending the command buffer,
+         * which is what keeps the host encoding ahead of the GPU; a layer
+         * whose publish is not admitted falls back to the blocking readback. */
+        (void)ds4_gpu_dsv41_selected_publish(g->selected, DS4_N_EXPERT_USED);
     } else
 #endif
     if (!ds41_matmul(g->route_logits, m, l->ffn_gate_inp, g->norm, false) ||
@@ -42044,6 +42251,7 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
     if (shared_here && !shared_queued &&
         (!ds41_shared_mid(g, m, l) ||
          !ds41_matmul(g->shared, m, l->ffn_down_shexp, g->shared_mid, true))) return false;
+    ds41_section_boundary();
     bool routed_ok;
 #ifndef __APPLE__
     if (g->tp_world == 2) {
@@ -42489,12 +42697,27 @@ static bool ds41_graph_after_moe(ds41_gpu_graph *g, const ds4_model *m,
 
 static bool ds41_graph_layer(ds41_gpu_graph *g, const ds4_model *m,
                             const ds4_layer_weights *l, uint32_t il, int token) {
-    return ds41_graph_before_moe(g, m, l, il) && ds41_moe(g, m, l, il, (uint32_t)token) &&
-        ds41_graph_after_moe(g, m, l)
+    bool ok = ds41_graph_before_moe(g, m, l, il);
+    ds41_section_boundary();
+    ok = ok && ds41_moe(g, m, l, il, (uint32_t)token);
+    ds41_section_boundary();
+    ok = ok && ds41_graph_after_moe(g, m, l)
 #ifdef DS4_TEST_HOOKS
         && ds41_test_probe_residual(il, g->residual, 1)
 #endif
         ;
+#ifdef DS4_TEST_HOOKS
+#endif
+        ;
+    if (!ok) return false;
+    /* Every evaluation that produces an accepted row also feeds the drafter's
+     * feature ring. Prefill seeds the last window once, so without this the
+     * readiness test in ds41_session_speculate fails as soon as generation
+     * passes the prompt frontier and DSpark never drafts again. The capture
+     * only reads the residual and writes drafter-private buffers, and a
+     * strict (non-drafting) control arm skips it entirely. */
+    return !g->dspark_capture ||
+        ds41_dspark_capture(g->dspark, il, g->pos, g->residual, 1);
 }
 
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
@@ -42878,6 +43101,8 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
 static bool ds41_prefill_seed(ds41_gpu_graph *g, const ds4_model *m,
                              const ds4_layer_weights *l, uint32_t il, uint32_t count) {
 #if defined(__APPLE__) && !defined(DS4_NO_GPU)
+    /* A queued RAM copy into the next layer reads entries this seed may recycle. */
+    if (!ds4_gpu_stream_prefill_copy_wait()) return false;
     if (!g->streaming || getenv("DS4_METAL_DISABLE_STREAMING_PREFILL_CACHE_SEED")) return true;
     uint32_t target = ds4_gpu_stream_expert_cache_configured_count() / DS4_N_LAYER;
     if (target > DS4_N_EXPERT) target = DS4_N_EXPERT;
@@ -43236,6 +43461,269 @@ static uint32_t ds41_encoder_chunk_cap(const ds41_gpu_graph *g, uint32_t count) 
  * nll drift within +-2.5%, zero first_match/lcp flips). The default sits at
  * the first wide band; DS4_V41_DECODER_SUFFIX_MIN_ROWS=8192 restores the old
  * gate. */
+/* Explicit expert buffers for layer-major sweeps (fork sf-ds4-1flash 60, S3).
+ * The loader already reserves two complete expert layers inside the prefill
+ * headroom; instead of warming mmap pages the next read can evict again, the
+ * workers pread layer N+1 into two locked shared buffers while layer N
+ * computes, and the routed dispatch reads them at their original model
+ * offsets. A slot covers a whole layer, so wide sweeps reuse it across every
+ * tile of that layer. F_NOCACHE keeps the sweep from polluting the page cache,
+ * and the discard marks the storage purgeable before release. */
+typedef struct ds41_prefill_expert_slot ds41_prefill_expert_slot;
+typedef struct {
+    ds41_prefill_expert_slot *slot;
+    uint32_t index;
+} ds41_prefill_expert_worker;
+
+struct ds41_prefill_expert_slot {
+    ds4_gpu_tensor *tensor[3];
+    uint8_t *dst[3];
+    uint64_t bytes[3];
+    bool locked[3];
+    int read_fd;
+    bool owns_read_fd;
+    ds4_gpu_stream_expert_table table;
+    pthread_t threads[16];
+    ds41_prefill_expert_worker workers[16];
+    bool ok[16];
+    uint32_t n_threads, started;
+    uint8_t ready[DS4_MAX_EXPERT];
+    uint64_t ram_bytes;
+};
+
+/* A separate open keeps prefill's uncached reads from changing the model fd
+ * used by decode. A dup would share that setting. If the path is unavailable
+ * or now names another file, the original cached reader remains valid. */
+static int ds41_prefill_expert_open_nocache_fd(int source_fd) {
+#if defined(__APPLE__) && defined(F_GETPATH) && defined(F_NOCACHE)
+    char path[MAXPATHLEN];
+    struct stat source, opened;
+    if (source_fd < 0 || fstat(source_fd, &source) != 0 || !S_ISREG(source.st_mode) ||
+        fcntl(source_fd, F_GETPATH, path) != 0) return -1;
+    int fd;
+    do { fd = open(path, O_RDONLY | O_CLOEXEC); } while (fd < 0 && errno == EINTR);
+    if (fd < 0) return -1;
+    if (fstat(fd, &opened) != 0 || source.st_dev != opened.st_dev ||
+        source.st_ino != opened.st_ino || source.st_size != opened.st_size ||
+        fcntl(fd, F_NOCACHE, 1) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+#else
+    (void)source_fd;
+    return -1;
+#endif
+}
+
+static bool ds41_prefill_expert_pread(int fd, uint8_t *dst, uint64_t offset, uint64_t len) {
+    while (len) {
+        const size_t bytes = len < (UINT64_C(16) << 20) ? (size_t)len : (size_t)(UINT64_C(16) << 20);
+        ssize_t n;
+        do { n = pread(fd, dst, bytes, (off_t)offset); } while (n < 0 && errno == EINTR);
+        if (n <= 0) return false;
+        dst += n; offset += (uint64_t)n; len -= (uint64_t)n;
+    }
+    return true;
+}
+
+/* Each worker reads an equal share of the experts the RAM copy did not
+ * cover, in file order, merging adjacent experts into one request. */
+static void *ds41_prefill_expert_read(void *arg) {
+    ds41_prefill_expert_worker *worker = arg;
+    ds41_prefill_expert_slot *slot = worker->slot;
+    const uint64_t offsets[] = {slot->table.gate_offset, slot->table.up_offset,
+                                slot->table.down_offset};
+    const uint64_t per[] = {slot->table.gate_expert_bytes, slot->table.gate_expert_bytes,
+                            slot->table.down_expert_bytes};
+    uint64_t total = 0;
+    for (uint32_t e = 0; e < slot->table.n_total_expert; e++)
+        if (!slot->ready[e]) total += per[0] + per[1] + per[2];
+    const uint64_t part = total / slot->n_threads, extra = total % slot->n_threads;
+    const uint64_t index = worker->index;
+    const uint64_t lo = part * index + (index < extra ? index : extra);
+    const uint64_t hi = lo + part + (index < extra);
+    uint64_t v = 0, run_offset = 0, run_len = 0;
+    uint8_t *run_dst = NULL;
+    for (unsigned j = 0; j < 3; j++) for (uint32_t e = 0; e < slot->table.n_total_expert; e++) {
+        if (slot->ready[e]) continue;
+        const uint64_t a = v > lo ? v : lo, b = v + per[j] < hi ? v + per[j] : hi;
+        if (a < b) {
+            const uint64_t at = e * per[j] + (a - v);
+            if (run_len && run_offset + run_len == offsets[j] + at &&
+                run_dst + run_len == slot->dst[j] + at) {
+                run_len += b - a;
+            } else {
+                if (run_len && !ds41_prefill_expert_pread(slot->read_fd, run_dst, run_offset, run_len))
+                    return NULL;
+                run_offset = offsets[j] + at; run_dst = slot->dst[j] + at; run_len = b - a;
+            }
+        }
+        v += per[j];
+    }
+    if (run_len && !ds41_prefill_expert_pread(slot->read_fd, run_dst, run_offset, run_len))
+        return NULL;
+    slot->ok[worker->index] = true;
+    return NULL;
+}
+
+static bool ds41_prefill_expert_read_join(ds41_prefill_expert_slot *slot) {
+    bool ok = ds4_gpu_stream_prefill_copy_wait() != 0;
+    for (uint32_t i = 0; i < slot->started; i++) {
+        if (pthread_join(slot->threads[i], NULL))
+            ds4_die("cannot join V4.1 expert reader before reusing its buffers");
+        ok = slot->ok[i] && ok;
+    }
+    slot->started = 0;
+    if (slot->owns_read_fd) {
+        if (close(slot->read_fd) != 0) ok = false;
+        slot->owns_read_fd = false;
+        slot->read_fd = -1;
+    }
+    return ok;
+}
+
+static bool ds41_prefill_expert_buffers_free(ds41_prefill_expert_slot slots[2]) {
+    bool ok = true;
+    /* Cancellation waits for the one bounded layer read already in flight;
+     * it never abandons threads still writing into these buffers. */
+    for (unsigned i = 0; i < 2; i++)
+        if (!ds41_prefill_expert_read_join(&slots[i])) ok = false;
+    /* Neither disk readers nor queued kernels may retain writable storage
+     * when a cancelled sweep gives its two-layer reserve back to the host. */
+    const bool drained = ds4_gpu_synchronize() != 0;
+    if (!drained) ok = false;
+    if (!ds4_gpu_stream_prefill_bind_layer(NULL, NULL, NULL, NULL))
+        ds4_die("cannot detach V4.1 expert buffers safely");
+    for (unsigned i = 0; i < 2; i++) for (unsigned j = 0; j < 3; j++) {
+        if (slots[i].locked[j] &&
+            munlock(ds4_gpu_tensor_contents(slots[i].tensor[j]), (size_t)slots[i].bytes[j]))
+            ds4_die("cannot release V4.1 expert buffer pages safely");
+        if (slots[i].tensor[j] && drained &&
+            !ds4_gpu_stream_prefill_discard_buffer(slots[i].tensor[j])) ok = false;
+        ds4_gpu_tensor_free(slots[i].tensor[j]);
+    }
+    memset(slots, 0, sizeof(*slots) * 2u);
+    return ok;
+}
+
+/* The engine already reserves two complete expert layers. Explicit buffers
+ * spend that same budget, so pread fills the storage consumed by the GPU
+ * instead of warming mmap pages which the next read can evict again. */
+static bool ds41_prefill_expert_buffers_init(const ds41_gpu_graph *g,
+                                            const ds4_model *m, const ds4_weights *w,
+                                            ds41_prefill_expert_slot slots[2]) {
+    if (!g->streaming || g->tp_world != 1 || g->quality ||
+        g->encoder_resident || !g->streaming_prefill_bytes || m->fd < 0) return false;
+    for (unsigned i = 0; i < 2; i++) for (unsigned j = 0; j < 3; j++)
+        if (slots[i].tensor[j]) return false;
+    const ds4_tensor *first[] = {w->layer[0].ffn_gate_exps, w->layer[0].ffn_up_exps,
+                                 w->layer[0].ffn_down_exps};
+    uint64_t bytes[3], total = 0;
+    const uint64_t page = (uint64_t)getpagesize();
+    for (unsigned j = 0; j < 3; j++) {
+        if (!first[j] || !first[j]->bytes || first[j]->bytes > SIZE_MAX - page) return false;
+        bytes[j] = align_up(first[j]->bytes, page);
+        if (bytes[j] > (UINT64_MAX - total) / 2u) return false;
+        total += bytes[j] * 2u;
+    }
+    if (total > g->streaming_prefill_bytes) return false;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        const ds4_layer_weights *l = &w->layer[il];
+        const ds4_tensor *t[] = {l->ffn_gate_exps, l->ffn_up_exps, l->ffn_down_exps};
+        for (unsigned j = 0; j < 3; j++) {
+            if (!t[j] || t[j]->type != first[j]->type || t[j]->bytes != first[j]->bytes ||
+                t[j]->abs_offset > m->size || t[j]->bytes > m->size - t[j]->abs_offset ||
+                t[j]->abs_offset > (uint64_t)LLONG_MAX ||
+                t[j]->bytes > (uint64_t)LLONG_MAX - t[j]->abs_offset) return false;
+        }
+    }
+    for (unsigned i = 0; i < 2; i++) for (unsigned j = 0; j < 3; j++) {
+        slots[i].bytes[j] = bytes[j];
+        slots[i].tensor[j] = ds4_gpu_tensor_alloc(bytes[j]);
+        if (!slots[i].tensor[j] ||
+            mlock(ds4_gpu_tensor_contents(slots[i].tensor[j]), (size_t)bytes[j])) {
+            (void)ds41_prefill_expert_buffers_free(slots);
+            fprintf(stderr, "ds4: V4.1 explicit expert buffers unavailable; using mmap prefill\n");
+            return false;
+        }
+        slots[i].locked[j] = true;
+    }
+    return true;
+}
+
+static bool ds41_prefill_expert_read_start(ds41_prefill_expert_slot *slot,
+                                          const ds4_model *m,
+                                          const ds4_layer_weights *l, uint32_t il) {
+    if (slot->started || slot->owns_read_fd) return false;
+    slot->table = graph_stream_expert_table_make(m, l, il,
+        routed_expert_row_bytes(l->ffn_gate_exps) * DS4_N_FF_EXP,
+        routed_expert_row_bytes(l->ffn_down_exps) * DS4_N_EMBD);
+    const uint64_t offsets[] = {slot->table.gate_offset, slot->table.up_offset,
+                                slot->table.down_offset};
+    const uint64_t per_expert[] = {slot->table.gate_expert_bytes, slot->table.gate_expert_bytes,
+                                   slot->table.down_expert_bytes};
+    if (!slot->table.n_total_expert || m->fd < 0) return false;
+    for (unsigned j = 0; j < 3; j++) {
+        if (!per_expert[j] || per_expert[j] > UINT64_MAX / slot->table.n_total_expert) return false;
+        const uint64_t bytes = per_expert[j] * slot->table.n_total_expert;
+        if (!slot->tensor[j] || bytes > ds4_gpu_tensor_bytes(slot->tensor[j]) ||
+            offsets[j] > m->size || bytes > m->size - offsets[j] ||
+            offsets[j] > (uint64_t)LLONG_MAX || bytes > (uint64_t)LLONG_MAX - offsets[j]) return false;
+        slot->dst[j] = ds4_gpu_tensor_contents(slot->tensor[j]);
+        if (!slot->dst[j]) return false;
+    }
+    /* RAM first: only the experts the decode cache lacks go to disk. */
+    if (!ds4_gpu_stream_prefill_copy_cached(&slot->table, slot->tensor[0], slot->tensor[1],
+                                            slot->tensor[2], slot->ready, &slot->ram_bytes))
+        return false;
+    slot->read_fd = ds41_prefill_expert_open_nocache_fd(m->fd);
+    slot->owns_read_fd = slot->read_fd >= 0;
+    if (!slot->owns_read_fd) slot->read_fd = m->fd;
+    slot->n_threads = metal_graph_stream_prefill_layer_pagein_threads();
+    for (uint32_t i = 0; i < slot->n_threads; i++) {
+        slot->ok[i] = false;
+        slot->workers[i] = (ds41_prefill_expert_worker){slot, i};
+        if (pthread_create(&slot->threads[i], NULL, ds41_prefill_expert_read, &slot->workers[i])) {
+            (void)ds41_prefill_expert_read_join(slot);
+            return false;
+        }
+        slot->started++;
+    }
+    return true;
+}
+
+static uint32_t ds41_prefill_explicit_min_rows(void) {
+    /* Forcing the sweep on (the pre-default switch) also drops the floor. */
+    if (getenv("DS4_METAL_ENABLE_V41_PREFILL_EXPLICIT")) return 32u;
+    const char *env = getenv("DS4_V41_PREFILL_EXPLICIT_MIN_ROWS");
+    if (!env || !*env) return 256u;
+    char *end = NULL;
+    const unsigned long value = strtoul(env, &end, 10);
+    if (!end || *end || value < 32ul || value > UINT32_MAX) return 256u;
+    return (uint32_t)value;
+}
+
+static bool ds41_prefill_expert_sweep_supported(uint32_t count, bool wide,
+                                               bool batch_hc, bool batch_core,
+                                               bool encoder_only, bool resume_encoder) {
+    /* Expert storage depends on layer bytes, not token count: one slot holds a
+     * whole layer (gate/up/down), and it stays bound through every tile of that
+     * layer, so a wide sweep reuses the same two slots as a single-chunk one and
+     * only joins/restarts reads at layer boundaries (fork 896785c). Deferred
+     * encoder sweeps stay on the mmap path. */
+    if (getenv("DS4_METAL_DISABLE_V41_PREFILL_EXPLICIT")) return false;
+    /* The sweep reads a whole layer per pread instead of paging through mmap,
+     * which is ~25% faster (137 -> 171 t/s at 2048 rows), but the first decode
+     * step after it pays a one-time ~0.3 s that is not I/O (measured: 0.03 GiB
+     * pread, 237 of 240 expert lookups hit; present with the seed off and with
+     * or without the decode mailbox). Below ~230 rows the saving is smaller
+     * than that cost, so short prompts stay on mmap. Tokens are identical. */
+    (void)wide;
+    return count >= ds41_prefill_explicit_min_rows() &&
+        batch_hc && batch_core && !encoder_only && !resume_encoder;
+}
+
 static uint32_t ds41_decoder_suffix_min_rows(void) {
     const char *env = getenv("DS4_V41_DECODER_SUFFIX_MIN_ROWS");
     if (!env || !*env) return 4096u;
@@ -43367,19 +43855,29 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
      * bind to fall back to. Wide sweeps keep the whole-layer schedule. */
     const uint32_t gather_rows =
         total_count < encoder_chunk ? total_count : encoder_chunk;
-    const bool gather_sweep = g->streaming && !wide && !encoder_only &&
+    ds41_prefill_expert_slot expert_slots[2] = {0};
+    const bool explicit_experts = ds41_prefill_expert_sweep_supported(total_count, wide,
+        batch_hc, batch_core, encoder_only, resume_encoder) &&
+        ds41_prefill_expert_buffers_init(g, m, w, expert_slots);
+    /* The gather bind reads the selected experts through the address table; the
+     * explicit buffers already hold the whole layer, so the two must not mix
+     * (the gather path on bound buffers measured 87 t/s against 179 whole-layer). */
+    const bool gather_sweep = !explicit_experts && g->streaming && !wide && !encoder_only &&
         !resume_encoder &&
         ds41_streaming_sweep_moe_gather_admitted(g, w, gather_rows);
     /* P0g (HANDOFF-V41-STREAMING-SMALL-PREFILL 16): short gather sweeps leave
      * the GPU idle between layers because each layer's page-in is only issued
      * one layer ahead. The prepare slots work as a ring like the layer-major
      * loops above: DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_AHEAD layers of
-     * pread overlap the compute window. Whole-layer sweeps keep the single
-     * slot: their page-in already carries the full expert working set and
-     * deepening it would only pin more slab bytes per in-flight layer.
-     * Depth changes only prepare timing; the bytes read are the same spans. */
-    const uint32_t prepare_ahead = gather_sweep &&
-        metal_graph_stream_prefill_layer_pagein_overlap_enabled() ?
+     * pread overlap the compute window. Whole-layer sweeps default to the
+     * single slot: their page-in already carries the full expert working set
+     * and deepening it pins more slab bytes per in-flight layer. The env can
+     * raise the depth for diagnostics (default stays 1, so behaviour is
+     * unchanged unless it is set); depth changes prepare timing only, the
+     * bytes read are the same spans. */
+    const uint32_t prepare_ahead =
+        (gather_sweep ||
+         metal_graph_stream_prefill_layer_pagein_overlap_enabled()) ?
         ds41_streaming_sweep_prepare_ahead() : 1u;
     uint32_t (*ids)[2][DS4_ENGRAM_COLS] = g->prefill_ids;
     ds4_engram_history next_history = g->history;
@@ -43404,7 +43902,12 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
         !getenv("DS4_METAL_DISABLE_V41_ENGRAM_PIPELINE");
     bool engram_prefetched = overlap_engram &&
         ds41_engram_prefetch_start(&engram_prefetch, g, 0, total_count);
-    bool ok = !g->streaming || metal_graph_stream_map_token(m, w);
+    bool ok = !g->streaming || (explicit_experts ? metal_graph_stream_map_decode_static_all(m, w) :
+                                                  metal_graph_stream_map_token(m, w));
+    if (ok && explicit_experts) {
+        fprintf(stderr, "ds4: V4.1 prefill reads experts into two explicit layer buffers\n");
+        ok = ds41_prefill_expert_read_start(&expert_slots[0], m, &w->layer[0], 0);
+    }
     metal_graph_stream_prepare_slot prepare[DS4_STREAM_PREFILL_MAX_PREPARE_AHEAD];
     memset(prepare, 0, sizeof(prepare));
     for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
@@ -43422,7 +43925,17 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
         if (il == 2u) engram_prefetched = overlap_engram &&
             ds41_engram_prefetch_start(&engram_prefetch, g, 1, total_count);
         const double t0 = profile ? now_sec() : 0;
-        if (g->streaming) {
+        if (explicit_experts) {
+            ds41_prefill_expert_slot *slot = &expert_slots[il & 1u];
+            ok = ds41_prefill_expert_read_join(slot) &&
+                ds4_gpu_stream_prefill_bind_layer(&slot->table,
+                    slot->tensor[0], slot->tensor[1], slot->tensor[2]);
+            /* The previous layer and its cache seed have both drained before
+             * its slot becomes the destination of this next-layer read. */
+            if (ok && il + 1u < DS4_N_LAYER)
+                ok = ds41_prefill_expert_read_start(&expert_slots[(il + 1u) & 1u],
+                                                    m, &w->layer[il + 1u], il + 1u);
+        } else if (g->streaming) {
 #ifdef __APPLE__
             const uint32_t first_count = total_count < encoder_chunk ? total_count : encoder_chunk;
             if (!g->encoder_resident || il >= 20)
@@ -43705,6 +44218,7 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
     if (g->streaming) ds4_gpu_stream_expert_cache_prefetch_finish(true);
 #endif
     if (!metal_graph_stream_prepare_join_all(prepare, prepare_ahead)) ok = false;
+    if (explicit_experts && !ds41_prefill_expert_buffers_free(expert_slots)) ok = false;
     if (g->streaming && !metal_graph_stream_map_decode_static_all(m, w)) ok = false;
     if (ok && !encoder_only) {
         ok = ds4_gpu_begin_commands() &&
@@ -43890,6 +44404,17 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
             l->attn_output_b->type == DS4_TENSOR_Q8_0 &&
             !getenv("DS4_DISABLE_V41_BATCH_OUTPUT");
 #endif
+        /* A verification block encodes one dispatch stream per row, which is
+         * why it costs about as much to encode as N decode steps. Layers whose
+         * KV carry is not pooled across rows (every ratio but 2) can run the
+         * prefilled batched attention pass instead: one dispatch stream for the
+         * whole block. Pooled layers keep the per-row pass, whose carry save
+         * and rollback the block commit depends on. */
+        /* The batched prefill attention was measured as a substitute here and
+         * is not one: it costs the same encode and changes the reduction order
+         * (attention is 3% of a verify block; the routed-expert gather is 87%).
+         * Keep the per-row pass that mirrors incremental decode. */
+        const double attn_t0 = g->verify_prefix && g->dspark ? now_sec() : 0.0;
         for (int i = 0; ok && i < count; i++) {
             ds41_gpu_graph row = *graphs[i];
             row.pos = positions[i];
@@ -43904,6 +44429,7 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
             ok = ds41_attention(&row, model, l, il, true) &&
                 (batch_output || ds41_attention_output(&row, model, l, false));
         }
+        if (attn_t0 != 0.0) ds41_dspark_note_verify_split(g->dspark, (now_sec() - attn_t0) * 1000.0, 0.0);
         if (ok && batch_output)
             ok = g->tp_world == 2 ?
                 ds4_gpu_dsv41_attention_output_tp_batch(active.block, active.low,
@@ -43913,9 +44439,14 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
                     model->map, model->size, l->attn_output_a->abs_offset,
                     l->attn_output_b->abs_offset, g->batch.heads, rows);
         if (ok) ok = ds41_sum_partial_batch(g, active.block, il, DS4_TP_GATE_ATTN, rows);
+        const double moe_t0 = attn_t0;
         if (ok) ok = ds4_gpu_dsv41_quantize(active.block, DS4_N_EMBD, rows, DS4_V41_BF16) &&
-            ds41_after_attention_batch(&active, model, l, rows) &&
-            ds41_moe_batch(g, model, l, il, rows, shared_owner, gather_moe) &&
+            ds41_after_attention_batch(&active, model, l, rows);
+        if (attn_t0 != 0.0) ds41_dspark_note_verify_split(g->dspark, (now_sec() - moe_t0) * 1000.0, 0.0);
+        const double moe_t1 = attn_t0 != 0.0 ? now_sec() : 0.0;
+        if (ok) ok = ds41_moe_batch(g, model, l, il, rows, shared_owner, gather_moe);
+        if (moe_t1 != 0.0) ds41_dspark_note_verify_split(g->dspark, 0.0, (now_sec() - moe_t1) * 1000.0);
+        if (ok) ok =
             (shared_owner ? ds4_gpu_tensor_copy(active.block, 0, active.routed, 0,
                 (uint64_t)rows * DS4_N_EMBD * sizeof(float)) :
                 ds4_gpu_add_tensor(active.block, active.routed, active.shared, rows * DS4_N_EMBD)) &&
@@ -43927,6 +44458,14 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
             && ds41_test_probe_residual(il, active.residual, rows)
 #endif
             ;
+        /* A verification block and a single-session prefill both hold one
+         * session's rows at contiguous positions, so they feed the same ring.
+         * ds41_dspark_verify copied every slot this overwrites, and commit()
+         * puts the rejected rows back, so the ring ends up holding exactly the
+         * accepted prefix. Session batches mix independent sessions and
+         * positions in one workspace and must not be captured here. */
+        if (ok && g->dspark_capture && (g->verify_prefix || prefill_only))
+            ok = ds41_dspark_capture(g->dspark, il, g->pos, active.residual, rows);
         /* The second Engram upload reuses the first one's input storage. */
         if (ok && il == 13) ok = ds4_gpu_end_commands() && ds4_gpu_begin_commands();
     }
@@ -63122,6 +63661,15 @@ typedef struct ds4_dspark_spec_stats {
     uint64_t invalid_draft;
     uint64_t draft_len_hist[DS4_DSPARK_MAX_BLOCK_SIZE + 1u];
     uint64_t accepted_len_hist[DS4_DSPARK_MAX_BLOCK_SIZE + 1u];
+    /* Confidence-scheduled verification: how often the cost curve shortened a
+     * block, and how many rows it removed before the verifier saw them. */
+    uint64_t conf_sched_cycles;
+    uint64_t conf_sched_stops;
+    uint64_t conf_sched_blocked;
+    uint64_t conf_sched_skips;
+    uint64_t conf_len_hist[DS4_DSPARK_MAX_BLOCK_SIZE + 1u];
+    double verify_attn_ms;
+    double verify_moe_ms;
     uint64_t scheduler_skips;
     uint64_t tail_skips;
     uint64_t verifier_unavailable;
@@ -63253,6 +63801,20 @@ struct ds4_session {
     double dspark_sched_saved_ms;
     double dspark_last_target_eval_ms;
     double dspark_last_propose_ms;
+    /* Confidence-scheduled verification: measured costs of the three pieces a
+     * draft row trades against, so the length rule runs on this machine's
+     * numbers instead of a fixed probability threshold. */
+    ds4_dspark_cost_ema dspark_cost_decode;
+    ds4_dspark_cost_ema dspark_cost_draft_row;
+    ds4_dspark_cost_ema dspark_cost_verify_row;
+    ds4_dspark_cost_ema dspark_cost_cycle;
+    double dspark_conf_pred_tokens;
+    uint32_t dspark_conf_pred_cycles;
+    uint32_t dspark_conf_skip_left;
+    /* Costs at the last refused cycle: a re-probe is only worth paying when
+     * they moved in favour of speculation. */
+    double dspark_conf_probe_decode_ms;
+    double dspark_conf_probe_verify_ms;
     float dspark_last_confidence0;
     float dspark_sample_temperature;
     uint64_t *dspark_sample_rng;
@@ -63389,6 +63951,98 @@ static bool ds4_dspark_scheduler_enabled(const ds4_session *s) {
     if (env && env[0]) return strcmp(env, "0") != 0;
     (void)s;
     return true;
+}
+
+/* Confidence-scheduled verification length. On by default so every DSpark run
+ * reports the cost curve it measured; DS4_DSPARK_CONF_SCHED=0 restores the
+ * fixed-threshold draft width for an A/B. */
+static bool ds4_dspark_conf_sched_enabled(void) {
+    const char *env = getenv("DS4_DSPARK_CONF_SCHED");
+    return !(env && env[0] && strcmp(env, "0") == 0);
+}
+
+/* Static overrides let a replay drive the rule from an offline curve before the
+ * first measurement exists (milli-units keep the parsing integer-only). */
+static double ds4_dspark_conf_env_ms(const char *name, double fallback) {
+    const uint32_t milli = ds4_dspark_env_u32(name, 0);
+    return milli ? (double)milli / 1000.0 : fallback;
+}
+
+/* A cost curve is usable once the decode step and a verified row are priced;
+ * the rule then runs on the measured numbers, and until then the static
+ * threshold decides. */
+static ds4_dspark_conf_cost ds4_session_dspark_conf_cost(const ds4_session *s) {
+    ds4_dspark_conf_cost cost = {0};
+    if (!s || !ds4_dspark_conf_sched_enabled()) return cost;
+    const uint32_t warmup =
+        ds4_dspark_env_u32("DS4_DSPARK_CONF_SCHED_WARMUP", 1);
+    const uint32_t safety_milli =
+        ds4_dspark_env_u32("DS4_DSPARK_CONF_SCHED_SAFETY_MILLI", 1000);
+    cost.safety = safety_milli ? (double)safety_milli / 1000.0 : 1.0;
+    const bool verify_measured = s->dspark_cost_verify_row.samples >= warmup;
+    const bool measured =
+        s->dspark_cost_decode.samples >= warmup &&
+        s->dspark_cost_draft_row.samples >= warmup &&
+        verify_measured;
+    /* A session whose every cycle produces a block never runs a plain decode
+     * step, so the decode cost it must beat stays unmeasured and admission can
+     * never engage. A verified row is the same one-row model pass, so its
+     * measurement stands in until a plain decode supplies the real number. */
+    const double decode_fallback =
+        s->dspark_cost_decode.samples >= warmup ? 0.0 :
+        verify_measured ? s->dspark_cost_verify_row.ema : 0.0;
+    cost.decode_ms =
+        ds4_dspark_conf_env_ms("DS4_DSPARK_CONF_DECODE_MS_MILLI",
+            measured ? s->dspark_cost_decode.ema : decode_fallback);
+    /* Each quantity stands on its own measurement: a session that only ever
+     * verified still knows its row costs, and pricing them at zero until a
+     * plain decode shows up would spend another probe learning nothing. */
+    cost.draft_row_ms =
+        ds4_dspark_conf_env_ms("DS4_DSPARK_CONF_DRAFT_ROW_MS_MILLI",
+            s->dspark_cost_draft_row.ema);
+    cost.verify_row_ms =
+        ds4_dspark_conf_env_ms("DS4_DSPARK_CONF_VERIFY_ROW_MS_MILLI",
+            s->dspark_cost_verify_row.ema);
+    if (cost.decode_ms <= 0.0 || cost.verify_row_ms <= 0.0) {
+        memset(&cost, 0, sizeof(cost));
+    }
+    return cost;
+}
+
+/* Cycle admission. The last confidence chain prices what one draft cycle
+ * returns; the measured propose+verify cost says what it charges. Below
+ * break-even the proposal is skipped outright, because the drafter's five-row
+ * block is paid for before the first Markov row reveals whether anything is
+ * worth verifying. Confidence drifts with the text, so a skip streak re-probes
+ * instead of switching DSpark off for the rest of the request. */
+static bool ds4_session_dspark_conf_admit(ds4_session *s,
+                                          const ds4_dspark_conf_cost *cost) {
+    if (!s || !cost || !(cost->decode_ms > 0.0)) return true;
+    if (s->dspark_conf_pred_cycles == 0 || s->dspark_cost_cycle.samples == 0) {
+        return true;
+    }
+    if (s->dspark_conf_skip_left != 0) {
+        s->dspark_conf_skip_left--;
+        return false;
+    }
+    const double safety = cost->safety > 0.0 ? cost->safety : 1.0;
+    const double gain_ms = s->dspark_conf_pred_tokens * cost->decode_ms;
+    if (gain_ms >= safety * s->dspark_cost_cycle.ema) return true;
+    /* A re-probe costs a full cold verification block, so it is rare: the
+     * measured shape (a verified row priced near a decode step) does not turn
+     * around on its own. It is worth paying early only when the economics
+     * actually moved -- decoding got slower, or verification got cheaper. */
+    const bool cheaper = s->dspark_conf_probe_verify_ms > 0.0 &&
+        cost->verify_row_ms < 0.8 * s->dspark_conf_probe_verify_ms;
+    const bool slower = s->dspark_conf_probe_decode_ms > 0.0 &&
+        cost->decode_ms > 1.25 * s->dspark_conf_probe_decode_ms;
+    const uint32_t reprobe =
+        ds4_dspark_env_u32("DS4_DSPARK_CONF_SCHED_REPROBE", 1024);
+    const uint32_t next = (cheaper || slower) ? 8u : reprobe;
+    s->dspark_conf_skip_left = next ? next - 1u : 0;
+    s->dspark_conf_probe_decode_ms = cost->decode_ms;
+    s->dspark_conf_probe_verify_ms = cost->verify_row_ms;
+    return false;
 }
 
 static uint32_t ds4_dspark_scheduler_window(const ds4_session *s) {
@@ -75161,6 +75815,15 @@ void ds4_engine_summary(ds4_engine *e) {
     }
 }
 
+void ds4_engine_memory_report(ds4_engine *e, const char *label) {
+#ifndef DS4_NO_GPU
+    if (e && e->backend != DS4_BACKEND_CPU) ds4_gpu_print_memory_report(label);
+#else
+    (void)e;
+    (void)label;
+#endif
+}
+
 int ds4_engine_vocab_size(ds4_engine *e) {
     return e ? e->vocab.n_vocab : 0;
 }
@@ -76167,8 +76830,10 @@ static void ds4_session_print_dspark_stats(const ds4_session *s) {
     if (st->cycles == 0 && st->propose_ms == 0.0) return;
     char draft_hist[192];
     char accept_hist[192];
+    char conf_hist[192];
     ds4_format_len_hist(draft_hist, sizeof(draft_hist), st->draft_len_hist);
     ds4_format_len_hist(accept_hist, sizeof(accept_hist), st->accepted_len_hist);
+    ds4_format_len_hist(conf_hist, sizeof(conf_hist), st->conf_len_hist);
     const double accept_rate =
         st->proposed_tokens ?
             (100.0 * (double)st->accepted_draft_tokens /
@@ -76193,10 +76858,13 @@ static void ds4_session_print_dspark_stats(const ds4_session *s) {
             "prop_chain=%.3f prop_hidden=%.3f prop_conf0=%.3f "
             "prop_logits=%.3f prop_markov=%.3f prop_confidence=%.3f "
             "snapshot=%.3f verify=%.3f verify_upload=%.3f "
-            "verify_layer=%.3f verify_head=%.3f verify_read=%.3f "
+            "verify_layer=%.3f verify_attn=%.3f verify_moe=%.3f "
+            "verify_head=%.3f verify_read=%.3f "
             "verify_fused_head=%llu replay=%.3f spec_total=%.3f "
             "target=%.3f saved=%.3f net_saved=%s "
-            "draft_len_hist=%s accepted_len_hist=%s\n",
+            "conf_sched=%llu conf_stops=%llu conf_blocked=%llu conf_skips=%llu "
+            "cost_ms decode=%.3f draft_row=%.3f verify_row=%.3f cycle=%.3f "
+            "draft_len_hist=%s accepted_len_hist=%s conf_len_hist=%s\n",
             (unsigned long long)st->cycles,
             (unsigned long long)st->first_tokens,
             (unsigned long long)st->proposed_tokens,
@@ -76231,6 +76899,8 @@ static void ds4_session_print_dspark_stats(const ds4_session *s) {
             st->verify_ms,
             st->verify_upload_ms,
             st->verify_layer_ms,
+            st->verify_attn_ms,
+            st->verify_moe_ms,
             st->verify_head_ms,
             st->verify_read_ms,
             (unsigned long long)st->verifier_fused_head,
@@ -76239,8 +76909,17 @@ static void ds4_session_print_dspark_stats(const ds4_session *s) {
             st->target_ms,
             st->saved_ms,
             net_saved,
+            (unsigned long long)st->conf_sched_cycles,
+            (unsigned long long)st->conf_sched_stops,
+            (unsigned long long)st->conf_sched_blocked,
+            (unsigned long long)st->conf_sched_skips,
+            s->dspark_cost_decode.ema,
+            s->dspark_cost_draft_row.ema,
+            s->dspark_cost_verify_row.ema,
+            s->dspark_cost_cycle.ema,
             draft_hist,
-            accept_hist);
+            accept_hist,
+            conf_hist);
 }
 #endif
 
@@ -76316,6 +76995,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         }
         s->ds41_graph_ready = true;
         s->ds41_graph.quality = e->quality;
+        s->ds41_graph.streaming_prefill_bytes = e->ssd_streaming_prefill_headroom_bytes;
         if (e->dspark && e->dspark_weights.v41) {
             s->ds41_graph.dspark = ds41_dspark_alloc(&e->dspark_weights);
             if (!s->ds41_graph.dspark) {
@@ -76323,6 +77003,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
                 free(s);
                 return 1;
             }
+            s->ds41_graph.dspark_capture = !e->dspark_strict;
             s->ds41_graph.allocation_bytes += UINT64_C(64) << 20;
         }
         if (e->tp.active) {
@@ -81176,6 +81857,12 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         ds41_dspark *d = s->ds41_graph.dspark;
         const bool rewindable = d && d->rewind_end == s->ds41_graph.pos &&
             d->rewind_end && d->rewind_end < d->verify_start + d->verify_count;
+        /* The confidence-length rule prices a verified row against the decode
+         * step it replaces, so a DSpark run times these steps. */
+        const bool dspark_eval_timing =
+            e->support_kind == DS4_SUPPORT_DSPARK &&
+            (ds4_dspark_conf_sched_enabled() || ds4_dspark_stats_enabled());
+        const double eval_t0 = dspark_eval_timing ? now_sec() : 0.0;
         if (!s->ds41_graph_ready ||
             (!s->checkpoint_valid && s->checkpoint.len != 0) ||
             s->ds41_graph.pos != (uint32_t)s->checkpoint.len ||
@@ -81183,6 +81870,12 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
             s->checkpoint_valid = false;
             if (errlen) snprintf(err, errlen, "V4.1 decode failed at position %d", s->checkpoint.len);
             return 1;
+        }
+        if (dspark_eval_timing) {
+            const double target_ms = (now_sec() - eval_t0) * 1000.0;
+            s->dspark_last_target_eval_ms = target_ms;
+            ds4_dspark_cost_note(&s->dspark_cost_decode, target_ms);
+            if (ds4_dspark_stats_enabled()) s->dspark_stats.target_ms += target_ms;
         }
         token_vec_push(&s->checkpoint, token);
         s->checkpoint_valid = true;
@@ -88333,18 +89026,48 @@ static int ds41_session_speculate(ds4_session *s, int first_token, int cap, int 
         accepted[0] = first_token;
         return 1;
     }
+    /* Price the whole cycle before the drafter's fixed five-row block runs. */
+    const ds4_dspark_conf_cost conf_cost = ds4_session_dspark_conf_cost(s);
+    const bool cost_timing = ds4_dspark_conf_sched_enabled() || stats;
+    if (!ds4_session_dspark_conf_admit(s, &conf_cost)) {
+        if (stats) {
+            s->dspark_stats.no_draft++;
+            s->dspark_stats.conf_sched_skips++;
+        }
+        if (ds4_session_eval(s, first_token, err, errlen)) return -1;
+        accepted[0] = first_token;
+        return 1;
+    }
     const bool exact = temperature > 0 && e->dspark_exact_sampling;
     const double started = now_sec();
     if (!ds41_session_draft(s, first_token))
         goto fail;
     int tokens[DS41_VERIFY_ROWS] = {first_token};
     uint32_t count = 1;
+    /* The draft block and its five-row head are already paid for; what the
+     * length rule still decides is how many sequential Markov rows this cycle
+     * reads back and how wide the verification block becomes. */
+    ds4_dspark_conf_probe conf;
+    ds4_dspark_conf_probe_init(&conf, &conf_cost);
+    uint32_t conf_stops = 0;
     for (; count < (uint32_t)cap; count++) {
         const uint32_t row = count - 1u;
+        const double row_t0 = cost_timing ? now_sec() : 0.0;
         float confidence;
         if (!ds41_dspark_markov(d, &e->mtp_model, row, tokens[row], &confidence)) goto fail;
+        if (cost_timing) {
+            ds4_dspark_cost_note(&s->dspark_cost_draft_row,
+                                 (now_sec() - row_t0) * 1000.0);
+        }
+        const float probability = sigmoid_stable(confidence);
         if (e->dspark_confidence_threshold > 0 &&
-            sigmoid_stable(confidence) < e->dspark_confidence_threshold) break;
+            probability < e->dspark_confidence_threshold) break;
+        /* The configured threshold is a per-token floor; the cost curve asks
+         * whether the surviving prefix still buys a whole decode step. */
+        if (!ds4_dspark_conf_probe_step(&conf, probability)) {
+            conf_stops++;
+            break;
+        }
         const float *qlogits = d->host_logits + (uint64_t)row * DS4_N_VOCAB;
         if (exact) {
             float *q = d->draft_probs + (uint64_t)row * DS4_N_VOCAB;
@@ -88355,7 +89078,23 @@ static int ds41_session_speculate(ds4_session *s, int first_token, int cap, int 
         if (ignore_eos && ds4_token_is_stop_for_think_mode(e, tokens[count], think_mode)) break;
         if (tokens[count] == eos) { count++; break; }
     }
+    if (stats && conf.modeled) {
+        s->dspark_stats.conf_sched_cycles++;
+        s->dspark_stats.conf_sched_stops += conf_stops;
+        if (count == 1 && conf_stops != 0) s->dspark_stats.conf_sched_blocked++;
+        ds4_dspark_stats_note_len(s->dspark_stats.conf_len_hist, count - 1u);
+    }
+    /* Remember what this confidence chain was worth even before the curve is
+     * usable: the next cycle then judges the first measured cost against a real
+     * prediction instead of paying for a second probe. */
+    s->dspark_conf_pred_tokens = conf.expected;
+    if (s->dspark_conf_pred_cycles != UINT32_MAX) s->dspark_conf_pred_cycles++;
     if (count == 1) {
+        /* A proposal that yields no row still cost the five-row block. */
+        if (cost_timing) {
+            ds4_dspark_cost_note(&s->dspark_cost_cycle,
+                                 (now_sec() - started) * 1000.0);
+        }
         if (stats) {
             s->dspark_stats.no_draft++;
             s->dspark_stats.propose_ms += (now_sec() - started) * 1000;
@@ -88375,6 +89114,22 @@ static int ds41_session_speculate(ds4_session *s, int first_token, int cap, int 
         ds4_dspark_stats_note_len(s->dspark_stats.draft_len_hist, count - 1u);
     }
     if (!ds41_session_verify(s, tokens, count)) goto fail;
+    if (cost_timing) {
+        const double verify_ms = (now_sec() - proposed) * 1000.0;
+        ds4_dspark_cost_note(&s->dspark_cost_verify_row,
+                             verify_ms / (double)count);
+        ds4_dspark_cost_note(&s->dspark_cost_cycle,
+                             verify_ms + (proposed - started) * 1000.0);
+        if (stats) {
+            s->dspark_stats.verify_upload_ms += d->verify_prepare_ms;
+            s->dspark_stats.verify_layer_ms += d->verify_layer_ms;
+            s->dspark_stats.verify_read_ms += d->verify_read_ms;
+            s->dspark_stats.verify_attn_ms += d->verify_attn_ms;
+            s->dspark_stats.verify_moe_ms += d->verify_moe_ms;
+            d->verify_attn_ms = 0.0;
+            d->verify_moe_ms = 0.0;
+        }
+    }
     uint32_t keep = 1;
     int correction = -1;
     for (; keep < count; keep++) {
@@ -88400,6 +89155,15 @@ static int ds41_session_speculate(ds4_session *s, int first_token, int cap, int 
     if (stats) {
         s->dspark_stats.verify_ms += (now_sec() - proposed) * 1000;
         s->dspark_stats.accepted_draft_tokens += accepted_drafts;
+        /* net_saved is meaningless without the credit side; the backoff
+         * scheduler that normally books it is not on this path. The first
+         * cycles can accept drafts before any plain decode was timed, so fall
+         * back to the measured decode step. */
+        const double one_step_ms = s->dspark_last_target_eval_ms > 0.0 ?
+            s->dspark_last_target_eval_ms : s->dspark_cost_decode.ema;
+        if (accepted_drafts != 0 && one_step_ms > 0.0) {
+            s->dspark_stats.saved_ms += one_step_ms * (double)accepted_drafts;
+        }
         ds4_dspark_stats_note_len(s->dspark_stats.accepted_len_hist, accepted_drafts);
         if (keep == count) {
             s->dspark_stats.full_accepts++;
@@ -88419,7 +89183,8 @@ static int ds41_session_speculate(ds4_session *s, int first_token, int cap, int 
     if (getenv("DS4_DSPARK_SPEC_LOG")) fprintf(stderr,
         "ds4: V4.1 DSpark proposed=%u accepted=%u draft=%.3f ms verify=%.3f ms\n",
         count - 1u, accepted_drafts, (proposed - started) * 1000, (now_sec() - proposed) * 1000);
-    if (stats) s->dspark_stats.total_ms += (now_sec() - started) * 1000;
+    /* The print adds propose_ms to spec_total; keep the proposal out of it. */
+    if (stats) s->dspark_stats.total_ms += (now_sec() - proposed) * 1000;
     return (int)keep;
 fail:
     if (ds4_gpu_commands_active()) (void)ds4_gpu_end_commands();
@@ -89831,50 +90596,3 @@ bool ds4_test_control_token_roundtrip(ds4_engine *engine) {
     }
     return ok;
 }
-
-#ifndef DS4_NO_GPU
-/* Test the actual compressor frontiers, not just a short continuation whose
- * raw attention window can hide a stale speculative prefix. */
-bool ds4_test_dspark_prefix_capture(ds4_engine *engine, const ds4_tokens *prompt) {
-    ds4_session *ref = NULL, *spec = NULL;
-    const int ctx = prompt->len + 16;
-    bool ok = ds4_session_create(&ref, engine, ctx) == 0 &&
-              ds4_session_create(&spec, engine, ctx) == 0;
-    int tokens[6], tops[6];
-    uint32_t counts[6][DS4_MAX_LAYER], index_counts[6][DS4_MAX_LAYER];
-    char err[160];
-    if (ok) ok = ds4_session_sync(ref, prompt, err, sizeof(err)) == 0 &&
-                 ds4_session_sync(spec, prompt, err, sizeof(err)) == 0;
-    for (int i = 0; i < 6 && ok; i++) {
-        tokens[i] = ds4_session_argmax(ref);
-        ok = ds4_session_eval(ref, tokens[i], err, sizeof(err)) == 0;
-        memcpy(counts[i], ref->graph.layer_n_comp, sizeof(counts[i]));
-        memcpy(index_counts[i], ref->graph.layer_n_index_comp, sizeof(index_counts[i]));
-    }
-    const uint32_t start = (uint32_t)prompt->len;
-    if (ok) {
-        for (int i = 0; i < 6; i++) token_vec_push(&spec->checkpoint, tokens[i]);
-        ok = metal_graph_verify_suffix_tops(&spec->graph, &engine->model,
-            &engine->weights, &spec->checkpoint, start, 6, true, false, false,
-            tops, NULL, NULL);
-    }
-    for (uint32_t prefix = 1; prefix <= DS4_SPEC_PREFIX_SLOTS && ok; prefix++) {
-        ok = spec_frontier_commit_prefix(spec, prefix);
-        for (uint32_t layer = 0; layer < DS4_N_LAYER && ok; layer++) {
-            if (ds4_layer_compress_ratio(layer) == 0) continue;
-            if (spec->graph.layer_n_comp[layer] != counts[prefix-1][layer] ||
-                (ds4_layer_compress_ratio(layer) == 4 &&
-                 spec->graph.layer_n_index_comp[layer] != index_counts[prefix-1][layer])) {
-                fprintf(stderr, "ds4-test: stale speculative prefix=%u layer=%u "
-                    "comp=%u/%u index=%u/%u\n", prefix, layer,
-                    spec->graph.layer_n_comp[layer], counts[prefix-1][layer],
-                    spec->graph.layer_n_index_comp[layer], index_counts[prefix-1][layer]);
-                ok = false;
-            }
-        }
-    }
-    ds4_session_free(spec);
-    ds4_session_free(ref);
-    return ok;
-}
-#endif

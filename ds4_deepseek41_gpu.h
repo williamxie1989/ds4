@@ -71,6 +71,11 @@ int ds4_gpu_dsv41_attention_output_tp_batch(
         const void *model_map, uint64_t model_size,
         uint64_t out_a_offset, uint64_t out_b_offset,
         const ds4_gpu_tensor *heads, uint32_t n_tokens, uint32_t tp_rank);
+/* Decode router selected-id mailbox: publish the GPU's ids into shared memory
+ * and take them back without ending the command buffer. Both return 1 on
+ * success; a 0 from either means the caller must use the blocking readback. */
+int ds4_gpu_dsv41_selected_publish(const ds4_gpu_tensor *selected, uint32_t n);
+int ds4_gpu_dsv41_selected_take(int32_t *ids, uint32_t n);
 /* Adjacent-pair, unit-magnitude RoPE with the released V4.1 frequencies. */
 int ds4_gpu_dsv41_rope(ds4_gpu_tensor *x, uint32_t width, uint32_t heads,
                       uint32_t rows, uint32_t start, bool compressed, bool inverse);
