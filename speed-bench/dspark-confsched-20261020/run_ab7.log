@@ -1,0 +1,10 @@
+[23:31:39] 2k-A-r12-n384 rc=0 generation: 13.46 t/s md5=3bb1662b8a688d90d6164ccbbb3f2103
+[23:32:22] 2k-B1-r12-n384 rc=0 generation: 12.18 t/s md5=3bb1662b8a688d90d6164ccbbb3f2103
+[23:33:02] 2k-A-r13-n384 rc=0 generation: 13.31 t/s md5=3bb1662b8a688d90d6164ccbbb3f2103
+[23:33:46] 2k-B1-r13-n384 rc=0 generation: 11.98 t/s md5=3bb1662b8a688d90d6164ccbbb3f2103
+[23:34:41] 8k-A-r12-n384 rc=0 generation: 13.18 t/s md5=faead71c3b4f9be9308c67524b995d26
+[23:35:37] 8k-B1-r12-n384 rc=0 generation: 11.97 t/s md5=faead71c3b4f9be9308c67524b995d26
+[23:36:32] 8k-A-r13-n384 rc=0 generation: 13.15 t/s md5=faead71c3b4f9be9308c67524b995d26
+[23:37:29] 8k-B1-r13-n384 rc=0 generation: 11.87 t/s md5=faead71c3b4f9be9308c67524b995d26
+ALL DONE
+EXIT=0

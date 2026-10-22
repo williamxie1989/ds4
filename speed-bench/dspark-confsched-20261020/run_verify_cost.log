@@ -1,0 +1,8 @@
+[23:53:23] vc-cap1-1024 cache=1024 cap=1 rc=0 generation: 9.64 t/s
+[23:53:53] vc-cap2-1024 cache=1024 cap=2 rc=0 generation: 10.79 t/s
+[23:54:24] vc-cap3-1024 cache=1024 cap=3 rc=0 generation: 10.77 t/s
+[23:54:56] vc-cap5-1024 cache=1024 cap=5 rc=0 generation: 10.58 t/s
+[23:55:27] vc-cap5-4096 cache=4096 cap=5 rc=0 generation: 13.79 t/s
+[23:55:57] vc-cap1-4096 cache=4096 cap=1 rc=0 generation: 13.38 t/s
+ALL DONE
+EXIT=0

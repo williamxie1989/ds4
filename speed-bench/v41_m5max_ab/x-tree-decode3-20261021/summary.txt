@@ -1,0 +1,23 @@
+ds4 A/B  2026-10-21 14:24 UTC  ?  monitor none
+A  /Users/xieyongliang/ds4  89e068c (uncommitted changes)
+B  /private/tmp/sf-tree  ?
+model  DeepSeek-V4.1-Flash-1017-Q2.gguf (/Users/xieyongliang/ds4/gguf/DeepSeek-V4.1-Flash-1017-Q2.gguf)   env  -
+bench args  A --teacher-forced-decode   B --teacher-forced-decode
+streaming  cache 72GB -> dynamic 64.88 GiB, 6999 expert slots; ctx 65536
+time  318 s of 500 s   runs 6 (2 untimed; first timed run at 105 s)   pairs 2 valid, 0 dropped
+correctness  PASS (tokens)
+
+kind          metric                          A        B    gain  95% CI            n
+decode        decode 2048                  22.0     26.3  +19.5%  +18.6% .. +20.5%  2  (detail)
+decode        first token 2048 ms          65.5     60.7   +8.3%  +0.6% .. +16.0%   2
+decode        decode 8192                  21.8     25.3  +16.3%  +16.2% .. +16.3%  2  (detail)
+decode        first token 8192 ms         189.3     59.8 +216.5%  +198.6% .. +234.4% 2
+
+cache decode: hit rate A 0.973 B 0.901
+
+run 3 A decode: unjudged: no GPU monitor
+run 4 B decode: unjudged: no GPU monitor
+run 5 B decode: unjudged: no GPU monitor
+run 6 A decode: unjudged: no GPU monitor
+
+record row: none (bench arguments, a B-only environment, B's cache or the allocated context make the figures incomparable with the record)

@@ -1,0 +1,48 @@
+ds4 A/B  2026-10-22 03:15 UTC  ?  monitor none
+A  /Users/xieyongliang/ds4  89e068c (uncommitted changes)
+B  /Users/xieyongliang/ds4  89e068c (uncommitted changes)
+model  DeepSeek-V4.1-Flash-1017-Q2.gguf (/Users/xieyongliang/ds4/gguf/DeepSeek-V4.1-Flash-1017-Q2.gguf)   env  -   B only  DS4_METAL_DISABLE_V41_SELECTED_MAILBOX=1
+streaming  cache 72GB -> dynamic 64.88 GiB, 6999 expert slots; ctx 65536
+time  760 s of 820 s   runs 34 (2 untimed; first timed run at 44 s)   pairs 16 valid, 0 dropped
+correctness  PASS (tokens; bitwise)
+
+kind          metric                          A        B    gain  95% CI            n
+decode2k      decode 2048                  25.1     22.0  -12.1%  -13.5% .. -10.8%  16  (detail)
+decode2k      first token 2048 ms          63.3     66.8   -6.9%  -9.8% .. -2.7%    16
+
+cache decode2k: hit rate A 0.978 B 0.978
+
+run 3 A decode2k: unjudged: no GPU monitor
+run 4 B decode2k: unjudged: no GPU monitor
+run 5 B decode2k: unjudged: no GPU monitor
+run 6 A decode2k: unjudged: no GPU monitor
+run 7 A decode2k: unjudged: no GPU monitor
+run 8 B decode2k: unjudged: no GPU monitor
+run 9 B decode2k: unjudged: no GPU monitor
+run 10 A decode2k: unjudged: no GPU monitor
+run 11 A decode2k: unjudged: no GPU monitor
+run 12 B decode2k: unjudged: no GPU monitor
+run 13 B decode2k: unjudged: no GPU monitor
+run 14 A decode2k: unjudged: no GPU monitor
+run 15 A decode2k: unjudged: no GPU monitor
+run 16 B decode2k: unjudged: no GPU monitor
+run 17 B decode2k: unjudged: no GPU monitor
+run 18 A decode2k: unjudged: no GPU monitor
+run 19 A decode2k: unjudged: no GPU monitor
+run 20 B decode2k: unjudged: no GPU monitor
+run 21 B decode2k: unjudged: no GPU monitor
+run 22 A decode2k: unjudged: no GPU monitor
+run 23 A decode2k: unjudged: no GPU monitor
+run 24 B decode2k: unjudged: no GPU monitor
+run 25 B decode2k: unjudged: no GPU monitor
+run 26 A decode2k: unjudged: no GPU monitor
+run 27 A decode2k: unjudged: no GPU monitor
+run 28 B decode2k: unjudged: no GPU monitor
+run 29 B decode2k: unjudged: no GPU monitor
+run 30 A decode2k: unjudged: no GPU monitor
+run 31 A decode2k: unjudged: no GPU monitor
+run 32 B decode2k: unjudged: no GPU monitor
+run 33 B decode2k: unjudged: no GPU monitor
+run 34 A decode2k: unjudged: no GPU monitor
+
+record row: none (bench arguments, a B-only environment, B's cache or the allocated context make the figures incomparable with the record)

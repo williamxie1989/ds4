@@ -1,0 +1,195 @@
+--- a/ds4.c
++++ b/ds4.c
+@@ -23322,7 +23322,13 @@
+         getenv("DS4_METAL_PRO_Q4_CPU_ROUTER_PROFILE") != NULL ||
+         getenv("DS4_METAL_STREAMING_IQ2_CPU_ROUTER_PROFILE") != NULL;
+     const double t0 = profile ? now_sec() : 0.0;
+-    if (ds4_gpu_end_commands() == 0) return false;
++    /* The decode readback is the one wait where a bounded status poll beats
++     * waking from waitUntilCompleted (131); everything else keeps the blocking
++     * wait. */
++    ds4_gpu_set_readback_poll(1);
++    const int router_ended = ds4_gpu_end_commands();
++    ds4_gpu_set_readback_poll(0);
++    if (router_ended == 0) return false;
+     const double t_sync = profile ? now_sec() : 0.0;
+     if (ds4_gpu_tensor_read(metal_graph_ffn_norm(g),
+                             0,
+@@ -23414,7 +23420,11 @@
+     const bool profile =
+         getenv("DS4_METAL_STREAMING_SELECTED_READAHEAD_PROFILE") != NULL;
+     const double t0 = profile ? now_sec() : 0.0;
+-    if (ds4_gpu_end_commands() == 0) return false;
++    /* Bounded status poll around the streaming decode selected-id readback (131). */
++    ds4_gpu_set_readback_poll(1);
++    const int readahead_ended = ds4_gpu_end_commands();
++    ds4_gpu_set_readback_poll(0);
++    if (readahead_ended == 0) return false;
+     const double t_sync = profile ? now_sec() : 0.0;
+ 
+     int32_t selected_ids[DS4_MAX_EXPERT_USED] = {0};
+@@ -75048,6 +75058,11 @@
+             uint64_t slab_expert_bytes = 0;
+             if (ds4_streaming_routed_expert_bytes(&e->weights, &slab_expert_bytes)) {
+                 ds4_gpu_set_streaming_expert_cache_expert_bytes(slab_expert_bytes);
++                /* Lock the whole cache before the first prefill (270): locked lazily,
++                 * the slots meet the prefill's explicit buffers and scratch under
++                 * vm.global_user_wire_limit and the last locks fail. Single-box
++                 * streaming only: a slice or TP shard has its own budget. */
++                if (!load_slice && !tp_shard) ds4_gpu_stream_expert_cache_lock_ahead();
+                 uint32_t routed = 0, boosted = 0;
+                 for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+                     const ds4_layer_weights *l = &e->weights.layer[il];
+--- a/ds4_metal.m
++++ b/ds4_metal.m
+@@ -1547,7 +1547,30 @@
+     ds4_gpu_invalidate_completion_counters();
+ }
+ 
++/* Nonzero only around the streaming decode's selected-id readback (131). */
++static uint64_t g_wait_poll_ns;
++
++void ds4_gpu_set_readback_poll(int on) {
++    static int enabled = -1;
++    if (enabled < 0) {
++        enabled = getenv("DS4_METAL_DISABLE_V41_READBACK_POLL") == NULL;
++    }
++    g_wait_poll_ns = (on && enabled) ? 2000000u : 0u;
++}
++
+ static int ds4_gpu_wait_command_buffer(id<MTLCommandBuffer> cb, const char *label) {
++    /* Waking from waitUntilCompleted takes about 70 us, paid once per decode
++     * layer at the selected-id readback; polling the status sees completion
++     * about 25 us sooner. Bounded to 2 ms, then the same blocking wait. */
++    if (g_wait_poll_ns) {
++        const uint64_t end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + g_wait_poll_ns;
++        while (cb.status < MTLCommandBufferStatusCompleted &&
++               clock_gettime_nsec_np(CLOCK_UPTIME_RAW) < end) {
++#if defined(__aarch64__)
++            __builtin_arm_yield();
++#endif
++        }
++    }
+     [cb waitUntilCompleted];
+     if (getenv("DS4_METAL_CB_TIMES")) {
+         static double prev_gpu_end;
+@@ -16380,6 +16403,74 @@
+                                                    down_inner);
+ }
+ 
++/* Allocate and lock every cache slot at engine open, before the first prefill.
++ * Slots locked while that prefill seeds them meet its explicit expert buffers
++ * and scratch under vm.global_user_wire_limit, which counts the GPU's wired
++ * pages too: from about 86 GB of cache the last ones failed and shrank the
++ * cache below the flag (270). The locked slots wait on the free list, as
++ * evicted slots do.
++ *
++ * The slot size is the lazy path's: two expert-sized projections plus the down
++ * projection, i.e. gate == up for the cacheable size class (true for the V4.1
++ * Q2 mix). If a model breaks that, ds4_gpu_stream_expert_alloc_slab_slot sees
++ * the size mismatch and falls back to per-expert buffers; correctness holds,
++ * only the speed gain is lost. */
++void ds4_gpu_stream_expert_cache_lock_ahead(void) {
++    if (!g_initialized && !ds4_gpu_init()) return;
++    const uint32_t budget = ds4_gpu_stream_expert_cache_configured_budget();
++    if (!g_ssd_streaming_mode || budget == 0 ||
++        !ds4_gpu_stream_expert_slab_enabled() ||
++        g_stream_expert_cache_expert_bytes == 0 ||
++        g_stream_expert_cache_slab_count != 0 ||
++        getenv("DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD") != NULL) {
++        return;
++    }
++    const uint64_t slot_bytes =
++        round_up_u64(g_stream_expert_cache_expert_bytes, (uint64_t)getpagesize());
++    if (slot_bytes == 0 || slot_bytes > (uint64_t)NSUIntegerMax) return;
++    uint64_t per_slab = ds4_gpu_stream_expert_slab_target_bytes() / slot_bytes;
++    if (per_slab == 0) per_slab = 1;
++    if (per_slab > (uint64_t)NSUIntegerMax / slot_bytes) {
++        per_slab = (uint64_t)NSUIntegerMax / slot_bytes;
++    }
++    g_stream_expert_cache_slab_slot_bytes = slot_bytes;
++
++    const double t0 = ds4_gpu_now_ms();
++    while (g_stream_expert_cache_slab_total_slots < budget &&
++           g_stream_expert_cache_slab_count < DS4_METAL_STREAM_EXPERT_CACHE_MAX_SLABS) {
++        uint32_t slots = budget - g_stream_expert_cache_slab_total_slots;
++        if (slots > per_slab) slots = (uint32_t)per_slab;
++        id<MTLBuffer> buffer = ds4_gpu_stream_expert_alloc_slab_buffer(
++                (uint64_t)slots * slot_bytes, @"ds4_stream_expert_slab");
++        if (!buffer) break;
++        const uint32_t slab = g_stream_expert_cache_slab_count++;
++        g_stream_expert_cache_slabs[slab] = buffer;
++        g_stream_expert_cache_slab_start_slot[slab] =
++            g_stream_expert_cache_slab_total_slots;
++        g_stream_expert_cache_slab_slot_count[slab] = slots;
++        /* Full for the lazy path: these slots are handed out from the free list. */
++        g_stream_expert_cache_slab_slots_used[slab] = slots;
++        g_stream_expert_cache_slab_total_slots += slots;
++    }
++
++    uint32_t locked = 0;
++    while (locked < g_stream_expert_cache_slab_total_slots &&
++           ds4_gpu_stream_expert_slab_lock_slot(locked)) {
++        locked++;
++    }
++    /* Pushed high to low, so slot 0 is handed out first. */
++    for (uint32_t slot = locked; slot-- > 0;) {
++        ds4_gpu_stream_expert_slab_push_free_slot(slot);
++    }
++    fprintf(stderr,
++            "ds4: streaming expert cache locked ahead: %u of %u slots, %u slabs, %.2f GiB in %.0f ms\n",
++            locked,
++            budget,
++            g_stream_expert_cache_slab_count,
++            ds4_gpu_gib((uint64_t)locked * slot_bytes),
++            ds4_gpu_now_ms() - t0);
++}
++
+ static uint64_t ds4_gpu_stream_expert_buffer_object_count(
+         id<MTLBuffer> gate,
+         id<MTLBuffer> up,
+--- a/ds4_gpu.h
++++ b/ds4_gpu.h
+@@ -365,6 +365,14 @@
+ #endif
+ void ds4_gpu_set_streaming_expert_cache_budget(uint32_t experts);
+ void ds4_gpu_set_streaming_expert_cache_expert_bytes(uint64_t bytes);
++/* Allocate and lock every expert-cache slot at engine open, before the first prefill
++ * (single-box streaming only). Locked lazily, the slots meet the first prefill's
++ * explicit buffers and scratch under vm.global_user_wire_limit and the last locks
++ * fail, shrinking the cache below the flag. */
++void ds4_gpu_stream_expert_cache_lock_ahead(void);
++/* Bounded status poll around the streaming decode's selected-id readback (131):
++ * waking from waitUntilCompleted costs about 70 us per decode layer. */
++void ds4_gpu_set_readback_poll(int on);
+ int ds4_gpu_qwen4_conv_stream_rows_tensor(
+         ds4_gpu_tensor *x, ds4_gpu_tensor *hist_pool,
+         const void *model_map, uint64_t model_size, uint64_t weight_offset,
+--- a/ds4_cuda.cu
++++ b/ds4_cuda.cu
+@@ -35657,6 +35657,10 @@
+     if (bytes != g_stream_expert_bytes) cuda_stream_selected_cache_release();
+     g_stream_expert_bytes = bytes;
+ }
++
++/* Metal-only: the CUDA backend has no slab lock-ahead and no status poll. */
++extern "C" void ds4_gpu_stream_expert_cache_lock_ahead(void) {}
++extern "C" void ds4_gpu_set_readback_poll(int on) { (void)on; }
+ 
+ extern "C" uint32_t ds4_gpu_stream_expert_cache_configured_count(void) {
+     return g_stream_expert_budget;
+--- a/ds4_rocm_unavailable.cu
++++ b/ds4_rocm_unavailable.cu
+@@ -6,7 +6,12 @@
+ #include <stdint.h>
+ 
+ #define ROCM_UNAVAILABLE_INT(name) extern "C" int name(...) { return 0; }
++#define ROCM_UNAVAILABLE_VOID(name) extern "C" void name(...) { }
+ 
++/* Metal-only cache/readback hooks. */
++ROCM_UNAVAILABLE_VOID(ds4_gpu_stream_expert_cache_lock_ahead)
++ROCM_UNAVAILABLE_VOID(ds4_gpu_set_readback_poll)
++
+ ROCM_UNAVAILABLE_INT(ds4_gpu_add_xdev_tensor)
+ ROCM_UNAVAILABLE_INT(ds4_gpu_attention_decode_rows_rope_tensor)
+ ROCM_UNAVAILABLE_INT(ds4_gpu_attention_output_low_q4_K_slice_tensor)

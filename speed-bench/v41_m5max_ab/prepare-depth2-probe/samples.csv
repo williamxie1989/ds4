@@ -1,0 +1,13 @@
+run,build,kind,phase,frontier,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,gen_steady_tokens,gen_steady_tps,cache_hits,cache_misses,cache_pread_gib,cache_pread_ms,gpu_freq_mhz,gpu_temp_max,gpu_power_median,note,tokens_sha256
+3,A,cold-7500,timed,7500,7500,392.81,16,10.80,720.734,15,19.72,3661,6786,1.66,72.267,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac
+4,B,cold-7500,timed,7500,7500,393.92,16,11.05,690.733,15,19.83,3661,6786,1.66,73.978,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac
+5,B,cold-7500,timed,7500,7500,398.07,16,10.65,725.318,15,19.31,3661,6786,1.66,85.305,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac
+6,A,cold-7500,timed,7500,7500,385.23,16,10.96,675.852,15,19.13,3661,6786,1.66,77.731,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac
+7,A,cold-7500,timed,7500,7500,390.06,16,11.06,681.143,15,19.61,3661,6786,1.66,66.639,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac
+8,B,cold-7500,timed,7500,7500,390.24,16,10.87,683.473,15,19.03,3661,6786,1.66,95.193,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac
+9,B,cold-7500,timed,7500,7500,376.54,16,10.83,696.650,15,19.21,3661,6786,1.66,89.843,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac
+10,A,cold-7500,timed,7500,7500,367.99,16,11.11,682.200,15,19.81,3661,6786,1.66,84.439,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac
+11,A,cold-7500,timed,7500,7500,373.21,16,11.05,687.608,15,19.74,3661,6786,1.66,74.803,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac
+12,B,cold-7500,timed,7500,7500,379.25,16,11.23,663.262,15,19.72,3661,6786,1.66,75.031,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac
+13,B,cold-7500,timed,7500,7500,376.80,16,10.58,731.890,15,19.23,3661,6786,1.66,70.199,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac
+14,A,cold-7500,timed,7500,7500,383.98,16,10.88,687.786,15,19.18,3661,6786,1.66,80.491,,,,unjudged: no GPU monitor,d73f95301dd5a1c20a9d7c64de73c720cced7a1fb17bd1812e7c66181c18e0ac

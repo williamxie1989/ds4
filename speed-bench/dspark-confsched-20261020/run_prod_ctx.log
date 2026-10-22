@@ -1,0 +1,6 @@
+[00:29:56] 384k-A-p1 rc=0 generation: 19.62 t/s md5=a9b9c5f76eb6dc5c560487c0ced057ca dynamic cache (8253 experts
+[00:30:23] 384k-B1-p1 rc=0 generation: 14.68 t/s md5=a9b9c5f76eb6dc5c560487c0ced057ca dynamic cache (8253 experts
+[00:30:47] 384k-A-p2 rc=0 generation: 20.41 t/s md5=a9b9c5f76eb6dc5c560487c0ced057ca dynamic cache (8253 experts
+[00:31:14] 384k-B1-p2 rc=0 generation: 14.53 t/s md5=a9b9c5f76eb6dc5c560487c0ced057ca dynamic cache (8253 experts
+ALL DONE
+EXIT=0

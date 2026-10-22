@@ -1,0 +1,18 @@
+[22:58:15] start 2k-A ctx=4096 arm=A conf_sched=1
+[22:58:39] done  2k-A rc=0 generation: 11.69 t/s md5=a9b9c5f76eb6dc5c560487c0ced057ca
+[22:58:39] start 2k-C ctx=4096 arm=C conf_sched=1
+[22:59:03] done  2k-C rc=0 generation: 11.92 t/s md5=a9b9c5f76eb6dc5c560487c0ced057ca
+[22:59:03] start 2k-B0 ctx=4096 arm=B0 conf_sched=0
+[22:59:29] done  2k-B0 rc=0 generation: 9.01 t/s md5=a9b9c5f76eb6dc5c560487c0ced057ca
+[22:59:29] start 2k-B1 ctx=4096 arm=B1 conf_sched=1
+[22:59:54] done  2k-B1 rc=0 generation: 10.93 t/s md5=a9b9c5f76eb6dc5c560487c0ced057ca
+[22:59:54] start 8k-A ctx=16384 arm=A conf_sched=1
+[23:00:37] done  8k-A rc=0 generation: 11.53 t/s md5=132d54db71e77c4463052e237407feac
+[23:00:37] start 8k-C ctx=16384 arm=C conf_sched=1
+[23:01:21] done  8k-C rc=0 generation: 11.37 t/s md5=132d54db71e77c4463052e237407feac
+[23:01:21] start 8k-B0 ctx=16384 arm=B0 conf_sched=0
+[23:02:08] done  8k-B0 rc=0 generation: 8.79 t/s md5=132d54db71e77c4463052e237407feac
+[23:02:08] start 8k-B1 ctx=16384 arm=B1 conf_sched=1
+[23:02:54] done  8k-B1 rc=0 generation: 9.18 t/s md5=132d54db71e77c4463052e237407feac
+ALL DONE
+EXIT=0

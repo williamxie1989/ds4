@@ -1,0 +1,126 @@
+cc -O3 -g -mcpu=native -Wall -Wextra -std=c99 -Wno-unused-function -DDS4_TEST_HOOKS -I. -c -o tests/test_dspark_verify_parity.o tests/test_dspark_verify_parity.c
+cc -O3 -g -mcpu=native -Wall -Wextra -std=c99 -o tests/test_dspark_verify_parity tests/test_dspark_verify_parity.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_metal.o ds4_layer_pack.o ds4_engram.o -lm -pthread -framework Foundation -framework Metal -framework ImageIO -framework CoreGraphics -framework CoreFoundation
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: DSpark support model detected: gguf/DeepSeek-V4.1-Flash-DSpark.gguf (stages=3 block=5 markov_rank=256 tensors=78 missing=0 invalid=0 metadata_errors=0); use --dspark to enable experimental runtime decode
+ds4: V4.1 DSpark verifies greedy decode with one-token arithmetic; its output and session state equal ordinary decode
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: V4.1 static context buffers 4043.41 MiB (ctx=8205), Engram disk-only
+ds4: V4.1 static context buffers 4043.41 MiB (ctx=8205), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+dspark-parity: rows=5 ctx=8205 lengths=3 model=gguf/DeepSeek-V4.1-Flash-1017-Q2.gguf
+case0 len=2048 row=0 EXACT dmax=0 at=0 argmax=46841/46841 margin=1.89122 top1=27.72 d@argmax=0 consumed=668
+case0 len=2048 row=1 EXACT dmax=0 at=0 argmax=201/201 margin=3.8403 top1=30.7652 d@argmax=0 consumed=46841
+case0 len=2048 row=2 EXACT dmax=0 at=0 argmax=11648/11648 margin=3.93193 top1=29.2083 d@argmax=0 consumed=201
+case0 len=2048 row=3 EXACT dmax=0 at=0 argmax=1689/1689 margin=7.63222 top1=27.0291 d@argmax=0 consumed=11648
+case0 len=2048 row=4 EXACT dmax=0 at=0 argmax=265/265 margin=6.16954 top1=34.8977 d@argmax=0 consumed=1689
+case1 len=4096 row=0 EXACT dmax=0 at=0 argmax=201/201 margin=12.6119 top1=32.7297 d@argmax=0 consumed=80846
+case1 len=4096 row=1 EXACT dmax=0 at=0 argmax=82/82 margin=1.69367 top1=28.4624 d@argmax=0 consumed=201
+case1 len=4096 row=2 EXACT dmax=0 at=0 argmax=24246/24246 margin=0.218018 top1=22.6782 d@argmax=0 consumed=82
+case1 len=4096 row=3 EXACT dmax=0 at=0 argmax=14/14 margin=1.4906 top1=26.219 d@argmax=0 consumed=24246
+case1 len=4096 row=4 EXACT dmax=0 at=0 argmax=7487/7487 margin=2.70222 top1=24.1292 d@argmax=0 consumed=14
+case2 len=8192 row=0 EXACT dmax=0 at=0 argmax=337/337 margin=14.3147 top1=32.5691 d@argmax=0 consumed=77179
+case2 len=8192 row=1 EXACT dmax=0 at=0 argmax=2455/2455 margin=6.56417 top1=27.4129 d@argmax=0 consumed=337
+case2 len=8192 row=2 EXACT dmax=0 at=0 argmax=381/381 margin=10.0347 top1=29.8578 d@argmax=0 consumed=2455
+case2 len=8192 row=3 EXACT dmax=0 at=0 argmax=35597/35597 margin=8.83174 top1=29.1825 d@argmax=0 consumed=381
+case2 len=8192 row=4 EXACT dmax=0 at=0 argmax=14/14 margin=1.17718 top1=23.1994 d@argmax=0 consumed=35597
+dspark-parity: PARITY OK (rows not bit-identical: 0)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: DSpark support model detected: gguf/DeepSeek-V4.1-Flash-DSpark.gguf (stages=3 block=5 markov_rank=256 tensors=78 missing=0 invalid=0 metadata_errors=0); use --dspark to enable experimental runtime decode
+ds4: V4.1 DSpark verifies greedy decode with one-token arithmetic; its output and session state equal ordinary decode
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: V4.1 static context buffers 2160.24 MiB (ctx=4189), Engram disk-only
+ds4: V4.1 static context buffers 2160.24 MiB (ctx=4189), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+dspark-parity: rows=5 ctx=4189 lengths=1 model=gguf/DeepSeek-V4.1-Flash-1017-Q2.gguf
+sweep0 len=4096 row=0 EXACT dmax=0 at=0 argmax=201/201 margin=12.492 top1=32.6883 d@argmax=0 consumed=80846
+sweep0 len=4096 row=1 EXACT dmax=0 at=0 argmax=82/82 margin=1.77023 top1=28.412 d@argmax=0 consumed=201
+sweep0 len=4096 row=2 EXACT dmax=0 at=0 argmax=24246/24246 margin=0.304287 top1=22.8646 d@argmax=0 consumed=82
+sweep0 len=4096 row=3 EXACT dmax=0 at=0 argmax=14/14 margin=1.6079 top1=26.2008 d@argmax=0 consumed=24246
+sweep0 len=4096 row=4 EXACT dmax=0 at=0 argmax=7487/7487 margin=2.64615 top1=24.0344 d@argmax=0 consumed=14
+sweep1 len=4101 row=0 EXACT dmax=0 at=0 argmax=39336/39336 margin=1.31686 top1=30.889 d@argmax=0 consumed=7487
+sweep1 len=4101 row=1 EXACT dmax=0 at=0 argmax=5193/5193 margin=4.43063 top1=28.6221 d@argmax=0 consumed=39336
+sweep1 len=4101 row=2 EXACT dmax=0 at=0 argmax=260/260 margin=1.61339 top1=22.5922 d@argmax=0 consumed=5193
+sweep1 len=4101 row=3 EXACT dmax=0 at=0 argmax=3919/3919 margin=3.44609 top1=26.1049 d@argmax=0 consumed=260
+sweep1 len=4101 row=4 EXACT dmax=0 at=0 argmax=114555/114555 margin=1.94635 top1=26.0452 d@argmax=0 consumed=3919
+sweep2 len=4106 row=0 EXACT dmax=0 at=0 argmax=2091/2091 margin=7.79865 top1=31.56 d@argmax=0 consumed=114555
+sweep2 len=4106 row=1 EXACT dmax=0 at=0 argmax=14/14 margin=0.404667 top1=24.7289 d@argmax=0 consumed=2091
+sweep2 len=4106 row=2 EXACT dmax=0 at=0 argmax=39123/39123 margin=0.986237 top1=22.3612 d@argmax=0 consumed=14
+sweep2 len=4106 row=3 EXACT dmax=0 at=0 argmax=832/832 margin=0.365093 top1=23.2712 d@argmax=0 consumed=39123
+sweep2 len=4106 row=4 EXACT dmax=0 at=0 argmax=3694/3694 margin=11.152 top1=34.3693 d@argmax=0 consumed=832
+sweep3 len=4111 row=0 EXACT dmax=0 at=0 argmax=67/67 margin=0.699293 top1=26.4106 d@argmax=0 consumed=3694
+sweep3 len=4111 row=1 EXACT dmax=0 at=0 argmax=8898/8898 margin=1.1967 top1=21.6601 d@argmax=0 consumed=67
+sweep3 len=4111 row=2 EXACT dmax=0 at=0 argmax=37764/37764 margin=0.827999 top1=29.9814 d@argmax=0 consumed=8898
+sweep3 len=4111 row=3 EXACT dmax=0 at=0 argmax=15342/15342 margin=0.108635 top1=24.0686 d@argmax=0 consumed=37764
+sweep3 len=4111 row=4 EXACT dmax=0 at=0 argmax=14558/14558 margin=0.877819 top1=21.2896 d@argmax=0 consumed=15342
+sweep4 len=4116 row=0 EXACT dmax=0 at=0 argmax=1543/1543 margin=1.18537 top1=25.3641 d@argmax=0 consumed=14558
+sweep4 len=4116 row=1 EXACT dmax=0 at=0 argmax=201/201 margin=4.47544 top1=27.2863 d@argmax=0 consumed=1543
+sweep4 len=4116 row=2 EXACT dmax=0 at=0 argmax=78/78 margin=1.49453 top1=27.2184 d@argmax=0 consumed=201
+sweep4 len=4116 row=3 EXACT dmax=0 at=0 argmax=7518/7518 margin=6.9729 top1=27.6408 d@argmax=0 consumed=78
+sweep4 len=4116 row=4 EXACT dmax=0 at=0 argmax=14/14 margin=2.90291 top1=26.2397 d@argmax=0 consumed=7518
+sweep5 len=4121 row=0 EXACT dmax=0 at=0 argmax=312/312 margin=0.762945 top1=22.4572 d@argmax=0 consumed=14
+sweep5 len=4121 row=1 EXACT dmax=0 at=0 argmax=14/14 margin=1.74612 top1=22.9643 d@argmax=0 consumed=312
+sweep5 len=4121 row=2 EXACT dmax=0 at=0 argmax=399/399 margin=0.261738 top1=21.0093 d@argmax=0 consumed=14
+sweep5 len=4121 row=3 EXACT dmax=0 at=0 argmax=612/612 margin=0.232134 top1=21.7133 d@argmax=0 consumed=399
+sweep5 len=4121 row=4 EXACT dmax=0 at=0 argmax=28435/28435 margin=0.717474 top1=20.8015 d@argmax=0 consumed=612
+sweep6 len=4126 row=0 EXACT dmax=0 at=0 argmax=9/9 margin=2.20439 top1=25.8946 d@argmax=0 consumed=28435
+sweep6 len=4126 row=1 EXACT dmax=0 at=0 argmax=19498/19498 margin=0.0982475 top1=21.9562 d@argmax=0 consumed=9
+sweep6 len=4126 row=2 EXACT dmax=0 at=0 argmax=44624/44624 margin=1.34022 top1=26.9021 d@argmax=0 consumed=19498
+sweep6 len=4126 row=3 EXACT dmax=0 at=0 argmax=287/287 margin=1.56585 top1=24.8186 d@argmax=0 consumed=44624
+sweep6 len=4126 row=4 EXACT dmax=0 at=0 argmax=1298/1298 margin=4.69115 top1=28.0752 d@argmax=0 consumed=287
+sweep7 len=4131 row=0 EXACT dmax=0 at=0 argmax=25461/25461 margin=4.0727 top1=26.1978 d@argmax=0 consumed=1298
+sweep7 len=4131 row=1 EXACT dmax=0 at=0 argmax=17706/17706 margin=7.27721 top1=26.1749 d@argmax=0 consumed=25461
+sweep7 len=4131 row=2 EXACT dmax=0 at=0 argmax=14/14 margin=5.11243 top1=27.3309 d@argmax=0 consumed=17706
+sweep7 len=4131 row=3 EXACT dmax=0 at=0 argmax=38150/38150 margin=0.283007 top1=21.8181 d@argmax=0 consumed=14
+sweep7 len=4131 row=4 EXACT dmax=0 at=0 argmax=5193/5193 margin=1.78592 top1=26.9051 d@argmax=0 consumed=38150
+sweep8 len=4136 row=0 EXACT dmax=0 at=0 argmax=314/314 margin=1.32253 top1=22.694 d@argmax=0 consumed=5193
+sweep8 len=4136 row=1 EXACT dmax=0 at=0 argmax=9/9 margin=3.78229 top1=27.2483 d@argmax=0 consumed=314
+sweep8 len=4136 row=2 EXACT dmax=0 at=0 argmax=87092/87092 margin=1.92942 top1=23.0236 d@argmax=0 consumed=9
+sweep8 len=4136 row=3 EXACT dmax=0 at=0 argmax=14/14 margin=0.822063 top1=22.908 d@argmax=0 consumed=87092
+sweep8 len=4136 row=4 EXACT dmax=0 at=0 argmax=1639/1639 margin=1.31779 top1=24.1834 d@argmax=0 consumed=14
+sweep9 len=4141 row=0 EXACT dmax=0 at=0 argmax=2568/2568 margin=1.42399 top1=22.2397 d@argmax=0 consumed=1639
+sweep9 len=4141 row=1 EXACT dmax=0 at=0 argmax=312/312 margin=0.67988 top1=26.2445 d@argmax=0 consumed=2568
+sweep9 len=4141 row=2 EXACT dmax=0 at=0 argmax=201/201 margin=4.28054 top1=23.8996 d@argmax=0 consumed=312
+sweep9 len=4141 row=3 EXACT dmax=0 at=0 argmax=68/68 margin=0.226929 top1=28.836 d@argmax=0 consumed=201
+sweep9 len=4141 row=4 EXACT dmax=0 at=0 argmax=27185/27185 margin=3.02521 top1=25.4398 d@argmax=0 consumed=68
+sweep10 len=4146 row=0 EXACT dmax=0 at=0 argmax=14/14 margin=4.35992 top1=27.1619 d@argmax=0 consumed=27185
+sweep10 len=4146 row=1 EXACT dmax=0 at=0 argmax=2822/2822 margin=0.0393448 top1=23.7626 d@argmax=0 consumed=14
+sweep10 len=4146 row=2 EXACT dmax=0 at=0 argmax=716/716 margin=0.0831146 top1=21.2523 d@argmax=0 consumed=2822
+sweep10 len=4146 row=3 EXACT dmax=0 at=0 argmax=1086/1086 margin=0.161169 top1=21.0448 d@argmax=0 consumed=716
+sweep10 len=4146 row=4 EXACT dmax=0 at=0 argmax=997/997 margin=1.94334 top1=27.6066 d@argmax=0 consumed=1086
+sweep11 len=4151 row=0 EXACT dmax=0 at=0 argmax=37764/37764 margin=4.31077 top1=25.0087 d@argmax=0 consumed=997
+sweep11 len=4151 row=1 EXACT dmax=0 at=0 argmax=1298/1298 margin=0.29093 top1=25.0325 d@argmax=0 consumed=37764
+sweep11 len=4151 row=2 EXACT dmax=0 at=0 argmax=2408/2408 margin=0.0427475 top1=23.1736 d@argmax=0 consumed=1298
+sweep11 len=4151 row=3 EXACT dmax=0 at=0 argmax=19850/19850 margin=1.1031 top1=24.1021 d@argmax=0 consumed=2408
+sweep11 len=4151 row=4 EXACT dmax=0 at=0 argmax=8965/8965 margin=2.16233 top1=23.0979 d@argmax=0 consumed=19850
+sweep12 len=4156 row=0 EXACT dmax=0 at=0 argmax=81/81 margin=5.55186 top1=27.588 d@argmax=0 consumed=8965
+sweep12 len=4156 row=1 EXACT dmax=0 at=0 argmax=295/295 margin=1.68362 top1=23.5437 d@argmax=0 consumed=81
+sweep12 len=4156 row=2 EXACT dmax=0 at=0 argmax=50445/50445 margin=1.35627 top1=22.6231 d@argmax=0 consumed=295
+sweep12 len=4156 row=3 EXACT dmax=0 at=0 argmax=29/29 margin=2.47786 top1=23.1341 d@argmax=0 consumed=50445
+sweep12 len=4156 row=4 EXACT dmax=0 at=0 argmax=312/312 margin=1.83489 top1=25.3765 d@argmax=0 consumed=29
+sweep13 len=4161 row=0 EXACT dmax=0 at=0 argmax=14/14 margin=2.38035 top1=24.0299 d@argmax=0 consumed=312
+sweep13 len=4161 row=1 EXACT dmax=0 at=0 argmax=488/488 margin=0.993597 top1=22.8735 d@argmax=0 consumed=14
+sweep13 len=4161 row=2 EXACT dmax=0 at=0 argmax=104783/104783 margin=0.355743 top1=23.0461 d@argmax=0 consumed=488
+sweep13 len=4161 row=3 EXACT dmax=0 at=0 argmax=201/201 margin=2.86886 top1=28.1842 d@argmax=0 consumed=104783
+sweep13 len=4161 row=4 EXACT dmax=0 at=0 argmax=803/803 margin=0.608364 top1=30.3693 d@argmax=0 consumed=201
+sweep14 len=4166 row=0 EXACT dmax=0 at=0 argmax=1337/1337 margin=0.56613 top1=24.0327 d@argmax=0 consumed=803
+sweep14 len=4166 row=1 EXACT dmax=0 at=0 argmax=7317/7317 margin=2.11641 top1=27.5191 d@argmax=0 consumed=1337
+sweep14 len=4166 row=2 EXACT dmax=0 at=0 argmax=5193/5193 margin=6.18325 top1=25.8505 d@argmax=0 consumed=7317
+sweep14 len=4166 row=3 EXACT dmax=0 at=0 argmax=14/14 margin=5.70204 top1=26.4879 d@argmax=0 consumed=5193
+sweep14 len=4166 row=4 EXACT dmax=0 at=0 argmax=313/313 margin=0.451614 top1=22.0629 d@argmax=0 consumed=14
+sweep15 len=4171 row=0 EXACT dmax=0 at=0 argmax=2666/2666 margin=8.88961 top1=29.5729 d@argmax=0 consumed=313
+sweep15 len=4171 row=1 EXACT dmax=0 at=0 argmax=80846/80846 margin=1.15354 top1=23.8532 d@argmax=0 consumed=2666
+sweep15 len=4171 row=2 EXACT dmax=0 at=0 argmax=1298/1298 margin=2.38272 top1=25.5139 d@argmax=0 consumed=80846
+sweep15 len=4171 row=3 EXACT dmax=0 at=0 argmax=78147/78147 margin=3.3335 top1=27.3693 d@argmax=0 consumed=1298
+sweep15 len=4171 row=4 EXACT dmax=0 at=0 argmax=14/14 margin=3.55041 top1=27.0045 d@argmax=0 consumed=78147
+dspark-parity: PARITY OK (sweep of 16 blocks from 4096)
+EXIT=0

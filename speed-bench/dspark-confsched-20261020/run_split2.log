@@ -1,0 +1,5 @@
+[00:12:38] sp-cap5 rc=0 generation: 14.14 t/s
+[00:13:08] sp-cap1 rc=0 generation: 13.74 t/s
+[00:13:38] sp-cap5-c1024 rc=0 generation: 11.41 t/s
+ALL DONE
+EXIT=0

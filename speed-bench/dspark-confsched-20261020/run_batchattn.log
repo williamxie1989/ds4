@@ -1,0 +1,6 @@
+[00:07:46] 2k-ba-slow-b1 fast=0 rc=0 generation: 12.05 t/s md5=0766a19fffd1da55143b118d642d64e9
+[00:08:16] 2k-ba-fast-b1 fast=1 rc=0 generation: 13.90 t/s md5=2c37fb2a944075fc209e8074d5d9f808
+[00:08:45] 2k-ba-slow-b2 fast=0 rc=0 generation: 14.32 t/s md5=0766a19fffd1da55143b118d642d64e9
+[00:09:14] 2k-ba-fast-b2 fast=1 rc=0 generation: 14.46 t/s md5=2c37fb2a944075fc209e8074d5d9f808
+ALL DONE
+EXIT=0

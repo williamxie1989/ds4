@@ -1,0 +1,8 @@
+[23:57:01] 2k-A-c1-c4096 rc=0 generation: 16.16 t/s md5=0766a19fffd1da55143b118d642d64e9
+[23:57:31] 2k-B1-c1-c4096 rc=0 generation: 13.57 t/s md5=0766a19fffd1da55143b118d642d64e9
+[23:58:01] 2k-B0-c1-c4096 rc=0 generation: 13.92 t/s md5=0766a19fffd1da55143b118d642d64e9
+[23:58:28] 2k-A-c2-c4096 rc=0 generation: 16.46 t/s md5=0766a19fffd1da55143b118d642d64e9
+[23:58:57] 2k-B1-c2-c4096 rc=0 generation: 13.75 t/s md5=0766a19fffd1da55143b118d642d64e9
+[23:59:26] 2k-B0-c2-c4096 rc=0 generation: 14.20 t/s md5=0766a19fffd1da55143b118d642d64e9
+ALL DONE
+EXIT=0

@@ -1,0 +1,8 @@
+[00:14:48] 2k-base-1024-k1 cache=1024 rc=0 generation: 13.14 t/s md5=0766a19fffd1da55143b118d642d64e9
+[00:15:15] 2k-base-4096-k1 cache=4096 rc=0 generation: 16.64 t/s md5=0766a19fffd1da55143b118d642d64e9
+[00:15:43] 2k-base-8192-k1 cache=8192 rc=0 generation: 21.07 t/s md5=0766a19fffd1da55143b118d642d64e9
+[00:16:10] 2k-base-1024-k2 cache=1024 rc=0 generation: 14.25 t/s md5=0766a19fffd1da55143b118d642d64e9
+[00:16:36] 2k-base-4096-k2 cache=4096 rc=0 generation: 16.78 t/s md5=0766a19fffd1da55143b118d642d64e9
+[00:17:03] 2k-base-8192-k2 cache=8192 rc=0 generation: 20.99 t/s md5=0766a19fffd1da55143b118d642d64e9
+ALL DONE
+EXIT=0

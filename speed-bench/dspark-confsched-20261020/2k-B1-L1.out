@@ -1,0 +1,23 @@
+We need answer? User pasted text from Manzoni's I Promessi Sposi introduction. No explicit question. Need infer maybe wants continuation? We need respond appropriately. Could ask what they'd like. But maybe they expect analysis? The prompt is just text. We should acknowledge and offer help: summarize, translate, analyze, continue? Need not overdo. Since no question, ask clarification. But maybe they pasted excerpt and expect us to continue? We can say this is the introduction of I Promessi Sposi, where Manzoni frames the novel as a transcription of an old manuscript. Ask what they want: translation, summary, commentary, continuation? Need concise.
+
+Need maybe mention if they want continuation, the text cuts off mid-sentence "dal nostro manoscrit..." Could complete? Let's recall actual text. The introduction continues: "...ritto, e che nomineremo in progresso, e che ci servono di prova, che il nostro autore non abbia inventato, ma raccontato..." Hmm. Let's recall exact. The passage after "dal nostro manoscritto" maybe: "e che nomineremo in progresso, e che ci servono di prova, che il nostro autore non abbia inventato, ma raccontato." Let's search memory. The introduction of Promessi Sposi: after "abbiam perfino ritrovati alcuni personaggi, de' quali non avendo mai avuto notizia fuor che dal nostro manoscritto, e che nomineremo in progresso, e che ci servono di prova, che il nostro autore non abbia inventato, ma raccontato." Then "Il nostro autore, per esempio, dice..."? Let's recall.
+
+Full intro: "Una tale indagine dissipò tutti i nostri dubbi: a ogni passo ci abbattevamo in cose consimili, e in cose più forti: e, quello che ci parve più decisivo, abbiam perfino ritrovati alcuni personaggi, de' quali non avendo mai avuto notizia fuor che dal nostro manoscritto, e che nomineremo in progresso, e che ci servono di prova, che il nostro autore non abbia inventato, ma raccontato." Then "Il nostro autore, per esempio, dice..."? Actually after that: "Il nostro autore, per esempio, dice che..." Hmm.
+
+Maybe user just pasted. We can respond: "Stai leggendo l'introduzione de I Promessi Sposi. Vuoi che ti aiuti con parafrasi, analisi, traduzione, o continuazione?" Need maybe mention text is truncated. Since no question, best ask.
+
+Need answer in Italian likely. Use Italian. Keep concise. Could say "Hai incollato l'Introduzione... Il testo si interrompe a 'dal nostro manoscrit...'. Come posso aiutarti? Riassunto, parafrasi, analisi stilistica, traduzione, continuazione?" That's good.
+
+Need maybe not assume. Final only.
+Hai incollato l’**Introduzione de _I Promessi Sposi_**, dove Manzoni finge di aver trovato un manoscritto secentesco e di riscriverne la storia. Il testo si interrompe a:
+
+> «...fuor che dal nostro manoscrit...»
+
+Come vuoi che proceda? Posso:
+- continuare la trascrizione/riassunto da quel punto,
+- farne una **parafrasi** in italiano moderno,
+- spiegare **stile e temi** dell’introduzione,
+- tradurla in inglese,
+- analizzare la funzione del manoscritto e del “secentista” nella finzione narrativa.
+
+Dimmi quale di queste opzioni preferisci.

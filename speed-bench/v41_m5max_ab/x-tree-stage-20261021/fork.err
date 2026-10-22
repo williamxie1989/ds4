@@ -1,0 +1,295 @@
+ds4: env DS4_METAL_V41_STAGE_PROFILE=1 is set (probe): Per-stage timing of the V4.1 batched prefill layers, printed to stderr
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: metal SSD streaming cache target 72.00 GiB; effective 72.00 GiB = 7.12 GiB prefill headroom + 64.88 GiB dynamic cache (6999 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: streaming expert cache locked ahead: 6999 of 6999 slots, 17 slabs, 64.93 GiB in 1616 ms
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.40 GiB (raw 0.01 + compressed 0.39) + buffers 7.84 GiB + resident model 9.37 GiB + expert cache 64.88 GiB + prefill expert reserve 7.12 GiB = 89.61 GiB planned
+ds4: memory detail: ctx=65536 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=65537 backend=metal
+ds4-bench: context buffers 8438.77 MiB (ctx=65536, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=65537)
+ds4: V4.1 static context buffers 8438.77 MiB (ctx=65536), Engram disk-only
+ds4: V4.1 prefill reads experts into two explicit layer buffers
+ds4: V4.1 stage layer=0 pos=0 rows=2048 hc/engram=46.543 ms
+ds4: V4.1 stage layer=0 pos=0 rows=2048 attention projections=7.678 ms
+ds4: V4.1 stage layer=0 pos=0 rows=2048 attention core/index=52.535 ms
+ds4: V4.1 stage layer=0 pos=0 rows=2048 attention output=26.885 ms
+ds4: V4.1 stage layer=0 pos=0 rows=2048 hc/ffn norm=20.263 ms
+ds4: V4.1 stage layer=0 pos=0 rows=2048 shared/routed ffn=89.299 ms
+ds4: V4.1 stage layer=0 pos=0 rows=2048 hc expand=2.089 ms
+ds4: V4.1 stage layer=1 pos=0 rows=2048 hc/engram=50.000 ms
+ds4: V4.1 stage layer=1 pos=0 rows=2048 attention projections=6.290 ms
+ds4: V4.1 stage layer=1 pos=0 rows=2048 attention core/index=8.443 ms
+ds4: V4.1 stage layer=1 pos=0 rows=2048 attention output=8.856 ms
+ds4: V4.1 stage layer=1 pos=0 rows=2048 hc/ffn norm=4.015 ms
+ds4: V4.1 stage layer=1 pos=0 rows=2048 shared/routed ffn=75.958 ms
+ds4: V4.1 stage layer=1 pos=0 rows=2048 hc expand=2.147 ms
+ds4: V4.1 stage layer=2 pos=0 rows=2048 hc/engram=2.910 ms
+ds4: V4.1 stage layer=2 pos=0 rows=2048 attention projections=6.275 ms
+ds4: V4.1 stage layer=2 pos=0 rows=2048 attention core/index=85.824 ms
+ds4: V4.1 stage layer=2 pos=0 rows=2048 attention output=8.858 ms
+ds4: V4.1 stage layer=2 pos=0 rows=2048 hc/ffn norm=4.065 ms
+ds4: V4.1 stage layer=2 pos=0 rows=2048 shared/routed ffn=46.274 ms
+ds4: V4.1 stage layer=2 pos=0 rows=2048 hc expand=2.083 ms
+ds4: V4.1 stage layer=3 pos=0 rows=2048 hc/engram=2.971 ms
+ds4: V4.1 stage layer=3 pos=0 rows=2048 attention projections=6.636 ms
+ds4: V4.1 stage layer=3 pos=0 rows=2048 attention core/index=27.590 ms
+ds4: V4.1 stage layer=3 pos=0 rows=2048 attention output=8.636 ms
+ds4: V4.1 stage layer=3 pos=0 rows=2048 hc/ffn norm=4.350 ms
+ds4: V4.1 stage layer=3 pos=0 rows=2048 shared/routed ffn=44.248 ms
+ds4: V4.1 stage layer=3 pos=0 rows=2048 hc expand=2.091 ms
+ds4: V4.1 stage layer=4 pos=0 rows=2048 hc/engram=2.909 ms
+ds4: V4.1 stage layer=4 pos=0 rows=2048 attention projections=6.577 ms
+ds4: V4.1 stage layer=4 pos=0 rows=2048 attention core/index=26.503 ms
+ds4: V4.1 stage layer=4 pos=0 rows=2048 attention output=8.501 ms
+ds4: V4.1 stage layer=4 pos=0 rows=2048 hc/ffn norm=10.316 ms
+ds4: V4.1 stage layer=4 pos=0 rows=2048 shared/routed ffn=43.701 ms
+ds4: V4.1 stage layer=4 pos=0 rows=2048 hc expand=2.080 ms
+ds4: V4.1 stage layer=5 pos=0 rows=2048 hc/engram=8.922 ms
+ds4: V4.1 stage layer=5 pos=0 rows=2048 attention projections=8.838 ms
+ds4: V4.1 stage layer=5 pos=0 rows=2048 attention core/index=24.850 ms
+ds4: V4.1 stage layer=5 pos=0 rows=2048 attention output=8.755 ms
+ds4: V4.1 stage layer=5 pos=0 rows=2048 hc/ffn norm=4.001 ms
+ds4: V4.1 stage layer=5 pos=0 rows=2048 shared/routed ffn=43.967 ms
+ds4: V4.1 stage layer=5 pos=0 rows=2048 hc expand=2.092 ms
+ds4: V4.1 stage layer=6 pos=0 rows=2048 hc/engram=8.707 ms
+ds4: V4.1 stage layer=6 pos=0 rows=2048 attention projections=8.843 ms
+ds4: V4.1 stage layer=6 pos=0 rows=2048 attention core/index=24.795 ms
+ds4: V4.1 stage layer=6 pos=0 rows=2048 attention output=8.656 ms
+ds4: V4.1 stage layer=6 pos=0 rows=2048 hc/ffn norm=4.024 ms
+ds4: V4.1 stage layer=6 pos=0 rows=2048 shared/routed ffn=42.578 ms
+ds4: V4.1 stage layer=6 pos=0 rows=2048 hc expand=2.113 ms
+ds4: V4.1 stage layer=7 pos=0 rows=2048 hc/engram=2.949 ms
+ds4: V4.1 stage layer=7 pos=0 rows=2048 attention projections=6.228 ms
+ds4: V4.1 stage layer=7 pos=0 rows=2048 attention core/index=25.912 ms
+ds4: V4.1 stage layer=7 pos=0 rows=2048 attention output=8.656 ms
+ds4: V4.1 stage layer=7 pos=0 rows=2048 hc/ffn norm=4.084 ms
+ds4: V4.1 stage layer=7 pos=0 rows=2048 shared/routed ffn=42.077 ms
+ds4: V4.1 stage layer=7 pos=0 rows=2048 hc expand=2.049 ms
+ds4: V4.1 stage layer=8 pos=0 rows=2048 hc/engram=3.042 ms
+ds4: V4.1 stage layer=8 pos=0 rows=2048 attention projections=6.617 ms
+ds4: V4.1 stage layer=8 pos=0 rows=2048 attention core/index=77.793 ms
+ds4: V4.1 stage layer=8 pos=0 rows=2048 attention output=8.110 ms
+ds4: V4.1 stage layer=8 pos=0 rows=2048 hc/ffn norm=3.999 ms
+ds4: V4.1 stage layer=8 pos=0 rows=2048 shared/routed ffn=42.132 ms
+ds4: V4.1 stage layer=8 pos=0 rows=2048 hc expand=2.093 ms
+ds4: V4.1 stage layer=9 pos=0 rows=2048 hc/engram=8.801 ms
+ds4: V4.1 stage layer=9 pos=0 rows=2048 attention projections=8.973 ms
+ds4: V4.1 stage layer=9 pos=0 rows=2048 attention core/index=24.817 ms
+ds4: V4.1 stage layer=9 pos=0 rows=2048 attention output=8.624 ms
+ds4: V4.1 stage layer=9 pos=0 rows=2048 hc/ffn norm=3.983 ms
+ds4: V4.1 stage layer=9 pos=0 rows=2048 shared/routed ffn=42.623 ms
+ds4: V4.1 stage layer=9 pos=0 rows=2048 hc expand=2.045 ms
+ds4: V4.1 stage layer=10 pos=0 rows=2048 hc/engram=8.939 ms
+ds4: V4.1 stage layer=10 pos=0 rows=2048 attention projections=10.571 ms
+ds4: V4.1 stage layer=10 pos=0 rows=2048 attention core/index=25.901 ms
+ds4: V4.1 stage layer=10 pos=0 rows=2048 attention output=8.718 ms
+ds4: V4.1 stage layer=10 pos=0 rows=2048 hc/ffn norm=4.095 ms
+ds4: V4.1 stage layer=10 pos=0 rows=2048 shared/routed ffn=44.079 ms
+ds4: V4.1 stage layer=10 pos=0 rows=2048 hc expand=2.071 ms
+ds4: V4.1 stage layer=11 pos=0 rows=2048 hc/engram=3.053 ms
+ds4: V4.1 stage layer=11 pos=0 rows=2048 attention projections=6.568 ms
+ds4: V4.1 stage layer=11 pos=0 rows=2048 attention core/index=25.136 ms
+ds4: V4.1 stage layer=11 pos=0 rows=2048 attention output=8.709 ms
+ds4: V4.1 stage layer=11 pos=0 rows=2048 hc/ffn norm=4.061 ms
+ds4: V4.1 stage layer=11 pos=0 rows=2048 shared/routed ffn=43.155 ms
+ds4: V4.1 stage layer=11 pos=0 rows=2048 hc expand=2.042 ms
+ds4: V4.1 stage layer=12 pos=0 rows=2048 hc/engram=2.970 ms
+ds4: V4.1 stage layer=12 pos=0 rows=2048 attention projections=6.125 ms
+ds4: V4.1 stage layer=12 pos=0 rows=2048 attention core/index=25.935 ms
+ds4: V4.1 stage layer=12 pos=0 rows=2048 attention output=8.707 ms
+ds4: V4.1 stage layer=12 pos=0 rows=2048 hc/ffn norm=4.025 ms
+ds4: V4.1 stage layer=12 pos=0 rows=2048 shared/routed ffn=43.747 ms
+ds4: V4.1 stage layer=12 pos=0 rows=2048 hc expand=2.080 ms
+ds4: V4.1 stage layer=13 pos=0 rows=2048 hc/engram=3.070 ms
+ds4: V4.1 stage layer=13 pos=0 rows=2048 attention projections=6.561 ms
+ds4: V4.1 stage layer=13 pos=0 rows=2048 attention core/index=25.523 ms
+ds4: V4.1 stage layer=13 pos=0 rows=2048 attention output=8.489 ms
+ds4: V4.1 stage layer=13 pos=0 rows=2048 hc/ffn norm=3.986 ms
+ds4: V4.1 stage layer=13 pos=0 rows=2048 shared/routed ffn=42.271 ms
+ds4: V4.1 stage layer=13 pos=0 rows=2048 hc expand=2.119 ms
+ds4: V4.1 stage layer=14 pos=0 rows=2048 hc/engram=36.978 ms
+ds4: V4.1 stage layer=14 pos=0 rows=2048 attention projections=6.226 ms
+ds4: V4.1 stage layer=14 pos=0 rows=2048 attention core/index=77.508 ms
+ds4: V4.1 stage layer=14 pos=0 rows=2048 attention output=8.177 ms
+ds4: V4.1 stage layer=14 pos=0 rows=2048 hc/ffn norm=3.967 ms
+ds4: V4.1 stage layer=14 pos=0 rows=2048 shared/routed ffn=56.714 ms
+ds4: V4.1 stage layer=14 pos=0 rows=2048 hc expand=2.068 ms
+ds4: V4.1 stage layer=15 pos=0 rows=2048 hc/engram=2.513 ms
+ds4: V4.1 stage layer=15 pos=0 rows=2048 attention projections=6.251 ms
+ds4: V4.1 stage layer=15 pos=0 rows=2048 attention core/index=25.083 ms
+ds4: V4.1 stage layer=15 pos=0 rows=2048 attention output=8.543 ms
+ds4: V4.1 stage layer=15 pos=0 rows=2048 hc/ffn norm=4.094 ms
+ds4: V4.1 stage layer=15 pos=0 rows=2048 shared/routed ffn=43.114 ms
+ds4: V4.1 stage layer=15 pos=0 rows=2048 hc expand=2.082 ms
+ds4: V4.1 stage layer=16 pos=0 rows=2048 hc/engram=8.707 ms
+ds4: V4.1 stage layer=16 pos=0 rows=2048 attention projections=8.901 ms
+ds4: V4.1 stage layer=16 pos=0 rows=2048 attention core/index=24.859 ms
+ds4: V4.1 stage layer=16 pos=0 rows=2048 attention output=8.757 ms
+ds4: V4.1 stage layer=16 pos=0 rows=2048 hc/ffn norm=4.053 ms
+ds4: V4.1 stage layer=16 pos=0 rows=2048 shared/routed ffn=39.727 ms
+ds4: V4.1 stage layer=16 pos=0 rows=2048 hc expand=2.194 ms
+ds4: V4.1 stage layer=17 pos=0 rows=2048 hc/engram=8.706 ms
+ds4: V4.1 stage layer=17 pos=0 rows=2048 attention projections=8.852 ms
+ds4: V4.1 stage layer=17 pos=0 rows=2048 attention core/index=25.353 ms
+ds4: V4.1 stage layer=17 pos=0 rows=2048 attention output=8.926 ms
+ds4: V4.1 stage layer=17 pos=0 rows=2048 hc/ffn norm=4.024 ms
+ds4: V4.1 stage layer=17 pos=0 rows=2048 shared/routed ffn=42.488 ms
+ds4: V4.1 stage layer=17 pos=0 rows=2048 hc expand=2.041 ms
+ds4: V4.1 stage layer=18 pos=0 rows=2048 hc/engram=3.086 ms
+ds4: V4.1 stage layer=18 pos=0 rows=2048 attention projections=6.621 ms
+ds4: V4.1 stage layer=18 pos=0 rows=2048 attention core/index=25.304 ms
+ds4: V4.1 stage layer=18 pos=0 rows=2048 attention output=8.864 ms
+ds4: V4.1 stage layer=18 pos=0 rows=2048 hc/ffn norm=4.033 ms
+ds4: V4.1 stage layer=18 pos=0 rows=2048 shared/routed ffn=41.120 ms
+ds4: V4.1 stage layer=18 pos=0 rows=2048 hc expand=2.061 ms
+ds4: V4.1 stage layer=19 pos=0 rows=2048 hc/engram=3.019 ms
+ds4: V4.1 stage layer=19 pos=0 rows=2048 attention projections=6.747 ms
+ds4: V4.1 stage layer=19 pos=0 rows=2048 attention core/index=25.480 ms
+ds4: V4.1 stage layer=19 pos=0 rows=2048 attention output=8.709 ms
+ds4: V4.1 stage layer=19 pos=0 rows=2048 hc/ffn norm=4.019 ms
+ds4: V4.1 stage layer=19 pos=0 rows=2048 shared/routed ffn=42.503 ms
+ds4: V4.1 stage layer=19 pos=0 rows=2048 hc expand=2.054 ms
+ds4: V4.1 stage layer=20 pos=0 rows=2048 hc/engram=2.857 ms
+ds4: V4.1 stage layer=20 pos=0 rows=2048 attention projections=6.749 ms
+ds4: V4.1 stage layer=20 pos=0 rows=2048 attention core/index=70.778 ms
+ds4: V4.1 stage layer=20 pos=0 rows=2048 attention output=8.177 ms
+ds4: V4.1 stage layer=20 pos=0 rows=2048 hc/ffn norm=4.146 ms
+ds4: V4.1 stage layer=20 pos=0 rows=2048 shared/routed ffn=39.889 ms
+ds4: V4.1 stage layer=20 pos=0 rows=2048 hc expand=2.061 ms
+ds4: V4.1 stage layer=21 pos=0 rows=2048 hc/engram=8.785 ms
+ds4: V4.1 stage layer=21 pos=0 rows=2048 attention projections=8.220 ms
+ds4: V4.1 stage layer=21 pos=0 rows=2048 attention core/index=27.368 ms
+ds4: V4.1 stage layer=21 pos=0 rows=2048 attention output=8.525 ms
+ds4: V4.1 stage layer=21 pos=0 rows=2048 hc/ffn norm=4.013 ms
+ds4: V4.1 stage layer=21 pos=0 rows=2048 shared/routed ffn=42.387 ms
+ds4: V4.1 stage layer=21 pos=0 rows=2048 hc expand=2.098 ms
+ds4: V4.1 stage layer=22 pos=0 rows=2048 hc/engram=8.750 ms
+ds4: V4.1 stage layer=22 pos=0 rows=2048 attention projections=8.831 ms
+ds4: V4.1 stage layer=22 pos=0 rows=2048 attention core/index=27.550 ms
+ds4: V4.1 stage layer=22 pos=0 rows=2048 attention output=8.519 ms
+ds4: V4.1 stage layer=22 pos=0 rows=2048 hc/ffn norm=4.075 ms
+ds4: V4.1 stage layer=22 pos=0 rows=2048 shared/routed ffn=40.389 ms
+ds4: V4.1 stage layer=22 pos=0 rows=2048 hc expand=2.072 ms
+ds4: V4.1 stage layer=23 pos=0 rows=2048 hc/engram=3.336 ms
+ds4: V4.1 stage layer=23 pos=0 rows=2048 attention projections=6.577 ms
+ds4: V4.1 stage layer=23 pos=0 rows=2048 attention core/index=28.873 ms
+ds4: V4.1 stage layer=23 pos=0 rows=2048 attention output=8.810 ms
+ds4: V4.1 stage layer=23 pos=0 rows=2048 hc/ffn norm=3.975 ms
+ds4: V4.1 stage layer=23 pos=0 rows=2048 shared/routed ffn=44.724 ms
+ds4: V4.1 stage layer=23 pos=0 rows=2048 hc expand=2.022 ms
+ds4: V4.1 stage layer=24 pos=0 rows=2048 hc/engram=3.187 ms
+ds4: V4.1 stage layer=24 pos=0 rows=2048 attention projections=6.864 ms
+ds4: V4.1 stage layer=24 pos=0 rows=2048 attention core/index=58.371 ms
+ds4: V4.1 stage layer=24 pos=0 rows=2048 attention output=8.438 ms
+ds4: V4.1 stage layer=24 pos=0 rows=2048 hc/ffn norm=3.999 ms
+ds4: V4.1 stage layer=24 pos=0 rows=2048 shared/routed ffn=41.125 ms
+ds4: V4.1 stage layer=24 pos=0 rows=2048 hc expand=2.201 ms
+ds4: V4.1 stage layer=25 pos=0 rows=2048 hc/engram=8.726 ms
+ds4: V4.1 stage layer=25 pos=0 rows=2048 attention projections=8.679 ms
+ds4: V4.1 stage layer=25 pos=0 rows=2048 attention core/index=27.661 ms
+ds4: V4.1 stage layer=25 pos=0 rows=2048 attention output=8.791 ms
+ds4: V4.1 stage layer=25 pos=0 rows=2048 hc/ffn norm=4.032 ms
+ds4: V4.1 stage layer=25 pos=0 rows=2048 shared/routed ffn=40.848 ms
+ds4: V4.1 stage layer=25 pos=0 rows=2048 hc expand=2.076 ms
+ds4: V4.1 stage layer=26 pos=0 rows=2048 hc/engram=9.142 ms
+ds4: V4.1 stage layer=26 pos=0 rows=2048 attention projections=8.819 ms
+ds4: V4.1 stage layer=26 pos=0 rows=2048 attention core/index=27.368 ms
+ds4: V4.1 stage layer=26 pos=0 rows=2048 attention output=8.525 ms
+ds4: V4.1 stage layer=26 pos=0 rows=2048 hc/ffn norm=4.005 ms
+ds4: V4.1 stage layer=26 pos=0 rows=2048 shared/routed ffn=43.558 ms
+ds4: V4.1 stage layer=26 pos=0 rows=2048 hc expand=2.049 ms
+ds4: V4.1 stage layer=27 pos=0 rows=2048 hc/engram=3.158 ms
+ds4: V4.1 stage layer=27 pos=0 rows=2048 attention projections=6.550 ms
+ds4: V4.1 stage layer=27 pos=0 rows=2048 attention core/index=28.022 ms
+ds4: V4.1 stage layer=27 pos=0 rows=2048 attention output=8.731 ms
+ds4: V4.1 stage layer=27 pos=0 rows=2048 hc/ffn norm=4.037 ms
+ds4: V4.1 stage layer=27 pos=0 rows=2048 shared/routed ffn=41.882 ms
+ds4: V4.1 stage layer=27 pos=0 rows=2048 hc expand=2.105 ms
+ds4: V4.1 stage layer=28 pos=0 rows=2048 hc/engram=8.848 ms
+ds4: V4.1 stage layer=28 pos=0 rows=2048 attention projections=8.897 ms
+ds4: V4.1 stage layer=28 pos=0 rows=2048 attention core/index=59.763 ms
+ds4: V4.1 stage layer=28 pos=0 rows=2048 attention output=8.233 ms
+ds4: V4.1 stage layer=28 pos=0 rows=2048 hc/ffn norm=3.995 ms
+ds4: V4.1 stage layer=28 pos=0 rows=2048 shared/routed ffn=42.595 ms
+ds4: V4.1 stage layer=28 pos=0 rows=2048 hc expand=2.088 ms
+ds4: V4.1 stage layer=29 pos=0 rows=2048 hc/engram=8.703 ms
+ds4: V4.1 stage layer=29 pos=0 rows=2048 attention projections=8.857 ms
+ds4: V4.1 stage layer=29 pos=0 rows=2048 attention core/index=27.320 ms
+ds4: V4.1 stage layer=29 pos=0 rows=2048 attention output=8.559 ms
+ds4: V4.1 stage layer=29 pos=0 rows=2048 hc/ffn norm=3.986 ms
+ds4: V4.1 stage layer=29 pos=0 rows=2048 shared/routed ffn=42.092 ms
+ds4: V4.1 stage layer=29 pos=0 rows=2048 hc expand=2.122 ms
+ds4: V4.1 stage layer=30 pos=0 rows=2048 hc/engram=8.961 ms
+ds4: V4.1 stage layer=30 pos=0 rows=2048 attention projections=8.814 ms
+ds4: V4.1 stage layer=30 pos=0 rows=2048 attention core/index=27.338 ms
+ds4: V4.1 stage layer=30 pos=0 rows=2048 attention output=8.491 ms
+ds4: V4.1 stage layer=30 pos=0 rows=2048 hc/ffn norm=3.974 ms
+ds4: V4.1 stage layer=30 pos=0 rows=2048 shared/routed ffn=42.582 ms
+ds4: V4.1 stage layer=30 pos=0 rows=2048 hc expand=2.098 ms
+ds4: V4.1 stage layer=31 pos=0 rows=2048 hc/engram=8.878 ms
+ds4: V4.1 stage layer=31 pos=0 rows=2048 attention projections=9.870 ms
+ds4: V4.1 stage layer=31 pos=0 rows=2048 attention core/index=28.471 ms
+ds4: V4.1 stage layer=31 pos=0 rows=2048 attention output=8.516 ms
+ds4: V4.1 stage layer=31 pos=0 rows=2048 hc/ffn norm=4.076 ms
+ds4: V4.1 stage layer=31 pos=0 rows=2048 shared/routed ffn=41.624 ms
+ds4: V4.1 stage layer=31 pos=0 rows=2048 hc expand=2.079 ms
+ds4: V4.1 stage layer=32 pos=0 rows=2048 hc/engram=8.792 ms
+ds4: V4.1 stage layer=32 pos=0 rows=2048 attention projections=8.884 ms
+ds4: V4.1 stage layer=32 pos=0 rows=2048 attention core/index=58.203 ms
+ds4: V4.1 stage layer=32 pos=0 rows=2048 attention output=8.294 ms
+ds4: V4.1 stage layer=32 pos=0 rows=2048 hc/ffn norm=4.166 ms
+ds4: V4.1 stage layer=32 pos=0 rows=2048 shared/routed ffn=43.027 ms
+ds4: V4.1 stage layer=32 pos=0 rows=2048 hc expand=2.100 ms
+ds4: V4.1 stage layer=33 pos=0 rows=2048 hc/engram=3.313 ms
+ds4: V4.1 stage layer=33 pos=0 rows=2048 attention projections=6.848 ms
+ds4: V4.1 stage layer=33 pos=0 rows=2048 attention core/index=27.999 ms
+ds4: V4.1 stage layer=33 pos=0 rows=2048 attention output=9.283 ms
+ds4: V4.1 stage layer=33 pos=0 rows=2048 hc/ffn norm=4.506 ms
+ds4: V4.1 stage layer=33 pos=0 rows=2048 shared/routed ffn=45.294 ms
+ds4: V4.1 stage layer=33 pos=0 rows=2048 hc expand=2.140 ms
+ds4: V4.1 stage layer=34 pos=0 rows=2048 hc/engram=2.677 ms
+ds4: V4.1 stage layer=34 pos=0 rows=2048 attention projections=6.748 ms
+ds4: V4.1 stage layer=34 pos=0 rows=2048 attention core/index=28.431 ms
+ds4: V4.1 stage layer=34 pos=0 rows=2048 attention output=9.613 ms
+ds4: V4.1 stage layer=34 pos=0 rows=2048 hc/ffn norm=4.559 ms
+ds4: V4.1 stage layer=34 pos=0 rows=2048 shared/routed ffn=45.079 ms
+ds4: V4.1 stage layer=34 pos=0 rows=2048 hc expand=2.137 ms
+ds4: V4.1 stage layer=35 pos=0 rows=2048 hc/engram=2.840 ms
+ds4: V4.1 stage layer=35 pos=0 rows=2048 attention projections=6.827 ms
+ds4: V4.1 stage layer=35 pos=0 rows=2048 attention core/index=28.055 ms
+ds4: V4.1 stage layer=35 pos=0 rows=2048 attention output=10.168 ms
+ds4: V4.1 stage layer=35 pos=0 rows=2048 hc/ffn norm=4.448 ms
+ds4: V4.1 stage layer=35 pos=0 rows=2048 shared/routed ffn=44.428 ms
+ds4: V4.1 stage layer=35 pos=0 rows=2048 hc expand=2.157 ms
+ds4: V4.1 stage layer=36 pos=0 rows=2048 hc/engram=3.044 ms
+ds4: V4.1 stage layer=36 pos=0 rows=2048 attention projections=6.977 ms
+ds4: V4.1 stage layer=36 pos=0 rows=2048 attention core/index=58.492 ms
+ds4: V4.1 stage layer=36 pos=0 rows=2048 attention output=8.195 ms
+ds4: V4.1 stage layer=36 pos=0 rows=2048 hc/ffn norm=4.013 ms
+ds4: V4.1 stage layer=36 pos=0 rows=2048 shared/routed ffn=44.030 ms
+ds4: V4.1 stage layer=36 pos=0 rows=2048 hc expand=2.029 ms
+ds4: V4.1 stage layer=37 pos=0 rows=2048 hc/engram=2.742 ms
+ds4: V4.1 stage layer=37 pos=0 rows=2048 attention projections=6.650 ms
+ds4: V4.1 stage layer=37 pos=0 rows=2048 attention core/index=28.118 ms
+ds4: V4.1 stage layer=37 pos=0 rows=2048 attention output=9.707 ms
+ds4: V4.1 stage layer=37 pos=0 rows=2048 hc/ffn norm=4.567 ms
+ds4: V4.1 stage layer=37 pos=0 rows=2048 shared/routed ffn=45.830 ms
+ds4: V4.1 stage layer=37 pos=0 rows=2048 hc expand=2.074 ms
+ds4: V4.1 stage layer=38 pos=0 rows=2048 hc/engram=3.022 ms
+ds4: V4.1 stage layer=38 pos=0 rows=2048 attention projections=6.877 ms
+ds4: V4.1 stage layer=38 pos=0 rows=2048 attention core/index=28.054 ms
+ds4: V4.1 stage layer=38 pos=0 rows=2048 attention output=9.765 ms
+ds4: V4.1 stage layer=38 pos=0 rows=2048 hc/ffn norm=4.495 ms
+ds4: V4.1 stage layer=38 pos=0 rows=2048 shared/routed ffn=44.566 ms
+ds4: V4.1 stage layer=38 pos=0 rows=2048 hc expand=2.074 ms
+ds4: V4.1 stage layer=39 pos=0 rows=2048 hc/engram=2.445 ms
+ds4: V4.1 stage layer=39 pos=0 rows=2048 attention projections=6.240 ms
+ds4: V4.1 stage layer=39 pos=0 rows=2048 attention core/index=27.638 ms
+ds4: V4.1 stage layer=39 pos=0 rows=2048 attention output=8.597 ms
+ds4: V4.1 stage layer=39 pos=0 rows=2048 hc/ffn norm=3.996 ms
+ds4: V4.1 stage layer=39 pos=0 rows=2048 shared/routed ffn=42.513 ms
+ds4: V4.1 stage layer=39 pos=0 rows=2048 hc expand=2.030 ms

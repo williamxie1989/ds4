@@ -1,0 +1,15 @@
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.35 GiB (raw 0.32 + compressed 0.02) + buffers 1.76 GiB + resident model 9.37 GiB + expert cache 9.49 GiB = 20.96 GiB planned
+ds4: memory detail: ctx=4096 prefill_cap=2048 raw_kv_rows=128 compressed_kv_rows=4097 backend=metal
+ds4: memory: KV 0.35 GiB (raw 0.32 + compressed 0.02) + buffers 1.76 GiB = 2.10 GiB context
+ds4: memory detail: ctx=4096 prefill_cap=2048 raw_kv_rows=128 compressed_kv_rows=4097 backend=metal
+ds4: V4.1 static context buffers 2152.24 MiB (ctx=4096), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+processing 1896 input tokens: 1896/1896 (100.0%)
+ds4: prefill: 158.34 t/s, generation: 13.00 t/s

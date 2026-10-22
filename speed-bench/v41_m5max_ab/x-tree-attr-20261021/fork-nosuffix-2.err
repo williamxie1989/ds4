@@ -1,0 +1,16 @@
+ds4: env DS4_METAL_DISABLE_V41_DECODER_SUFFIX=1 is set (disable): Turns off the wide-sweep decoder suffix (layers 20-39 on needed rows only) and deferred decoder
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: metal SSD streaming cache target 72.00 GiB; effective 72.00 GiB = 7.12 GiB prefill headroom + 64.88 GiB dynamic cache (6999 experts, 9.49 MiB each)
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: streaming expert cache locked ahead: 6999 of 6999 slots, 17 slabs, 64.93 GiB in 1656 ms
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.40 GiB (raw 0.01 + compressed 0.39) + buffers 7.84 GiB + resident model 9.37 GiB + expert cache 64.88 GiB + prefill expert reserve 7.12 GiB = 89.61 GiB planned
+ds4: memory detail: ctx=65536 prefill_cap=8192 raw_kv_rows=128 compressed_kv_rows=65537 backend=metal
+ds4-bench: context buffers 8438.77 MiB (ctx=65536, backend=metal, prefill_chunk=8192, raw_kv_rows=128, compressed_kv_rows=65537)
+ds4: V4.1 static context buffers 8438.77 MiB (ctx=65536), Engram disk-only
+ds4: V4.1 prefill reads experts into two explicit layer buffers
+ds4: V4.1 prefill reads experts into two explicit layer buffers

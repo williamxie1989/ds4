@@ -1,0 +1,38 @@
+ds4 A/B  2026-10-21 12:13 UTC  ?  monitor none
+A  /private/tmp/ds4-base  ?
+B  /Users/xieyongliang/ds4  89e068c (uncommitted changes)
+model  DeepSeek-V4.1-Flash-1017-Q2.gguf (/Users/xieyongliang/ds4/gguf/DeepSeek-V4.1-Flash-1017-Q2.gguf)   env  -
+streaming  cache 72GB -> dynamic 64.88 GiB, 6999 expert slots; ctx 65536
+time  1330 s of 1400 s   runs 22 (2 untimed; first timed run at 122 s)   pairs 10 valid, 0 dropped
+correctness  PASS (tokens; bitwise)
+
+kind          metric                          A        B    gain  95% CI            n
+decode        decode 2048                  22.2     22.3   +0.3%  -0.5% .. +2.9%    10  (detail)
+decode        first token 2048 ms          69.8     75.4   -6.5%  -9.9% .. -4.1%    10
+decode        decode 8192                  22.9     23.1   +0.5%  -0.5% .. +1.9%    10  (detail)
+decode        first token 8192 ms         205.7    203.1   +5.1%  -1.5% .. +15.0%   10
+
+cache decode: hit rate A 0.974 B 0.974
+
+run 3 A decode: unjudged: no GPU monitor
+run 4 B decode: unjudged: no GPU monitor
+run 5 B decode: unjudged: no GPU monitor
+run 6 A decode: unjudged: no GPU monitor
+run 7 A decode: unjudged: no GPU monitor
+run 8 B decode: unjudged: no GPU monitor
+run 9 B decode: unjudged: no GPU monitor
+run 10 A decode: unjudged: no GPU monitor
+run 11 A decode: unjudged: no GPU monitor
+run 12 B decode: unjudged: no GPU monitor
+run 13 B decode: unjudged: no GPU monitor
+run 14 A decode: unjudged: no GPU monitor
+run 15 A decode: unjudged: no GPU monitor
+run 16 B decode: unjudged: no GPU monitor
+run 17 B decode: unjudged: no GPU monitor
+run 18 A decode: unjudged: no GPU monitor
+run 19 A decode: unjudged: no GPU monitor
+run 20 B decode: unjudged: no GPU monitor
+run 21 B decode: unjudged: no GPU monitor
+run 22 A decode: unjudged: no GPU monitor
+
+record row: none (bench arguments, a B-only environment, B's cache or the allocated context make the figures incomparable with the record)

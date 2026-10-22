@@ -1,0 +1,33 @@
+cc -O3 -g -mcpu=native -Wall -Wextra -std=c99 -Wno-unused-function -DDS4_TEST_HOOKS -I. -c -o tests/test_dspark_verify_parity.o tests/test_dspark_verify_parity.c
+cc -O3 -g -mcpu=native -Wall -Wextra -std=c99 -o tests/test_dspark_verify_parity tests/test_dspark_verify_parity.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_metal.o ds4_layer_pack.o ds4_engram.o -lm -pthread -framework Foundation -framework Metal -framework ImageIO -framework CoreGraphics -framework CoreFoundation
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: DSpark support model detected: gguf/DeepSeek-V4.1-Flash-DSpark.gguf (stages=3 block=5 markov_rank=256 tensors=78 missing=0 invalid=0 metadata_errors=0); use --dspark to enable experimental runtime decode
+ds4: V4.1 DSpark verifies greedy decode with one-token arithmetic; its output and session state equal ordinary decode
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: V4.1 static context buffers 4043.41 MiB (ctx=8205), Engram disk-only
+ds4: V4.1 static context buffers 4043.41 MiB (ctx=8205), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+dspark-parity: rows=5 ctx=8205 lengths=3 model=gguf/DeepSeek-V4.1-Flash-1017-Q2.gguf
+case0 len=2048 row=0 DIFF  dmax=0.289771 at=15776 argmax=46841/46841 margin=1.89122 top1=27.72 d@argmax=-0.0434246 consumed=668
+case0 len=2048 row=1 DIFF  dmax=0.320245 at=287 argmax=201/201 margin=3.8403 top1=30.7652 d@argmax=0.120981 consumed=46841
+case0 len=2048 row=2 DIFF  dmax=0.389921 at=77893 argmax=11648/11648 margin=3.93193 top1=29.2083 d@argmax=0.133844 consumed=201
+case0 len=2048 row=3 DIFF  dmax=1.00927 at=20762 argmax=1689/1689 margin=7.63222 top1=27.0291 d@argmax=0.340816 consumed=11648
+case0 len=2048 row=4 DIFF  dmax=3.11945 at=26275 argmax=265/265 margin=6.16954 top1=34.8977 d@argmax=0.0441742 consumed=1689
+case1 len=4096 row=0 DIFF  dmax=0.234987 at=36672 argmax=201/201 margin=12.6119 top1=32.7297 d@argmax=-0.179462 consumed=80846
+case1 len=4096 row=1 DIFF  dmax=0.847083 at=107985 argmax=82/82 margin=1.69367 top1=28.4624 d@argmax=-0.113834 consumed=201
+case1 len=4096 row=2 DIFF  dmax=1.68614 at=45945 argmax=24246/909 (FLIP) margin=0.218018 top1=22.6782 d@argmax=-0.619137 consumed=82
+case1 len=4096 row=3 DIFF  dmax=0.585991 at=76916 argmax=14/14 margin=1.4906 top1=26.219 d@argmax=0.078661 consumed=24246
+case1 len=4096 row=4 DIFF  dmax=0.483788 at=91533 argmax=7487/7487 margin=2.70222 top1=24.1292 d@argmax=-0.0995617 consumed=14
+case2 len=8192 row=0 DIFF  dmax=0.694978 at=30505 argmax=337/337 margin=14.3147 top1=32.5691 d@argmax=0.184113 consumed=77179
+case2 len=8192 row=1 DIFF  dmax=1.0885 at=42548 argmax=2455/2455 margin=6.56417 top1=27.4129 d@argmax=0.117353 consumed=337
+case2 len=8192 row=2 DIFF  dmax=2.22244 at=72638 argmax=381/381 margin=10.0347 top1=29.8578 d@argmax=-1.32534 consumed=2455
+case2 len=8192 row=3 DIFF  dmax=1.81054 at=29255 argmax=35597/35597 margin=8.83174 top1=29.1825 d@argmax=-0.299097 consumed=381
+case2 len=8192 row=4 DIFF  dmax=1.98337 at=19041 argmax=14/14 margin=1.17718 top1=23.1994 d@argmax=-0.00805283 consumed=35597
+dspark-parity: PARITY BROKEN (rows not bit-identical: 15)
+make: *** [dspark-verify-parity] Error 1
+EXIT=2

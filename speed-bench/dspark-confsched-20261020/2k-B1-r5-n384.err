@@ -1,0 +1,18 @@
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: DSpark support model detected: gguf/DeepSeek-V4.1-Flash-DSpark.gguf (stages=3 block=5 markov_rank=256 tensors=78 missing=0 invalid=0 metadata_errors=0); use --dspark to enable experimental runtime decode
+ds4: V4.1 DSpark verifies greedy decode with one-token arithmetic; its output and session state equal ordinary decode
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: Metal SSD static weights locked 9.37 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (569 spans, 9.37 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.35 GiB (raw 0.32 + compressed 0.02) + buffers 1.76 GiB + resident model 9.37 GiB + expert cache 9.49 GiB + drafter weights/buffers 8.10 GiB = 29.07 GiB planned
+ds4: memory detail: ctx=4096 prefill_cap=2048 raw_kv_rows=128 compressed_kv_rows=4097 backend=metal
+ds4: memory: KV 0.35 GiB (raw 0.32 + compressed 0.02) + buffers 1.76 GiB = 2.10 GiB context
+ds4: memory detail: ctx=4096 prefill_cap=2048 raw_kv_rows=128 compressed_kv_rows=4097 backend=metal
+ds4: V4.1 static context buffers 2152.24 MiB (ctx=4096), Engram disk-only
+ds4: DSV4 prefill indexed attention engaged on tensor-unit tiles (kernel_dsv4_indexed_mixed_attention_heads16_nax)
+processing 1896 input tokens: 1896/1896 (100.0%)
+ds4: prefill: 164.16 t/s, generation: 12.06 t/s
+ds4: DSpark stats cycles=380 first_tokens=380 proposed=4 accepted_draft=4 accept_rate=100.00% avg_accept=0.011 seed_batches=0 full=2 partial=0 direct_full=2 direct_partial=0 replay_fallbacks=0 miss_first=0 no_draft=378 no_room=0 invalid=0 scheduler_skips=0 tail_skips=0 verifier_unavailable=0 errors=0 time_ms propose=1717.674 prop_stage0=0.000 prop_setup=0.000 prop_cache=0.000 prop_chain=0.000 prop_hidden=0.000 prop_conf0=0.000 prop_logits=0.000 prop_markov=0.000 prop_confidence=0.000 snapshot=0.000 verify=854.845 verify_upload=0.000 verify_layer=0.000 verify_head=0.000 verify_read=0.000 verify_fused_head=0 replay=0.000 spec_total=2551.926 target=29226.999 saved=0.000 net_saved=-4269.600 conf_sched=1 conf_stops=0 conf_blocked=0 conf_skips=375 cost_ms decode=74.890 draft_row=0.466 verify_row=162.856 cycle=992.118 draft_len_hist=2:2 accepted_len_hist=2:2 conf_len_hist=0:1

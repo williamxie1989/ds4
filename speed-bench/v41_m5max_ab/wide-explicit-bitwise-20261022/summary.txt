@@ -1,0 +1,22 @@
+ds4 A/B  2026-10-21 16:34 UTC  ?  monitor none
+A  /Users/xieyongliang/ds4  89e068c (uncommitted changes)
+B  /Users/xieyongliang/ds4  89e068c (uncommitted changes)
+model  DeepSeek-V4.1-Flash-1017-Q2.gguf (/Users/xieyongliang/ds4/gguf/DeepSeek-V4.1-Flash-1017-Q2.gguf)   env  -   B only  DS4_METAL_ENABLE_V41_PREFILL_EXPLICIT=1
+streaming  cache 72GB -> dynamic 64.88 GiB, 6999 expert slots; ctx 65536
+time  331 s of 560 s   runs 6 (2 untimed; first timed run at 110 s)   pairs 2 valid, 0 dropped
+correctness  PASS (tokens; bitwise)
+
+kind          metric                          A        B    gain  95% CI            n
+decode        decode 2048                  22.3     22.4   +0.7%  +0.6% .. +0.8%    2  (detail)
+decode        first token 2048 ms          68.4    405.2  -83.1%  -83.7% .. -82.5%  2
+decode        decode 8192                  23.1     22.3   -3.4%  -3.5% .. -3.3%    2  (detail)
+decode        first token 8192 ms         209.0    167.0  +25.3%  +22.5% .. +28.1%  2
+
+cache decode: hit rate A 0.974 B 0.909
+
+run 3 A decode: unjudged: no GPU monitor
+run 4 B decode: unjudged: no GPU monitor
+run 5 B decode: unjudged: no GPU monitor
+run 6 A decode: unjudged: no GPU monitor
+
+record row: none (bench arguments, a B-only environment, B's cache or the allocated context make the figures incomparable with the record)
