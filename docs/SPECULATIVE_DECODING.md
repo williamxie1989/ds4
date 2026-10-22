@@ -77,6 +77,53 @@ before speculation resumes. Measure speed on your prompts: acceptance and SSD
 cache size both matter. V4.1 DSpark can still be slower than ordinary decoding,
 including in TP mode.
 
+### Confidence-scheduled verification length
+
+`--dspark-confidence` is a per-token floor. On its own it cannot price a
+verified row, which is why a block can be worth proposing and still lose: the
+target replaces one decode step per accepted draft, and a verified row costs
+whatever this machine's verification path charges. V4.1 therefore schedules the
+block length from measured costs.
+
+Each session measures three numbers while it runs: one ordinary decode step,
+one sequential draft row (Markov bias plus a full-vocabulary readback), and one
+verified row. A draft row pays for itself only when the proposal prefix before
+it survives with probability `p1*...*pk`, because that product is the expected
+share of a decode step the row replaces. Verification therefore stops at the
+first row whose survival product falls below
+
+```
+safety * (draft_row_ms + verify_row_ms) / decode_ms
+```
+
+which is strictly earlier than the fixed threshold when probabilities decay. The
+same costs decide whether to propose at all: the previous block's confidence
+chain prices what a cycle returns, and when that cannot cover the measured
+propose+verify cost the cycle decodes one token instead. A skipped cycle is
+re-probed only when decoding gets slower or verification gets cheaper, since a
+probe itself costs a cold verification block.
+
+The rules are diagnostics-friendly and never change sampled tokens: they only
+shorten or skip a block, and a committed token is still the target's argmax.
+`DS4_DSPARK_CONF_SCHED=0` restores the fixed-threshold width for an A/B.
+`DS4_DSPARK_STATS=1` prints the measured costs (`cost_ms decode=… draft_row=…
+verify_row=… cycle=…`), the scheduled lengths (`conf_len_hist`), and how often
+each decision fired (`conf_sched`, `conf_stops`, `conf_blocked`, `conf_skips`).
+Offline curves can drive a replay before the first measurement with
+`DS4_DSPARK_CONF_DECODE_MS_MILLI`, `DS4_DSPARK_CONF_DRAFT_ROW_MS_MILLI`, and
+`DS4_DSPARK_CONF_VERIFY_ROW_MS_MILLI`.
+
+On a 128 GiB M5 Max with SSD streaming the routed-expert gather is 87% of a
+verification block (attention is 3%). A verified row must page the experts that
+row selects, and a decode step pages the six its token selects, so a block of N
+rows pages N different expert sets: speculation can only add expert traffic, not
+remove it. The policy therefore settles on ordinary decoding when acceptance is
+around 0.75, and the cost is then one probe block plus the feature-ring capture
+(about 8% on a 192-token run, less with length). What does move this
+configuration is the expert cache: 1024 -> 4096 -> 8192 experts took ordinary
+decode from 13.7 to 16.7 to 21.0 tokens/s. DSpark pays where experts are
+resident, which is the configuration the measured deployment numbers come from.
+
 ## GLM: built-in MTP
 
 GLM's draft block is already in its main GGUF:

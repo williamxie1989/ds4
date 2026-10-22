@@ -1,6 +1,6 @@
 # 本地仓库 vs 上游 antirez/ds4：提交与在途工作清单
 
-> 生成日期：2026-10-03（2026-10-04 全仓代码对账更新；**2026-10-08 rebase 至上游 `fc80bd6` 后刷新**；2026-10-09 pick #1192 后刷新）。基准：`main` = `c4e5e97`，比 `origin/main`（上游）领先 **116 个提交**（A 段 cherry-pick 31 + 其余本地实现/文档/台账 85；merge 提交 0）；`fork/main` 停在 `3cfd0c0`（旧链），**待同步**——注意其中含 HANDOFF/PLAN/本台账等私有文档，fork 可见性需自查。
+> 生成日期：2026-10-03（2026-10-04 全仓代码对账更新；**2026-10-08 rebase 至上游 `fc80bd6` 后刷新**；2026-10-09 pick #1192 后刷新；**2026-10-13 #1090 第 7 笔复核 + rebase SHA 刷新**）。基准：`main` = `8f11a4d`，比 `origin/main`（上游 `fc80bd6`）领先 **137 个提交**（分项 31+85 系 2026-10-09 口径、本轮未重算；merge 提交 0）；`fork/main` 停在 `3cfd0c0`（旧链），**待同步**——注意其中含 HANDOFF/PLAN/本台账等私有文档，fork 可见性需自查。
 >
 > **2026-10-08 rebase 事件**：`git pull --rebase`（等价 `git rebase origin/main`）把上游 9 笔直接提交（`962ac19`→`fc80bd6`，10-05~10-07）吸收为祖先；117 步重放后本地 114 笔。按“上游与本地同目标以上游为准”丢弃 3 笔：`9c4cf2c`/`bca9985`（#1003，被上游 `fc80bd6` 取代）、`4db95ee`（B2，上游机制无 vision 排除）。merge 提交 `0743c7f` 被 rebase 丢弃（内容由重放各片保留）。冲突处置与核验见 §F。
 >
@@ -16,7 +16,7 @@
 
 | 上游 PR | 主题 | 落到 main 的提交 | 采纳度 |
 |---|---|---|---|
-| #1090 (trueimage) | exact GLM Flash kernels + V4.1 流水线 decode + server 精确前缀 | `3ee98ab`, `4a84e65`, `1fe1ec5` | **3/6**（未取 MXFP4 保护、gguf-tools 审计、docs 三片；两片冲突手工解） |
+| #1090 (trueimage) | exact GLM Flash kernels + V4.1 流水线 decode + server 精确前缀 | `3ee98ab`, `4a84e65`, `1fe1ec5` | **3/7**（未取 MXFP4 保护、gguf-tools 审计、docs 三片；两片冲突手工解）。**2026-10-13 复核**：上游已 rebase 至 `fc80bd6`（＝本地 `origin/main`；PR 仍 **OPEN**、mergeable clean、**0 review / 0 inline comment**、作者 09-27 起自称 ready）并推**第 7 笔 `e2ace02`**（21 文件 +2776/−18；前 6 笔 SHA 全部重写）。第 7 笔＝①128–512 行短 prefill 紧凑 expert tile（`use_v41_short_experts` → `ds4_gpu_dsv41_exact_admitted(DS4_GPU_TEST_V41_SHORT_EXPERTS, "DS4_METAL_DISABLE_V41_SHORT_EXPERTS")`，要求**非 streaming** 且（测试 flag 或 measured_config **且 M3 Ultra**））②prompt-copy 贪心解码（新增 `ds4_prompt_copy.h`：历史重复后缀提候选、逐 token 用目标模型验证后才提交；门控 `ds4_session_prompt_copy_supported()` 要求 **M3 Ultra**、**`ds41_measured_config`（内含 `!g->streaming`）**、**`!engine->dspark`**、非 TP/分布式、无图、layer0 为 Q4_K；回滚 `DS4_METAL_DISABLE_V41_PROMPT_COPY`）③`ds41_spec_commit` 拆出 `ds41_spec_restore`（支持 keep==0 / 回到后缀起点）+ `initial_history`（对既有 DSpark 调用者语义不变，只有 prompt-copy 走 restore）。**裁决：不取——本机 M5 Max / 128 GB / SSD-streaming 对①②各自结构性不可达**（与 `up/pr/1073` 同因；另本机 V4.1 主线跑 DSpark，②的 `!dspark` 再挡一道）。作者自测收益亦全在 M3 Ultra 驻留：Q4 短 prefill +17–27%、MXFP4 +17–25%、prompt-copy 只在 Python/JSON 编辑类负载 +147–148%（对 `f83ecfe` +46%），**三者明确不可加**；作者侧 `make test` 另有 9 处存量断言红（clean `f83ecfe` 同样红）。**已取 3 笔经核验仍等价上游现版**：`04b5c37`≡归档 `830a33c`、`a090454`≡归档 `9cdca32`（patch-id 相同）；`d54a378` 与归档 `e15b46f` patch-id 不同，但逐文件只差一个 `+ }` 的 added/context 归属、**函数级 post-image 195 行逐字节相同** ⇒ rebase 对齐假象、非改写（印证文首 patch-id 注意事项）。归档 ref（按纪律均未改写）：`pr-1090`＝旧 base `0aaea5a` 的 `0dec878`；`up/pr/1090-new`＝10-13 head `e2ace02`（base `fc80bd6`） |
 | #1093 (Michael Kuebbeler) | GLM live checkpoint 跨 tool 轮保活（分析见 #1092） | `196bc4f` | 1/1 |
 | #1120 (Emilian Bold) | M5 resident MoE/Q2 sum6/KDA Q8 decode 形状特化 | `52c482a`, `292ae70`, `6cfc129`, `bb98ec3`, `4847e99` | 5/5 |
 | #1122 (Adam Margulies) | Metal GLM 内存 guard 按 engine open 时 wired 内存封顶 | `dddd374` | 1/1 |
@@ -43,6 +43,7 @@
 | #727 (LEFBE) | transient metadata block 剥离后保住 live KV（issue #364，#378 的返工） | `4a9efa8`, `97e8a0c` | 同上 |
 | #1192 (Emilian Bold) | 非因果 top-k argsort 接 simd_shuffle_xor 寄存器排序网络（plain 内核此前只走 threadgroup 网络；作者 M5 Max 实测整调用 −20~23%，输出 bit-identical） | `c4e5e97` | 2026-10-09 批次；PR **OPEN**（base `0aaea5a`，对上游 mergeable clean）、`cherry-pick -x` + `Upstream-PR:` trailer；机制与已默认上产的 `..._causal_shuffle` 同模板零新增。收益落点（修正版）：GLM indexed prefill 多行 topk（`ds4.c:57077`，主顾）、V4 ratio-4 层 prefill（`ds4.c:32365/32450/32571`，因果 batch 只收 ratio 1/2，ratio-4 结构上走 plain）、DSpark verify suffix topk（`ds4.c:39318/39385`，vocab 129280 多行=全场最大 sort）；**DSv4.1 文本 prefill 主路无新增**（ratio 1/2 → causal batch，shuffle 自 #1090 已默认在跑）；decode router 384 选 6 实测 −2.2%=噪声（"10000 experts"是缓存数不是每层专家数）。内核验收全绿：`test_deepseek41_topk`（600 poisoned）、`test_glm53_topk_fast`（720）、`test_glm53_router_shared`、`test_glm53_q8_inputs`；`test_deepseek41_metal` 内多行非因果 topk 与 causal ties 断言通过（该套件另有存量 attn_flags 红，见 D 既有红项，非本 pick 引入）。**本机 ABBA 复测（同二进制 + `DS4_METAL_ARGSORT_SOURCE` 换源，零模型，2026-10-09，腿 log `/tmp/ab_{A1,B1,A2,B2}.txt`，取各形状两轮最好）**：prefill 形状 256 行——8192×256 983→746 µs（**−24.1%**）、16384×256 1861→1377（**−26.0%**）、32768×256 3685→2831（**−23.2%**），与作者 −20~23% 吻合；decode 形状 1 行——indexer-8k −1.3%、indexer-32k +1.8%、cand-4k −1.5%、router-384 −2.2%，**全部埋在 ~150 µs 固定 commit/wait 地板里 = 噪声带内，decode 无感**。⇒ 收益集中在多行非因果 topk（GLM indexed prefill 主路）；DSv4.1 causal prefill 早已走 causal_shuffle 无新增。**DSpark 真实形状复测（同换源法，`top_k=1`×top_rows×vocab 129280，腿 log `/tmp/ab_dsp{A1,B1,A2,B2}.txt`）**：7 行 520.6→436.2 µs（**−16.2%**）、3 行 320.4→259.0（**−19.2%**）——但该调用**每 verify 周期只跑一次（输出头）**，对 V(8)≈5.77×D≈230 ms 的 verify 步省 ~85 µs ≈ **≤0.2% 端到端=噪声**；draft 采样走独立 `dspark_markov_argmax` 内核不受影响 ⇒ **DSv4.1+DSpark 场景实际无感**，场景级受益者只有 GLM indexed prefill 与 V4 ratio-4 布局。原文存档分支 `pr-1192` |
 | #1197 (joohooo) | macOS ImageIO 接受 WebP 图片（`server_image_media_type` 白名单 + data-URI 前缀加 webp；`ds4_image.c` 新增 `ds4_decode_webp_imageio`，透明像素铺白底 RGBA8 复用 oriented-RGB 路；Linux 明确报 "WebP images require the macOS ImageIO decoder"） | `67242f2` | 2026-10-09 批次；PR **OPEN**（当日新提，antirez 未 review）、`cherry-pick -x` + `Upstream-PR:` trailer，对 main dry-run merge-tree 零冲突。**动因（实测复现）**：dsh `read_image` 把截图降采样为 `image/webp` 发给 ds4-server → 白名单拒绝走 `bad:` 兜底 → 误导性 `400 invalid JSON request`，且图片滞留历史后每个后续请求秒败（会话 session-692df918 turn1 step140 起全灭，证据链见当日会话）。**上游 #976 帖内有第二独立复现**（hertz-hwang：全屏截图重编码 webp→400，同像素 PNG/JPEG 过；轴只有容器格式）。验收：`./ds4_test --server` 全绿（含新增 `test_openai_inline_webp_image_content`，含 ImageIO 真解码断言）、`tests/test_deepseek4_vision_image` + `tests/test_image_decode` 通过；`ds4-server`/`ds4_test` 编译 `-Wall -Wextra` 零警告，且与未提交的 `/v1/status` menubar 改动（工作区）合并编译通过。**配套本地修 fixup `40590fa`**（见 B/C：PR 只给 METAL_LDLIBS 加框架，standalone 测试目标链 `ds4_image.o` 缺框架）。**与 #976 互斥**（同址：白名单/data-URI/`ds4_image.c` 解码），#976 为跨平台 vendored 单头解码器方案（+3134，Linux 可用），本机 macOS 场景取 #1197 零新依赖；若将来需 Linux webp 或上游 review 落在 #976，再整片换装。原文存档分支 `pr-1197` |
+| #1225 (nazeshinjite) | V4.1 vision sidecar 按 revision 与语言 GGUF 配对（引擎开侧比对 `general.source.revision` 相等而非钉死 `df42c109`；转换器加 `CHECKPOINTS` 表（df42c109 + 1017 的 `1bae0e10`）出 name/URL，未知 revision 直接拒；`deepseek41_vision.py` 加 `--source-revision`；V4 Vision-Exp 保留原钉） | `ae45e32` | 2026-10-18 单独 pick；PR **OPEN**（base `fc80bd6`＝当时 origin/main，mergeable clean）、`cherry-pick -x` + `Upstream-PR:` trailer；`ds4.c` 对 main+137 自动合并零冲突。**动因**：1017 二 checkpoint 权重不同（含 vision tower），旧钉拒正确构建的 1017 sidecar 而放行错配的九月 sidecar。**本机验收**：`make -j8` Metal 全绿零警告（五二进制）；Python 转换器导入冒烟过（CHECKPOINTS 值 + 未知 revision 拒 + `sidecar_metadata` 新签名）；`test_deepseek41_conversion/manifest.py` 需 HF 快照 `--hf-dir`，本机无 1017 快照未跑全量（作者 M5 Max 已跑双 checkpoint 四配对开侧矩阵，见 PR 帖）；零 kernel/per-token 改动，无速度影响。原文存档分支 `pr-1225` |
 
 ## B. 本地实现提交（31 个，含从自己 feat 分支重新落地；2026-10-08 rebase 后 SHA 已刷新）
 
@@ -100,6 +101,14 @@
 
 ## D. 9/25 之后文档 → 已放弃/不再需要的在途工作
 
+### 已落地（2026-10-22，S3 wide 显式 prefill 默认开）
+
+| 改动 | 证据 | 回退 |
+|---|---|---|
+| `ds41_prefill_expert_sweep_supported` 从 opt-in 改为默认开 + 盈利门槛 256 行 | 配对 3 组：prefill 2048 **161.3 vs 136.6（+18.1%）**、8192 **372.2 vs 278.3（+33.7%）**；token 逐位相同（2048 `e36dac1fe120`、8192 `cedd70f358ac`）；稳态 decode 28.61 vs 26.89 不退化 | `DS4_METAL_DISABLE_V41_PREFILL_EXPLICIT=1`；门槛 `DS4_V41_PREFILL_EXPLICIT_MIN_ROWS`（默认 256）；`DS4_METAL_ENABLE_V41_PREFILL_EXPLICIT=1` 仍强制开（门槛 32） |
+
+遗留：sweep 之后首 decode step 有一次性 ~0.3 s（**不是 I/O**：237/240 命中、miss_pread 0.03 GiB、停顿是 `gpu span 0.00` 的 host encode 20–130 ms；关 seed、有无 mailbox 都在）。**根因未定位**，已按 `count×(1/137−1/167)=0.3 s` 的平衡点（~230 行）设门槛规避。详见 `speed-bench/PERF_RECORD.md` 与 `HANDOFF-S3-WIDE-20261022.md`。
+
 ### 存量红开案（2026-10-13 立案当日结案；rebase 上游后必须回验）
 
 | 红 | 签名与根因 | 处置与回验点 |
@@ -127,12 +136,16 @@
 | 合并 #1127 prefill layer overlap | `0743c7f` 正文：GLM 短 prompt prefill −19%（该 merge 已于 2026-10-08 rebase 丢弃，正文取自 `backup/pre-rebase-20261008`） | **实测否决**，分支保留存档 |
 | `V41_M5MAX_SPEED_RESEARCH.md` 的"未取清单" | BASELINE §1 逐项核对：多数已内置于 fork（#1041/#1090/#1042/#1035 等） | **文档已过期**，决策以 BASELINE 为准 |
 | GLM "明确不做"清单 | GLM53 计划 §1：HC pre 融合、causal 稠密前缀、qk_rope=64、短尾<32、**Q 残差双趟（已实测回退）** | 禁止再开题；MLX/omlx 百分比一律不作预期 |
+| fork 的 `project_pair_q8` + `norm_pair_rows` 移植（成对投影 + 成对 norm） | `speed-bench/v41_m5max_ab/project-norm-pair-2k-20261022`（16 对 decode2k，+0.4%，CI -1.5..+2.7，bitwise PASS） | **判负**：两半删的都是已经重叠掉的 dispatch——成对 matvec 的 wave 数不变，成对 norm 反而把两个单 threadgroup（各占一个 GPU 核、本来并行）塞进一个 threadgroup 串行化。**校准：一个 dispatch 只在它是依赖停顿时值 ~2.2 µs，否则为 0；不要按 dispatch 数估收益** |
+| fork 的 `rope_quantize`（kv rope + quantize + window store 合一） | `speed-bench/v41_m5max_ab/rope-quantize-2k-20261022`（16 对，0.0%，CI -1.1..+1.2，bitwise PASS） | **判负**：三个都是 1~16 threadgroup 的小 kernel，串行依赖也没有可回收的停顿。与上一行同因：M5 上 dispatch 融合已到尽头 |
+| "decode 差距 = dispatch 数"（上一轮归因） | `PERF_RECORD.md` "The decode gap was the per-layer selected-id readback" | **证伪**：本轮 3 项 dispatch 融合合计 0.0%。真实差距是**逐层 selected-id 回读**（`ds4_gpu_end_commands()` 每层一次 → 41 CB/token），用 `DS4_MOE_REPLAY_SELECTED_IDS` 量出上界 +41%。上一轮"GPU busy 0.356 vs fork 0.231"不可比（fork 的 decode CB 从不逐个等待，`GPUEndTime-GPUStartTime` 读回 0） |
 | omlx NAX kernel 源码直接搬运 | `OMLX_WAVE_PORT_ANALYSIS.md` §6：布局+量化+框架三重不兼容 | 不可行（思想可借鉴，代码不可搬） |
 
 ### 进行中（仍有效，勿当废弃处理）
 
 | 工作 | 载体 | 状态 |
 |---|---|---|
+| decode selected-id mailbox（2026-10-22，默认开） | `metal/dsv41.metal` `kernel_dsv41_selected_publish` + `ds4_metal.m` `ds4_gpu_dsv41_selected_{publish,take}` + `ds4.c` `ds41_moe_partial`；回退 env `DS4_METAL_DISABLE_V41_SELECTED_MAILBOX` | **已收**：decode 2048 22.0→25.1（配对 +14.1%，16 对 decode2k）、首 token 66.8→63.3 ms、单跑 22.5→26.7 t/s；41 次 commit-and-wait/token → 1；tokens+bitwise PASS。机制：GPU 把 router 的 6 个 id + 校验和 + 单调 tag 写进 CPU 可见共享环（tag 最后写），host `flush`（不等）后轮询 tag，20 ms 超时或校验失败回落到原阻塞回读。**未跑**：resident（非 streaming）路径不受影响（publish 只在 `g_ssd_streaming_mode` 生效）、DSpark/verify 走 batch 路径不 publish、TP 未测 |
 | 主工作区未提交改动（M0-2 关账 @2026-10-05） | `--mtp-timing` GLM 三段结算 = **G4a 留、补完并入** `c252713`；indexed prefill / DSpark draft trace env = `c44b87c`；`SPEC_ROWS` env → 见 D 节关账行；`GLM53_ROUTED_MPP_PACKED` → 见 D 节删臂行 | 主树 `git status` 干净；SPEC_ROWS A/B 已随 M0-4 窗关账（中性+logits 等位，维持默认关） |
 | p42-attn-glue（M0-3 定夺 @2026-10-05） | 分支 `p42-attn-glue` @`8392281`（WIP archive），worktree 已弃 | **弃臂存档，不合入**：位等价复核实测（M5 Max，带 `DS4_GPU_TEST_V41_FUSIONS` 强开）matvec_bf16 对 Q8_0 5120→1280 逐字节不等、MoE 融合臂 probs 契约同红；M3-Ultra-only admission 即为本险设，位契约优先于 ≈中性。证据 `speed-bench/M0/m0-3/`，M3 Ultra 上位验证通过前勿重试 |
 | p3-io-diag | worktree `~/ds4-io-diag` | 7 行诊断补丁，可留可弃 |
@@ -238,7 +251,7 @@
 ### 杂项处置（2026-10 定案）
 
 - **M0-4 基线复核窗（2026-10-05，停产品独占，用户批准）**：14/14 腿绿；KPI 表全部复核成立（ITERATION_PLAN §1 新增 M0 复核列 + `speed-bench/M0/m0-4/notes.md`）。SPEC_ROWS A/B 关账：decode 与 [4,8) 行 append 均中性，step4/13 + step8/10 frontier logits 逐字节等（`m0-4/parity/*.sha256`）→ 维持默认关作 E1 种子。GLM MTP 首账 effective −19.8%（G4a 结算行）。方法学两教训（腿间门用组合可用量、swap 解析）已入 notes。
-- **M0-5 上游复核（2026-10-05）**：`git fetch origin` 后 origin/main 仍 `0aaea5a`，`git cherry` 68 片全部未吸收；#1177/#1178 均 OPEN、零 review 零评论；本文件引用的全部 SHA（含 `cardi-upstream 5805843/4e48bb5`、`pf6-upstream 71268a1`）仍有效，无需刷新。窗口前照例复查。
+- **M0-5 上游复核（2026-10-05）**：`git fetch origin` 后 origin/main 仍 `0aaea5a`，`git cherry` 68 片全部未吸收；#1177/#1178 均 OPEN、零 review 零评论；本文件引用的全部 SHA（含 `cardi-upstream 5805843/4e48bb5`、`pf6-upstream 71268a1`）仍有效，无需刷新。窗口前照例复查。**【更正（2026-10-12）】#1178 已于 2026-10-05 关闭（作者自裁，速度声明撤回）——本行"均 OPEN"已过期，见 card I 行更正**；#1177 状态本轮未复核。
 - **M1-1/M1-2 落账 + macOS 26.5.1 Metal 捕获基底关账（2026-10-05，无窗口、零模型加载）**：M1-1 原方案（MTLGraph `captureScopeWithCommandBuffer:`）经三重取证在 macOS 26.5.1 (25F80)/Xcode SDK 26.5 上不存在（SDK 全目录零 graph 头、活跃 `AGXG17XFamilyCommandBuffer` 全继承链零 capture/replay selector、dyld 共享缓存 selector 字符串零命中、Apple 文档 404）；p42-attn-glue 分支亦无历史 capture 代码。用户裁决改道 MTLIndirectCommandBuffer，实现完成时以 7 变体裸 Metal 探针（A–G：concurrent/legacy、shared/private、threads/threadgroups、serial/concurrent encoder、inherit/绑定 组合）实测驱动黑洞：**任何带绑定的 CPU 录制（`indirectComputeCommandAtIndex` + `setComputePipelineState:`）直接 segfault 于 `AGXG17XFamilyIndirectComputeCommand setComputePipelineState:`（lldb 栈确认）**，唯一不崩的 inherit 形态继承 pipeline/buffer 不生效、dispatch 静默蒸发。**裁决（用户）：M1 捕获路线搁置**，骨架入库（`fde5b63`，default off，`tests/test_metal_graph_capture` 全绿），M1-3/1-4/1-5 窗口与 GLM ≥35 t/s 出口线作废重定（ITERATION_PLAN §1/§3 已注）。复活路径 = ds4_metal.m 三处 "M2-3 SUBSTRATE HOOK"（begin 建录制缓冲 / proxy recordDispatch 落命令 / execute_entry 执行），**动手前重跑 `git stash` 无关的探针矩阵**：/tmp 探针文件重启即失，重建要点=本条描述 + 崩溃点符号，每次 macOS 升级后先探后用。V4.1 侧 decode graphs（V4.1 islands 共用 supported()）同步搁置——env 关闭下 islands 恒 eager，无行为变化。**别把它当 bug 修**：`ds4_dg_execute_entry` 返回 NO 是裁决形态不是遗漏。
 - **M3-1 标定工具链落账（2026-10-05/06，无窗口、零模型加载）**：[O] 编码半程完成（`ccc04b1`）——引擎快照 dump（env 默认关；无 env 时记录路径零新增分支/线程）、回放器分轮快照捕获（opt-in，默认行为逐行不变）、生成/标定双脚本（各 6/6 组 selftest 绿 + 合成件端到端跑通）、窗口 harness（§2 预检 + MAX_STEPS 切片 + swap 看门狗 + 独立 kv-disk-dir 不碰生产 `~/.ds4/server-kv`）。候选 session 已在本机 DSH session 库筛出 208 条 ≥8 轮 agent 型（最大 1179 步，标定窗建议 `MAX_STEPS=40..80` 切片）。**[W] 回放腿已跑（2026-10-04 窗，`run-20261004-163825` / `-164540`，均入 exclude 本地留存）——红卡待裁决**：60 步切片（omlx session-76700db1，688 步取头 60）两轮回放 60/60 绿、快照 60、prefix 复用 96–99%。纸面闸门 ≥25pp **不可达**：6959/1500/3000/800/300 experts 五档扫描，protected-K(60/75/85%) 增益 −1.1..+0.3pp（中预算为负、极紧预算勉强正），baseline 恒 0.64–0.90。根因：单会话语料内 expert 需求平稳（全 60 轮并集仅 ~1.5–1.7k 对）、LRU 近最优，跨轮频率保护没有可救的驱逐——25pp 门隐含的是**多会话轮换 + 小缓存**工况，单会话回放族结构上给不出。**裁决（用户，2026-10-04）：按 (a) 拒绝 ship，M3-1/R2a 就此结案**（存档未采纳选项：(b) 换语料复测、(c) 小缓存机型限定启用）。快照 dump/回放捕获/生成标定/harness 全部保留入库、默认关、零生产影响；若日后出现多会话轮换小缓存工况的证据，(b) 的复测路径已备好。**联动：M3-2（保护位+空闲预热）/M3-3（验收）因失去 ship 需求与标定源一并搁置**（M3-2 的淘汰次序单测与 M3-3 的小 cache 压力腿配方随时可复活）。另记：harness `CACHE_EXPERTS` 只进纸面仿真器、不进 server（server 自动预算），注释已澄清。
 - **M3-4 容量复扫（2026-10-04 夜窗，`speed-bench/M3/m3-4/run-20261004-171205/`，runner `0f7dba4`）**：auto(7822)/8000/9000 三臂 + 10000 预检门。9000（83.8 GiB）全域单调 decode steady +6.0..+7.8%（五 frontier 齐涨），append1524 +0.8%；8000 形状不稳（2K/4K +9.5/+8.6 但 8K+ 平/负，单腿噪声嫌疑）；**10000 在 128G 机不可选**（92.7 GiB 预算+工作集>物理，预检设计性不过——≥192G 机选项）。方法学两教训入 notes（purge-lag 3 分钟再闸、9000→8000 降序臂序）。**默认位未动**：按 M3-4 DoD 改默认需 KPI 两域不劣 + 用户裁决；候选=128G 机 auto 预算 7822→9000。**后续（2026-10-05）：默认位不动，手动档转正使用——`--ssd-streaming-cache-experts 9000`（server/CLI/ds4-bench 三处同旗，支持 N 或 NGB 形式，引擎保留 to-fit 缩减保护）；重载机器叠加场景自行让出 11 GiB 头部空间，GLM 同型窗慎用**。本轮为前向单腿、无 ABBA 复测，引用时注意。GLM 域容量互感未测（同 flag 影响 GLM streaming 窗内存画像）。
@@ -259,6 +272,28 @@
 - 本文件与 `AGENTS.md` 已纳入 git 跟踪。**PR 纪律**：PR 分支一律从上游 `origin/main` 切、只 cherry-pick 目标修复提交；不 merge 本地 main、不 `git add -A`——docs commit 不在 PR 范围即不会携带
 - `/tmp/ds4-main`、`/tmp/pf6-pr-base` 对照 worktree：重启即失，需按 BASELINE §13.2 重建流程
 
+### sf-ds4-1flash 可借鉴项移植（2026-10-21，P0 采纳 / P1-P2 判负）
+
+- **P0（采纳，工具层）**：移植 `speed-bench/ab_bench.py`（A B B A quad、bootstrap 95% CI、token-identical + `--bitwise` prefill logits 闸门、expert-cache 计数漂移检查、可选 `--sections`）、`speed-bench/readme_bench.py`（每 build 一块 + 丢弃 warm-up、mactop 冷却目标、旋转列、median/spread）、`tests/test_ab_bench.py`（42 例，`make test-ab-bench`，已并入 `make test`）。`ds4-bench` 增 `--frontiers` / `--cache-stats` 与 `gen[ctx=N] token ids:` 行；`ds4_engine_memory_report()` 作为公开 API（bench 不碰张量内部）。冻结配置：1017 Q2、`--ssd-streaming --ssd-streaming-cache-experts 72GB`（loader 报 64.88 GiB dynamic / 6999 experts）、`--ctx-alloc 65536`、`speed-bench/promessi_sposi.txt`、greedy 128。协议与逐项裁决见 `speed-bench/PERF_RECORD.md`。
+- **基线 A/A**（`speed-bench/v41_m5max_ab/aa-sweep-20261021`，两侧同一二进制，3 个完整 quad、4 对）：prefill 2048/8192/32768 = **133.7 / 224.6 / 516.3 t/s**；steady decode = **22.5 / 22.9 / 21.4 t/s**；first token 2048/8192/32768 = **67.4 / 201.2 / 236.9 ms**。A/A 噪声底：prefill 与 decode 中位 ≤0.8%、CI ≤±2.3%；first token 2K/4K ≤0.4%、CI ±4.5%；**first token ≥8K 本协议不可测**——同二进制 A/A 自身在 16K/32K 报 −14.6%/−14.7% 且 CI 排除 0，页缓存状态主导，A B B A 不抵消（每个进程冷启）。
+- **P1 `270` expert cache locked at engine open（fork `5b6482a`）→ 判负，不取**：移植 62 行（`ds4_gpu_stream_expert_cache_lock_ahead`，env `DS4_METAL_DISABLE_STREAMING_CACHE_LOCK_AHEAD` 回退），机制生效（`locked ahead: 6999 of 6999 slots, 17 slabs, 64.93 GiB in 1656 ms`，open +1.7 s），token ids 与 `--bitwise` 全过；实测（P1+P2 10 对）decode 2048/8192 +0.3%/+0.5%（CI 跨 0）、first token 2048 −6.5%（CI −9.9..−4.1）。**该 first-token 数须扣掉 decode kind 自身的顺序偏差**：P2-only 腿实为 A/A 对照（见下条），同指标 −4.1%，故 P1 的增量约 −2.4%（噪声内）；decode 相对同一对照 +0.6..+0.8%（亦噪声内）。机理：64.88 GiB 下 lazy mlock 不失败（无 `using locked cache cap`），没有可防的缩容；open 期锁满 64.93 GiB 只在首 prefill 前占 wire。**裁决依据因此是“decode 中性 + open +1.7 s”，不是已证实的 first-token 回归。** **重议条件**：某配置实测打印 `using locked cache cap`（harness 会按名拒绝该腿）。
+- **P2 `131/132/210` 在本树结构上无落点（2026-10-21 证据）**：三者优化的都是“逐层把 selected ids 读回主机 → 必须 commit+wait → 再发 routed”。本树已无这次读：`ds41_moe_partial` 把 router/shared/routed 编在同一 batch，把 `g->selected`（GPU tensor）直接交给 `ds4_gpu_stream_expert_cache_begin_selected_load_tensor`，函数体内 **0 处 `ds4_gpu_tensor_read`、0 处 `ds4_gpu_end_commands`**；`ds41_graph_step` 的逐层 `ds4_gpu_flush_commands` 只 commit 不等待（GPU 跑第 N 层时 CPU 编第 N+1 层）；每 token 唯一的主机读是最后的 logits。profile 佐证：2K 腿带 `DS4_METAL_STREAMING_SELECTED_READAHEAD_PROFILE=1` + `DS4_METAL_STREAMING_IQ2_CPU_ROUTER_PROFILE=1` 打印 **0 行**。**裁决：131/132/210 不再移植**，除非将来重新引入 host readback；届时先量“逐层 commit/wait 次数”，不是唤醒延迟。
+- **P2 `131` bounded status poll（fork `f8dd83e`）→ 落点错误，按 no-op 弃**：移植 2 ms status poll（`ds4_gpu_wait_command_buffer` 内，scope 到 `metal_graph_decode_cpu_router` 与 `metal_graph_decode_selected_readahead`）+ env `DS4_METAL_DISABLE_V41_READBACK_POLL`。**profile 证明这两处不在 V4.1 streaming decode 路径上**：该路径是 `ds41_graph_decode_layer → ds41_graph_layer → ds41_moe_partial`；带 `DS4_METAL_STREAMING_SELECTED_READAHEAD_PROFILE=1` 与 `DS4_METAL_STREAMING_IQ2_CPU_ROUTER_PROFILE=1` 的 2K 腿打印 **0 行** profile。故“P2-only”腿实为 decode kind 的 **A/A 对照**：decode 2048 −0.3%（CI −4.4..−0.1）、decode 8192 −0.0%（CI −3.1..+0.8）、first token 2048 −4.1%（CI −6.8..−0.0）、first token 8192 +1.7%（CI −11.8..+6.9）——这组数就是该 kind 的顺序偏差，任何 decode/first-token 宣称都要先扣它。真正的 DS41 readback 在 `ds41_moe_partial`/`ds41_graph_layer` 内，结构不同于 fork 的 `routed_moe_one_tensor`；131/210 要重做必须落在那里。**重议条件**：先在 `ds41_moe_partial` 内拿到唤醒暴露的 profile。
+- **P4 探针（2026-10-21）**：①**S1b decoder suffix 阈值 4096→2542 单独无效**——该阈值已由 `DS4_V41_DECODER_SUFFIX_MIN_ROWS` 暴露，同二进制 `cold-7500` 6 对：ttft 7500 +0.8%（CI −1.4..+2.9）、first token +1.1%（CI −2.1..+3.9）；fork 的 +30.2% 来自 short_sweep 的 2048 tile 对齐 + 128 行 warm，不是阈值，且受 DSpark 128-row parity 约束。**维持默认 4096**，重试必须先移植 short_sweep 并过 DSpark short-prefill/verify。②**S2 batched candidate 不取**——本树已有 `candidate_blocks`/`candidate_filter` 与 select-all 短行分支（`top == blocks` 直接填 mask），但按行调用；fork 的批量形态需要本树没有的 `ds4_gpu_dsv41_candidate_topk_batch` / `candidate_mask_batch` 两个 kernel，且要保 top-k tie 顺序逐位；fork 收益 +2.3/+1.69/+4.3% ttft 落在本机 cold ttft ±5% 带内，**代价/收益不成立**。
+- **P3 上界探针（2026-10-21）**：depth 2 中性（ttft 7500 +1.0%，6 对），但**跨树实测推翻了“机制已在本树”的推断**（见下条）：fork 在同 cache 下 prefill +30~60%、8K 首 token 快 3×。**P3 重新打开**——宽 sweep 的显式 buffer 读路径与我们的 prepare 环不等价；先按 fork 自带开关做归因（`DS4_METAL_DISABLE_STREAMING_PREFILL_LAYER_PREAD` 等），再决定移植哪一片。
+- **跨树实测（2026-10-21，同机/同模型/同 prompt/同 cache 64.88 GiB）**：fork `42bc593` 的 bench 与我们的 `ds4-bench` 对跑。prefill-only（`-n 0`，各 2 次）：2K **177/175.5 vs 135.8/134.3（+30%）**、8K **531/451 vs 324/284（+59~86%）**、32K **743/701 vs 554（+30%）**。decode 用 `--teacher-forced-decode`（两树 greedy token 从第 8 个起分叉，强制同 token 流才可比），1 quad / 2 对：decode 2048 **22.0 vs 26.3 t/s（+19.5%）**、decode 8192 **21.8 vs 25.3（+16.3%）**、first token 2048 **65.5 vs 60.7 ms（+8.3%）**、first token 8192 **189.3 vs 59.8 ms（+216%）**。fork 的 cache 命中率更低（0.901 vs 0.973）却更快 → 优势在读/buffer 路径。**结论：fork 数据可信、差距真实；逐机制否决不等于没有差距。** 下一步是归因（fork 每个优化都有 disable 开关），不是再比一次。
+- **归因（2026-10-21，fork 各 disable 开关，prefill-only 2 次/臂）**：2048/8192 增量 t/s——fork 默认 180/171、539/470；关 layer pread 173/170、527/489（**无影响**）；关 short_sweep 173/171、573/477（这两个 frontier 不触发）；关 decoder suffix 173/172、**401/380（−23%）**；关 batch index 170/170、471/436（无影响）；关 batch index proj 171/172、507/484（无影响）；我们默认 136/134、324/284。我们自己的 suffix 开关（`DS4_V41_DECODER_SUFFIX_MIN_ROWS=1e9` 关）：默认 **316/307** vs 关掉 **280/287** → 我们的 suffix 值 **+10%**，fork 的 suffix 值 **+29%**。**分解**：suffix 质量差 ≈19%（fork 505→390 vs 我们 311→283）；suffix 关掉后 fork 仍比我们快 **+25%**（390 vs 311），且 2048 的 +27% 无任何开关能解释——**残余在 S3 单 chunk 显式 buffer（无开关）或 kernel 层**。下一步仪器已跑：两树 `DS4_METAL_V41_STAGE_PROFILE` @2048（40 层合计）——`shared/routed ffn` 我们 **12955 ms（324 ms/层）**、热缓存 12426、关 gather 后 **3092 ms（77 ms/层）**，fork **1810 ms（45 ms/层）**；但关 gather 后 wall 不变（136→132 t/s），说明我们的时间只是从 section 内挪到了 section 外的 page-in。**结论：2048 行的差距是“读与算不重叠”**（gather 路径付 dispatch，整层路径付同步 page-in，fork 用两槽显式 buffer 把下一层读叠在当前层计算上）。要 port 的是 S3 单 chunk 半（32–2048 行），验收仪器就是 FFN section 从 324 降到接近 45 ms/层。
+- **S3 移植落地（2026-10-21 晚，未提交、默认关）**：`DS4_METAL_ENABLE_V41_PREFILL_EXPLICIT=1` 打开后，单 chunk 2048 prefill **170–179 t/s（+22~28%）且 token 逐位一致**；代价 decode 2048 −3.1%、first token 423 ms。代码：`ds41_prefill_expert_*`（ds4.c，`ds41_decoder_suffix_min_rows` 之前）、`ds41_graph_prefill_sweep` 的 `explicit_experts` 分支、ds4_metal.m 的 `ds4_gpu_stream_prefill_{bind_layer,discard_buffer,copy_cached,copy_wait}`。**wide 当时被 gate 挡住**（`count 32..2048 && !wide`）。
+- **S3 wide 半打通（2026-10-22）**：`ds41_prefill_expert_sweep_supported` 删掉 `count<=2048 && !wide`（slot 本来就跨 tile 保持绑定，无需其它改动）。配对 A/B（`--kinds decode`，2 对，主证据 `wide-explicit-bitwise-20261022`）：prefill 8192 增量 **319/321 → 430/444 t/s（+36%）**、first token 8192 **209 → 167 ms（+25.3%，CI +22.5..+28.1）**、prefill 2048 **+31%**、decode 2048 **+0.7%**、decode 8192 **−3.4%**、**first token 2048 68 → 405 ms（−83%）**；冷 8K 单跑 prefill **397.5 → 525.0 t/s**、first token **749 → 377 ms**；32K prefill-only **655 → 751 t/s（+14.6%）**。闸门：`correctness PASS (tokens; bitwise)`——mmap 与显式 slot 两路 prefill logits 逐位相同。**结论：wide 在 prefill/首 token/长上下文三处都赢，代价是 decode 8192 −3.4% 与单 chunk 2048 首 token 大退化 → 开关保持默认关。**
+- **“seed 排序”假设证伪（2026-10-22）**：`ds41_prefill_seed` 的 blit 编在当前 batch CB 内，函数尾 `ds4_gpu_end_commands()` → `finish_command_buffer(cb,1)` → `waitUntilCompleted`，下一层 `read_start` 不可能覆盖；关 seed 后 2048 首 token 仍 **307 ms**（360→307），prefill 只省 0.5 s（profile 的 seed 2.45 s 大半与别的工作重叠）。新落点：首 token 里 ~19 个 CB `commit→done 20 ms / GPU 0.2 ms / encode 0.0`，同期 **0 行 pread**、`miss_pread` 0.96 GiB/32 ms → 主机卡在 **cache entry 淘汰/释放**（`setPurgeableState` 量级），不是 I/O、不是 seed 排序。旁证：8K 的 decoder suffix 让 20–39 层只算尾巴（末层 `count=1`），seed target 与 churn 同步变小，所以 8K 不退化。
+- **fork decode glue 归因（2026-10-22）**：“fork 无 disable 开关”**不成立**：fork 有 43 个 `DS4_METAL_DISABLE_V41_*`，decode 相关 15 个。fork 自 ablation（2048/128 tok，各 1 跑）：默认 **27.29 t/s / 55 ms**；15 个全关 **22.94（−16%）/ 107 ms**；只关 A 组（router_one/rope_quantize/expand/hc_block/linear_bf/packed_m/topk_prefix）**29.08**；只关 B 组（topk_shuffle/router_mm/router_batch/fast_lookup/packed_index/readback_*）**25.56**。**glue 家族值 ~16%（与跨树 22.0 vs 26.3 同量级），但强交互**（全关远低于“只关 A 组”），且 A 组在本机是负收益 → 必须用“全关 + 加回一项”定边际贡献再移植，不能按名逐项 port。
+- **decode 差距归因（2026-10-22，目标 1）**：给两棵树都加 dispatch 计数器后同 flags 实测——我们 **1,444 dispatch/token**（35.9/层），fork **890**（22.3/层），差 554 × ~13 µs ≈ **7 ms/token**，正好等于 23.5 t/s 对 26–27 t/s 的差；**decode 是主机编码受限，不是 GPU 受限**（GPU busy 15–23 ms/token vs wall 42 ms）。本树每层：before_attn 2.1 / **attn 25.8** / after_attn 3.0 / moe 4.0 / after_moe 1.0；attn 内 project 10.0、rope+store 3.0、select 2.9、gather+decode 1.0、output 5.0，project 的 5 次调用**每次恰好 2 个 dispatch**（MPP matvec 写 f32 + 单独 BF16 round）。fused 路径在 M5 被 `ds4_gpu_mpp_available()` 拒（放行后 dispatch 仍 2.0、decode 仍 23.5）。**移植顺序**：①MPP matvec + BF16 store（project 10→5、output 5→3、indexer −1，≈+10%）②`rope_quantize`（3→1，≈+2.5%）③norm pair（−1/层）。
+- **BF16-store 融合落地（2026-10-22，目标 1 首次拿到正向）**：给 Q8_0 matvec 与 weighted RMS norm 各加一个“归约后直接按 BF16 存储”的 kernel 变体（`kernel_mul_mv_q8_0_f32_bf16`、`kernel_rms_norm_mul_f32_4_bf16`），把“matvec/norm + 单独一轮 BF16 round”两次 dispatch 合成一次。**dispatch 1,444 → 1,166/token（−278，−19%）**。配对 A/B（A=融合，B=回退 env）：matvec 单项 **+2.8%（CI +0.9..+4.7）@2048**、8192 −0.8%（CI 跨 0）；两项合计 **+0.7~0.9%**（两轮机器状态漂 ~10%，符号一致）。闸门：`correctness PASS (tokens; bitwise)`（prefill logits 逐位相同，因为 store 的舍入与 `ds41_bf16` 完全一致）。回退开关：`DS4_METAL_DISABLE_V41_MATVEC_BF16_STORE` / `DS4_METAL_DISABLE_V41_NORM_BF16_STORE`。**注意：单项收益 1~3%，是“每个 dispatch ≈ 数 µs 主机编码”的量级，不是 13 µs；靠这一族融合最多再拿 2~3%，到不了 26 t/s。**
+- **剩余差距定位（2026-10-22）**：融合后每层 dispatch：project 5.0 / rope+store 3.0 / select 2.8 / gather+decode 5.9 / output ~3 / before_attn 2.1 / moe 4.0 / after_moe 1.0。**但 decode 的剩余 ~15% 已不在 dispatch 数**：GPU busy/layer 我们 **0.356 ms** vs fork **0.231 ms**（同 flags、`DS4_METAL_GPU_BUSY_PROFILE`），prefill 也慢 25%（134 vs 176 t/s）→ 是 kernel 效率（fork 的 fused decode attention、pair projection、expand-row 三个 kernel）。**下一步必须 port 这三个 kernel，不是继续砍 dispatch。**
+- **判负：pipeline fast lookup（2026-10-22）**：fork 的 `DS4_METAL_DISABLE_V41_DECODE_PIPELINE_FAST_LOOKUP` add-back 显示 +5.1%，在本树移植（`ds4_gpu_get_pipeline` 快路径 + decode step 内 arm）后实测 **23.65 vs 23.66 t/s**（三次背靠背）→ 中性，**已回退**；fork 那个 +5% 是单跑噪声（fork 自身 decode 单跑方差 4–7%）。本树自己的 decode 开关仍在生效且各值 4–5%：`..._DECODE_PIPELINE_PORTS=1` −4.0%、`..._DECODE_FLUSH=1` −5.0%、`..._DECODE_PIPELINE=1` −4.1%。
+- **补丁存档**：`speed-bench/sf-port-p1p2-20261021.patch`（195 行 / 5 文件；reverse-apply 已验与当前树逐字节一致，`patch -p1` 可重放）。工作树只保留 P0（harness + bench 字段 + memory-report API）。
+- **未动（下一段）**：①**2048 首 token 的 cache 淘汰风暴**（S3 默认开的唯一硬阻塞，见上条）；②fork decode glue 的“全关 + 加回一项”归因（15 项 × ~90 s），再按边际贡献移植；③`268` 页对齐 uncached reads（现在有 explicit driver 了，8 行）；④`132`/`210`（结构不适用，见上）、P4 `60` S2 index batch / S1b decoder suffix（先过 DSpark 128-row parity）/ `#1125` / `#1073` 缺口。**继续不借**：`--boost`/fanboost、`140` dual-drive、整树 prune、盲目 82 GB cache。
+
 ## E. 全仓代码对账（2026-10-04）：A/B/D 之外的代码
 
 对 main、全部分支、4 个 worktree、stash、未跟踪文件逐一枚举后，**main 的 58 个提交与 A/B 全部对上账**（上游作者 34 片、本地 23 片、merge 1）；`pr-*`/`up/pr/*` 均为 PR 原文存档（D 已列），`feat/glm53-*` 两分支仅多 3 个提交 = `2fe096e`/`62bbc0b`/`e067c8f` 的原件（无独立代码），`fix/*` 指向 main 上的提交，`/tmp` 两对照 worktree 无独有代码。真正的"账外代码"只剩以下三项（stash 三项已裁决丢弃）：
@@ -267,7 +302,7 @@
 |---|---|---|
 | `stash@{0}`/`{1}`/`{2}` | 0/1 = `22193b5`、`e067c8f` 的已应用残留；2 = `ds4.c` +4 `vocab_size` 缺失回退 129280（unsloth GGUF 适配，未入 main） | **2026-10-04 用户裁决全部丢弃**，`git stash clear`；patch 备份在 `.git/LOCAL_BACKUPS/stashes-2026-10-04.patch`，日后要捡回 vocab 回退从这里取 |
 | card H 实现（`~/ds4-cardh`，**`5573d62` @ `p4-cardh-early-load`**，基线 67fe336，ds4.c +63 行） | `DS4_METAL_ENABLE_V41_MOE_EARLY_LOAD` 门控（默认关）：router 后 GPU 事件 + worker 线程读 6 id/预暂存 pread，与共享专家编码重叠，`set_selected_override` 免逐层回读；`.cardh-ab/` 产物未入库 | **2026-10-04 关账：bit-exact 全过（CLI 贪心 A/B 逐字节一致、logprob ON==OFF、dspark 两测 ON==OFF、专家缓存 4/4），但速度负结果**：ABBA 2×(2K,32K)×512tok steady OFF 23.83/22.54 vs ON 23.51/22.48（−1.3%/−0.3%，组内噪声 4%）。此前"layer 0 failed"是旧二进制未重编 + flush 轮换 CB 后无条件 begin 的 bug，均已修；parity 0.36 漂移证实为存量流式行为（env OFF 相同）。14.6 的"19ms=可重叠 GPU 等待"假设证伪（GPU 30% 忙，等待近零返回；真主犯是主线程 CPU 簿记量）。裁决见 BASELINE §15；**不合入、勿重试此形态** |
-| card I / I-1 实现（`~/ds4-cardi`，**`376687e` @ `p4-cardI-graph-capture`**，基线 29a4474，ds4_metal.m +595/−67，ds4.c/头文件/内核零改动） | `DS4_METAL_ENABLE_V41_MOE_GPU_BINDING` 门控（默认关，单卡+streaming+单 token）：routed MoE 走现成 addr-table 入口吃 GPU 侧 `g->selected` ids，新 service 线程等 CB 的 ids 事件后自主读 ids、装载缺失、标 inflight、回填 6 槽并 prune，CB 等 ready 事件再 dispatch——主线程每层不再回读；`.cardi-ab/` 产物未入库 | **2026-10-04 I-1 收账：bit-exact 全过 + 正向小收益**。CLI 贪心 A/B 逐字节一致（默认 env，含 masked 族）、logprob ON/OFF 全日志 0 差异、dspark 两测 ON==OFF、专家缓存四模式全过；ABBA 2×(2K,32K)×512tok OFF 22.44/21.82 → ON 23.17/22.40（**+3.2% / +2.7%**，四比较点全不重叠）。两条入档硬知识：①service 线程标 inflight 必须用 arm 时抓的 CB 序列而非环境序列（否则 drain 窗口=无保护→同命令三代输出且零日志）；②经地址表取权重的 dispatch 必须 `useResource` 标到槽 buffer（绑定模式改为标 19 个 slab，标上即 3/3 复现）——**I-2 的 capture 形态必须带上这个标记**。另补存量隐患：`take_reusable_batch` 的 batch-reuse 分支缺 `on_service_thread()` 守卫（四处 wait_inflight 中唯一没有的）。PR 基线（origin/main `0aaea5a` + `5805843`/`4e48bb5`）单独实测：gate1 逐字节一致、logprob ON==OFF、专家缓存四模式过，ABBA OFF 18.11/17.03 → ON 18.48/17.54（**+2.0%/+3.0%**，PR 树没带 fork 的 decode 融合线所以绝对值低）——已推 fork `cardi-upstream` 并开 **[antirez/ds4#1178](https://github.com/antirez/ds4/pull/1178)**（+599/−68 单文件，零 cherry-pick 依赖：流式缓存 `9ba160a`/地址表内核/服务线程标记 `519c4d8` 全在上游）。裁决见 BASELINE §17；**在途，I-2 判定 go，env 保持默认关** |
+| card I / I-1 实现（`~/ds4-cardi`，**`376687e` @ `p4-cardI-graph-capture`**，基线 29a4474，ds4_metal.m +595/−67，ds4.c/头文件/内核零改动） | `DS4_METAL_ENABLE_V41_MOE_GPU_BINDING` 门控（默认关，单卡+streaming+单 token）：routed MoE 走现成 addr-table 入口吃 GPU 侧 `g->selected` ids，新 service 线程等 CB 的 ids 事件后自主读 ids、装载缺失、标 inflight、回填 6 槽并 prune，CB 等 ready 事件再 dispatch——主线程每层不再回读；`.cardi-ab/` 产物未入库 | **2026-10-04 I-1 收账：bit-exact 全过 + 正向小收益**。CLI 贪心 A/B 逐字节一致（默认 env，含 masked 族）、logprob ON/OFF 全日志 0 差异、dspark 两测 ON==OFF、专家缓存四模式全过；ABBA 2×(2K,32K)×512tok OFF 22.44/21.82 → ON 23.17/22.40（**+3.2% / +2.7%**，四比较点全不重叠）。两条入档硬知识：①service 线程标 inflight 必须用 arm 时抓的 CB 序列而非环境序列（否则 drain 窗口=无保护→同命令三代输出且零日志）；②经地址表取权重的 dispatch 必须 `useResource` 标到槽 buffer（绑定模式改为标 19 个 slab，标上即 3/3 复现）——**I-2 的 capture 形态必须带上这个标记**。另补存量隐患：`take_reusable_batch` 的 batch-reuse 分支缺 `on_service_thread()` 守卫（四处 wait_inflight 中唯一没有的）。PR 基线（origin/main `0aaea5a` + `5805843`/`4e48bb5`）单独实测：gate1 逐字节一致、logprob ON==OFF、专家缓存四模式过，ABBA OFF 18.11/17.03 → ON 18.48/17.54（**+2.0%/+3.0%**，PR 树没带 fork 的 decode 融合线所以绝对值低）——已推 fork `cardi-upstream` 并开 **[antirez/ds4#1178](https://github.com/antirez/ds4/pull/1178)**（+599/−68 单文件，零 cherry-pick 依赖：流式缓存 `9ba160a`/地址表内核/服务线程标记 `519c4d8` 全在上游）。裁决见 BASELINE §17。**【2026-10-12 更正：#1178 已关账，速度声明撤回】** 上游 [PR #1178](https://github.com/antirez/ds4/pull/1178) 已于 **2026-10-05 关闭**（作者自裁，非合并；收尾评论 issuecomment-5988494902），见 `PR1178_SESSION2_RESULTS.md` 最终裁决：①**速度声明撤回**——热态 `ds4-bench` 五 frontier（2K/10K/18K/26K/32K）×128 贪心 token ABBA 复测 decode 均值 **−0.8%**（各点 +1.4/+0.4/−1.3/−4.9/+0.2，全落在 OFF 自身轮间波动 1.7~3.9% 内），**冷态（34-token/200 步）decode 与 prefill 各 −31%**（OFF 13.37/13.30/13.63 vs ON 8.94/9.18/9.65，零重叠）⇒ 原 +2.0%/+3.0%（fork 侧 +3.2%/+2.7%）是**单对 ABBA 读到自身噪声**，不得再作杠杆引用。②**bit-exact 声明曾被第三方证伪**（ON/OFF 在 step 0 即分叉、两态各自确定），根因 = `use_slabs()` 是**编码时刻**的 slab 快照，而 slab 由 serve 线程在 CB **执行期**惰性创建 → 落在快照之后新建 slab 的专家 dispatch 无任何 Metal resource 声明；修复 `2c76fd3`+`4fce595`（fork 侧移植 `701c5db`，验收：5 frontier 全量 logit + 缓存 60/800/3000/8793 + Ciao n=4/n=128/`--ctx 32768`/6 KB prompt 全部 OFF==ON 逐字节）。③残留（移植前已存在）：`--ssd-streaming-cache-experts 60` 级极小缓存下 serve 线程 reuse 扫描找不到 victim → 装载回退、该层出错。**⇒ 本行按"正确性修复 + 速度待查"看待；I-2 的 go 判定与"fork 侧先翻默认 ON"的收账动作一并作废（前置收益不成立，基底仍缺）。** |
 | 未跟踪工具脚本 ~1.2k 行（M0-6 关账 @2026-10-05，`ecfcb3b`/`8606206`） | `gguf-tools/deepseek41_dspark_convert.py`(349)、`speed-bench/{build_dspark_support_gguf.py(228), jigsaw_to_ds4_dspark.py(211), mtp_ledger_replay.py(160)}` = DSpark/MTP 资产管道；`speed-bench/{v41_m5max_streaming_ab.sh(66), v41_m5max_server_probe.sh(50)}` + `v41_m5max_ab/` 实测数据 = 基线方案台架 | 全部已入库 main：DSpark 四件套随 MTP 线裁决**封存备查**（≥256G 机重开时要用）；v41 台架 + CSV 为本尊（`ds4-io-diag` 等处仍是拷贝，清理时别认错） |
 
 另：`CLAUDE.md` 旧孪生文档已于 M0-6（`8606206`）改为指针，AGENTS.md 为单一事实源；`tests/test_glm53_router_shared.c` 的测试旗标小补丁已随 M0-1 入 main（`2663de6`）。
@@ -283,7 +318,7 @@
 | 步 | 提交（新 SHA ← 原 SHA） | 文件 | 处置 |
 |---|---|---|---|
 | 3 | `52c482a` ← `2db1152`（#1120） | `Makefile` | `clean:` 目标取并集（双方各加一行） |
-| 16 | `4a84e65` ← `9309a29`（#1090） | `Makefile` | `clean:` 列表取并集（上游 `test_cuda_tokentile` 并入 glm 行） |
+| 16 | `4a84e65` ← `9309a29`（#1090；**2026-10-13 上游二次 rebase 后现 SHA `d54a378`**，函数级 post-image 与本行同） | `Makefile` | `clean:` 列表取并集（上游 `test_cuda_tokentile` 并入 glm 行） |
 | 26 | `64b6461` ← `2ce4e40`（本地 NAX indexed prefill） | `tests/test_deepseek41_metal.c` | 并集：上游 `cases[]{rows,selected}` 结构 + 本地 NAX 开关 / `max_nax` 报告 |
 | 27 | `2498e0f` ← `8963eae`（#1000 片1） | `ds4_server.c` | 保留 #1000 的早停 + 无条件回滚块，采用上游 `server_generation_rewind(resample,last_token)` 新结构 |
 | 28 | `b5c4ce2` ← `e66f811`（#1000 片2） | `tests/test_session_state.c` | 并集：上游 Spark/split_reserve 测试（225 行，补 `}`）+ 本地文本续写测试（42 行） |
@@ -299,3 +334,74 @@
 - 回退点：`backup/pre-rebase-20261008` = 旧 tip `84f65f5`。
 - `fork/main` 仍停 `3cfd0c0`，**待同步**（本轮未推）。
 - **约定缺口（既有状态，非本轮引入）**：A 段 30 个 pick 中仅 13 个带 `(cherry picked from commit ...)` trailer，**0 个**带 `Upstream-PR:` 行——与 AGENTS.md 的提交约定不符；后续新 pick 按约定补，历史 pick 不回溯改（改了会破坏 patch-id 对拍基线）。
+
+---
+
+## G. 2026-10-19 DSpark 验证分叉结案（rebase/20261019）
+
+> 本轮接手 `HANDOFF-DSPARK-20261019.md` 的 P2（≥4K verify 批与逐 token decode 分叉）并结案。
+> 台账基准更新：**工作分支 `rebase/20261019` = `89e068c`，领先 `origin/main`（`5379c1c`）143 笔**；
+> `main` 仍停 `ae45e32`（未动），`fork/main` 仍停 `8f11a4d`。详细证据见 [HANDOFF-DSPARK-P2-20261019.md](HANDOFF-DSPARK-P2-20261019.md)。
+
+### G1. 本轮新增本地提交（3 笔，非 cherry-pick，无 trailer）
+
+| 提交 | 主题 | 性质 |
+|---|---|---|
+| `b17b12e` | `metal/dsv41.metal`：`kernel_dsv41_router_select` 的 softplus 补上小 exp 多项式 | 正确性修复。全树其余 5 处 softplus（`kernel_unary`、`kernel_dsv41_router`、`_top6`、`dsv4_misc` 两处）都带多项式，只有 decode 融合 router 不带；专家 logit < `log(1/32)` 时概率差 1–2 ulp，经 40 层 MoE 放大越过 BF16，造成 verify 行 ≠ 单 token decode |
+| `8468006` | `ds4.c`：`ds41_graph_prefill_sweep` 的 decoder-suffix 依赖窗口去掉 drafter 依赖 | 正确性修复。原式 `(g->dspark ? 128 : 1) + …` 让加载 drafter 后 `first` 平移 127 行，suffix GEMM 重新切分、舍入改变 → 4K+ prompt 的 prefill 与基线全量 logit 不同（中位相对差 1.3%）。同时新增 `DS4_TEST_HOOKS` 专用激活探针 |
+| `89e068c` | `tests/test_dspark_verify_parity.c` + `make dspark-verify-parity` + 移交文档 | 回归门禁。此前套件没有任何"verify 行必须逐位等于单 token decode"的直接断言，所以该分叉长期只表现为"长上下文漂移" |
+
+### G1b. 归属：这两条 bug 是谁引入的（2026-10-20 查证）
+
+用 `git blame` / `git log -S` / 与 `origin/main`、`up/pr/1042` 逐字对拍确认，**两条都不是本地实现引起**：
+
+| | 归属 | 查证要点 |
+|---|---|---|
+| Bug 1：`kernel_dsv41_router_select` 的 softplus 缺小 exp 多项式 | **上游 PR #1042 的代码**（Adrian Galilea，`92021ea`，2026-09-14） | ① `git blame b17b12e^ -L 809,812 metal/dsv41.metal` → 作者 Adrian Galilea；② 本地存档分支 `up/pr/1042` 的 `metal/dsv41.metal:823` **逐字相同**，且该分支 `0.03125f` 出现 **0 次** ⇒ 多项式在该 PR 里从未存在过，不是 rebase 解冲突丢的；③ `origin/main` **没有**这套 router 融合 kernel（`kernel_dsv41_router`、`ds4_gpu_dsv41_router_select` 计数皆 0）⇒ **尚未合入上游**；④ §F 记录的历史冲突（`Makefile`/`test_deepseek41_metal.c`/`ds4_server.c`/`test_session_state.c`/`ds4.c`）**无一落在 `metal/dsv41.metal`** ⇒ 本地 cherry-pick（6/7）原样带入 |
+| Bug 2：依赖窗口 `(g->dspark ? 128u : 1u)` | **上游 main 代码**（antirez，`87a95e0`，2026-10-09，"Add the V4.1 DSpark draft graph and native-weight reference tests"） | ① 该行就在 `origin/main:ds4.c:42656`，作者 antirez；② 但上游判据是 `decoder_suffix = wide && total_count >= 8192u`，**本地把下限降到 4096**（`DS4_V41_DECODER_SUFFIX_MIN_ROWS` 默认 4096）⇒ 4K 即触发，**是本地放大了暴露面**；③ 上游**没有** `one-token arithmetic … equal ordinary decode` 的声明（`origin/main` 计数 0），该不变量是本地口径 ⇒ 上游不构成"违反承诺"，属反直觉耦合（加载 drafter 会改变 target 的 prefill 数值） |
+
+两条副作用提示：
+
+- **Bug 1**：PR #1042 正文自称 "Three fusions, **byte-identical** to those sequences"，本次 `len=1029` 上 `dmax=0.331649` 的反例直接反驳该说法。
+  若 #1042 日后在上游修正 softplus，`b17b12e` 将与其重复 —— 届时**整片撤除本地修复**，不要两处都留。
+- **Bug 2**：`8468006` 的改法是拿"草稿器 prompt 前沿预热窗口"换"目标输出 bit-exact"，属**权衡取舍而非纯修 bug**；若将来补上 decode 期特征捕获（见 G5），这个窗口本就多余，可再议。
+
+> 处置决定（2026-10-20，用户）：**只补台账，暂不向上游开 PR / issue**。故本段仅作归属存档；
+> 上游侧入口留档：Bug 1 只能走 PR #1042 的 review（main 里无该函数，补丁无处落），
+> Bug 2 可对 main 但宜先开 issue（权衡方案需上游拍板）。
+
+### G2. 验收证据（M5 Max / 128 GB / SSD streaming / cache 1024）
+
+- `--temp 0 -n 256` 端到端：2K `2deb7ada`、4K `6147bc3c`、8K `a320267a`，**A（无 dspark）与 B（`--dspark`）三档逐字节相同**。
+- 进程内 parity：1024…8192 长度扫描 + 1024/4096/8192 三处共 1100 个连续位置 sweep，全部 `dmax=0`。
+- `make` 0 warning；`ds4_agent_test`、`ds4_test --server`、`make dspark-verify-parity` 全绿。
+
+### G3. 行为变更（需知悉）
+
+- **基线贪心输出在 8K 改变**：`9644e880…` → `a320267a…`（新值等于修复前 dspark 那一侧）。2K 不变。
+  这是把 decode 融合 router 对齐到参考 softplus 的必然结果，属纠正而非回归，但任何按旧哈希记录的 golden 需重新确认。
+
+### G4. 已知红 / 不可用门禁（本轮实测归因）
+
+| 项 | 状态 | 归因 |
+|---|---|---|
+| `./ds4_test --tool-call-quality` exact 路径 | **红**：`V4.1 layer 1 failed at position 0`，5 条断言 | **既有红**。用 `git worktree` 在干净 HEAD `c1b4aaa` 重建复跑，同样 5 条同样日志 → 与 G1 三笔无关。fast 路径正常 |
+| `--logprob-vectors` / `--local-golden-vectors` | **不可用** | 向量按 checkpoint 分目录，本机只有 `flash-0731`/`flash-pre-0731`，**无 1017 fixture**；按 `tests/test-vectors/README.md` 属"invalid test"。需 API key 抓取或再基线化 |
+| `--dspark-verify-depth` 的 `ds4_test_dspark_prefix_capture` 断言 | **红（既有）** | 已解释：该断言调用 `metal_graph_verify_suffix_tops(&spec->graph, …)`，而 V4.1 session 只分配 `s->ds41_graph`（`ds4.c:76312`），`spec_logits`/`prefill_cap` 恒空 → 首道守卫即返回 false。是 fork 时代脚手架残留，不是模型问题。旧文档"两套配置"读法亦纠正：只有一个配置，`TEST_ASSERT` 非致命，后续 DSpark 检查实为通过 |
+
+### G5. DSpark 现状（P1，未解决）
+
+`ds41_dspark_capture` 全仓只有一个调用点，位于 **prefill**（`ds4_graph` 的 `ds41_graph_prefill_sweep`），
+decode 路径从不调用 → 特征环出不了 prompt 前沿，`ready` 判据必然失败 → 整轮最多起草一次。
+那一次花 ~2.5 s 换 1 token，就是旧记录里 −7.4% 的全部来源。
+本轮 G1 第 2 笔把 prefill 窗口收紧后起草次数变为 0，实测 12.66 t/s ≈ 基线 12.75 t/s：
+**`--dspark` 现在输出正确、性能中性，但没有加速**。
+要让它真正生效，需在 target 层 37/38/39 的 decode 循环里喂特征——属功能补全，需单独立项与速度画布评估。
+
+### G6. 仍待办
+
+- 旧文档 §9.1 列的 rebase 收口项（19 笔上游吸收、`e5b19e28` 退役、本地 `ds41_draft`/`ds41_spec` 退役、`tests/test_deepseek41_verify_cost.c` 删除）**本轮未登记**，需要原始 rebase 记录。
+- `gguf/DeepSeek-V4.1-Flash-DSpark.gguf`（8.04 GiB，81 张量，`--verify` PASS）已生成，但**转换命令未归档**，需补。
+- 死代码：`ds4_metal.m` 的 `ds4_gpu_dsv41_verify_oa_rows` / `verify_head_rows_admitted` / `verify_attn_out_rows_admitted` 仍无调用者。
+- stats 死字段 `prop_*` / `verify_*` 仍待接上游计时点。
+- `fork/main` 未推；分支去向（是否合回 `main`）仍待裁决。

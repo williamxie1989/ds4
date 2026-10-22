@@ -18,6 +18,9 @@
 - **decode 的病已定性并只剩一味药**：miss 读已被完全隐藏（wait 4 µs），GPU 只忙 30%，墙钟 = 主线程 Metal 指令量
   （~1000+ API 调用/token、26 次 CB 轮转）。异步/重叠类药方（卡 H、mailbox、validator）全部实测无效或为负；
   **唯一对口的是图回放（卡 I-2/I-3，Metal graph capture）**，I-1 已落地并 +3.2%/+2.7%（bit-exact，上游 PR #1178 在途）。
+  **【2026-10-12 更正】该 +3.2%/+2.7% 已被作者撤回**：#1178 于 2026-10-05 关闭，热态复测 decode 均值 −0.8%（在 OFF 自身
+  轮间波动内）、冷态 −31%；I-1 按"正确性修复 + 速度待查"看待。⇒ 本路线（图回放）在"基底缺失"之外再失去前置收益假设，
+  §1.5 的"还账"项与 §2 的 R1 均须重锚（见 `PR1178_SESSION2_RESULTS.md`、`LOCAL_INVENTORY.md` card I 行）。
   外部调研证实这是所有主流引擎都走过的路（llama.cpp CUDA Graphs 图段 −40%/整体 +10~15%、vLLM V1 piecewise/full CUDA graphs），
   且 ggml-metal 自己也停在同一道坎前（capture 默认关、实验性）——我们做成了就是差异化。
 - **物理顶要先讲清楚**：warm decode 的 DRAM 域流量 ≈11.6 GiB/token（ENGRAM §2 实测），
@@ -78,7 +81,7 @@ GLM MTP / #1127 layer overlap。证据链见 LOCAL_INVENTORY §D。
 
 | 项 | 状态 | 处置建议 |
 |---|---|---|
-| 卡 I-1（`p4-cardI-graph-capture` 376687e+434dd55） | bit-exact 全过 +3%，默认关；上游 [PR #1178](https://github.com/antirez/ds4/pull/1178) OPEN | 等上游 review；fork 侧可先默认开（ABBA 已独立成立） |
+| 卡 I-1（`p4-cardI-graph-capture` 376687e+434dd55+701c5db） | **原记 +3% 已撤回**（上游复测：热态均值 −0.8%、冷态 −31%）；bit-exact 声明曾被证伪、根因=slab 编码期快照、修复已移植；默认关 | **已关账**：#1178 于 2026-10-05 关闭；I-1 按正确性修复看待，不再作速度杠杆；I-2 前置假设作废 |
 | PF-6 上游 PR [#1177](https://github.com/antirez/ds4/pull/1177) | OPEN（GLM 域 +5.2%） | 只等合并，不投入 |
 | p42-attn-glue worktree | ≈中性（≥8K +2%），全部未提交 | 一个窗口定夺：合入取位等价，或弃 |
 | 主树 WIP（`STREAM_GATHER_SPEC_ROWS`/`GLM53_ROUTED_MPP_PACKED`/`--mtp-timing`） | A/B 未定 | 一次空窗跑完 A/B 并关账 |
@@ -138,6 +141,14 @@ GLM MTP / #1127 layer overlap。证据链见 LOCAL_INVENTORY §D。
 ## 3. 路线方案（R1–R8，各带落点/闸门/预期/风险）
 
 ### R1 · 卡 I-2/I-3：整层 encode 进 Metal graph capture（主线，动因与准入已立项）
+
+> **【2026-10-12 状态更正：R1 双重搁置】** ① **基底**：macOS 26.5.1 无 MTLGraph capture
+> （SDK/运行时/共享缓存三重取证），MTLIndirectCommandBuffer 七变体探针全部崩于带绑定的 CPU 录制路径
+> ⇒ 用户裁决 M1 捕获路线搁置（骨架 `fde5b63` default off，`ds4_dg_execute_entry` 占位即裁决形态）；
+> ② **前置收益假设作废**：I-1 的 +3% 已被作者撤回（#1178 于 2026-10-05 关闭；热态复测均值 −0.8%、
+> 冷态 −31%——见 §0/§1.5 更正）⇒ "I-1 已把动态性收敛成图外一线程+两事件"这一准入论证仍成立（工程事实），
+> 但"I-1 自身 +3% 独立成立、I-2 失败也不亏"的收益论证不成立。本节保留为设计档案；
+> 复活条件 = 基底回归（每次 macOS 升级重跑探针矩阵）**且** I-1 前置收益重证。
 
 - **依据**：BASELINE §16（普查、可捕获性分类）、§17.5（I-2 go 判定与三条硬准入）；外部验证见 §2.1。
 - **改法**（沿用已立项设计，不重开）：`ds41_decode_island` + `ds4_gpu_decode_graph_begin/end`

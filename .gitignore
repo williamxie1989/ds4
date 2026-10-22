@@ -137,3 +137,10 @@ __pycache__/
 /speed-bench/kvstore_write_bench
 /tests/test_glm_full_metal
 /tests/test_prompt_prefix
+
+/tests/test_dspark_verify_parity
+/ds4_*.log
+# A/B evidence: the summaries and per-run CSVs are tracked, the raw logit
+# dumps and per-run stderr are regenerable and are ~100 MB per work batch.
+/speed-bench/v41_m5max_ab/*/logits/
+/speed-bench/v41_m5max_ab/*/logs/

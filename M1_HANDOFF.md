@@ -22,6 +22,8 @@
 5. 里程碑出口：push fork main（fork=williamxie1989/ds4）。
 6. worktree `ds4-cardi`（p4-cardI-graph-capture）、`ds4-cardh` 是 M2-1 卡 I 资产，本任务不碰。
 7. 上游 PR #1177/#1178 仍 OPEN（10-05 复核），窗口前照例 `git fetch origin` + `git cherry` 复查吸收。
+   **【更正（2026-10-12）】#1178 已于 2026-10-05 关闭（作者自裁，速度声明撤回）；本条"仍 OPEN"已过期，见 `LOCAL_INVENTORY.md` card I 行更正。**
+8. **worktree `ds4-cardi` 已不存在**（10-12 实测 `git worktree list` 仅主树）；资产在分支 `p4-cardI-graph-capture`（376687e+434dd55+701c5db），按归档处理、**默认 OFF**。
 
 ## 完成定义
 M1-1 单元验收全绿 + M1-2 评审纪要与日志锚就位 + 台账行齐 → 汇报并申请 M1-3 窗口（GLM FFN-tail 首验收：100-case@4096、长 fixture、frontier logits identical、ABBA N=6）。不达标不许"预期达标"式收尾。

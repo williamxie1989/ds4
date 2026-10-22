@@ -533,3 +533,8 @@ PR 基线（= 上游 main + 这两个 commit）单独跑了一遍闸门与 ABBA�
 | 32K | 17.13 / 16.93 | 17.03 | 17.45 / 17.62 | 17.54 | **+3.0%** |
 
 两上下文的 ON 两腿都高于 OFF 两腿；TTFT 在噪声内不变。正确性：贪心 A/B 逐字节一致（同 sha，两边 `0c…`→上游基线 `176a045d…`）、`ds4_test --logprob-vectors`（streaming）ON/OFF 全日志 0 差异（两边同为存量 2 个 `short_code_completion` 断言）、`test_metal_ssd_experts` 四模式全过。绝对值比 fork 树低（18.1 vs 22.4 t/s）是因为上游 main 没有 fork 的 decode 融合线（#1041/#1042/#1043/#1090/#1120 + 本地流式工作），PR 正文里两组数字分开写清、并点名 fork 树所带的那些 cherry-pick。
+
+### 17.7 撤回（2026-10-05，作者自裁；本节为历史记录更正，勿据 §17.3/§17.5 引用收益）
+
+§17.3 的 **+3.2%/+2.7%** 与 §17.6 的 **+2.0%/+3.0%** 均**已撤回**：第三方复现发现 ON/OFF 在 step 0 即分叉（bit-exact 声明为假），根因 = `use_slabs()` 是编码时刻的 slab 快照、而 slab 由 serve 线程在 CB 执行期惰性创建 ⇒ 落在快照之后新建 slab 的专家 dispatch 无 resource 声明；修复 `2c76fd3`+`4fce595` 后逐位验收全绿（5 frontier 全量 logit + 缓存 60/800/3000/8793 + 多条 prompt）。**速度复测：热态五 frontier ×128 tok ABBA decode 均值 −0.8%**（各点全落在 OFF 自身轮间波动 1.7~3.9% 内），**冷态（34-token/200 步）decode 与 prefill 各 −31%** ⇒ §17.3 的"这不是噪声"结论作废，§17.5 的 **I-2 判定（go）作废**。PR #1178 已关闭，分支留档（fork 侧 `p4-cardI-graph-capture` 含修复移植 `701c5db`）。完整记录：[PR1178_SESSION2_RESULTS.md](PR1178_SESSION2_RESULTS.md)；台账更正见 [LOCAL_INVENTORY.md](LOCAL_INVENTORY.md) card I 行。
+

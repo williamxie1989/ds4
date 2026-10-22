@@ -14,7 +14,7 @@
 
 | KPI | 冻结基线 | M0 复核（10-05 窗） | M1 出口 | M2 出口 | M3 出口 | M5 出口 | 物理顶/备注 |
 |---|---|---|---|---|---|---|---|
-| V4.1 decode steady 2K / 32K | 22.44 / 21.82 t/s（ABBA OFF 均值） | **23.35 / 22.16**（OFF×2，成立） | ≥23.5（I-1 默认化） | **≥27.4 / 27.3（+25%）** | 维持不回退 | ≥30（若 I-3） | DRAM roofline ≈45 |
+| V4.1 decode steady 2K / 32K | 22.44 / 21.82 t/s（ABBA OFF 均值） | **23.35 / 22.16**（OFF×2，成立） | ≥23.5（**原锚"I-1 默认化"已作废，见 §3 M2 重锚注；待重定**） | **≥27.4 / 27.3（+25%）** | 维持不回退 | ≥30（若 I-3） | DRAM roofline ≈45 |
 | V4.1 首 token（12K ctx） | 127–133 ms | 未测（不在 M0-4 腿单） | 不回退 | ≤120 | — | — | |
 | V4.1 831 行 append（冷） | 6.1 s | **6.24 s**（成立；热后 4.5–4.6 s） | 不回退 | 不回退 | **≤5.0 s** | — | 命中率主导 |
 | V4.1 100–500 行段（生产冷域） | 100 行 ≈30.2 t/s | 未测（归属 R2 线） | — | — | **≥+15%** | — | R2a/R2c |
@@ -103,9 +103,18 @@ LOCAL_INVENTORY 对应行更新 + KPI 表回填。**缺一不算完成。**
 
 ### M2 · V4.1 流式 decode 岛（卡 I-2 本体；预计 2–3 周，M1 后）
 
+> **M2 重锚（2026-10-12）**：M2 全线"卡 I-1 拿回 +3% 作前置"的假设**已作废**——上游
+> [PR #1178](https://github.com/antirez/ds4/pull/1178) 已于 **2026-10-05 关闭**（作者自裁）并**撤回速度声明**：
+> 热态 `ds4-bench` 五 frontier ×128 贪心 token ABBA 复测 decode 均值 **−0.8%**（各点 +1.4/+0.4/−1.3/−4.9/+0.2，
+> 全部落在 OFF 自身轮间波动 1.7~3.9% 内）；**冷态（34-token/200 步）decode 与 prefill 各 −31%**（零重叠）。
+> ⇒ I-1 自此按"**正确性修复 + 速度待查**"看待。连带处置：M2-1 降级为归档合并（**默认 OFF**、闸门=逐字节）；
+> **M2-2/M2-8 的 I-2 岛化在"基底缺失"之外再失去前置收益假设，一并搁置**；M2-5 的 ≥+25% 出口线与
+> §1 表中 M1 出口线的 ≥23.5 锚点作废重定；M2-6（argmax 进 GPU）/M2-7（再归因）不依赖 I-1，可独立评估。
+> 证据：`PR1178_SESSION2_RESULTS.md` 最终裁决 + `LOCAL_INVENTORY.md` card I 行更正。
+
 | id | 任务 | 落点/做法 | 预算 | 闸门与判定 |
 |---|---|---|---|---|
-| M2-1 [O] | I-1 合入主线 | `p4-cardI-graph-capture`（376687e+434dd55）rebase 并默认翻 ON（fork 侧；不等上游 #1178），处理与 M1 地基的树合并 | 0.5 天 | 既有 ABBA +3.2/+2.7 数字引用；翻 ON 后 CLI 贪心逐字节复验 |
+| M2-1 [O] | I-1 归档合并（**已降级为正确性修复，不再按速度项引用**） | `p4-cardI-graph-capture`（376687e+434dd55+**701c5db**，后者=上游 slab 修复移植）rebase 并**保持默认 OFF**（fork 侧；不等上游 #1178——该 PR 已于 2026-10-05 关闭），处理与 M1 地基的树合并 | 0.5 天 | **原"既有 ABBA +3.2/+2.7"引用作废**（上游复测撤回：热态均值 −0.8% 在噪声内、冷态 −31%）；合并闸门=CLI 贪心逐字节 + 5 frontier 全量 logit 逐字节；已知残留：极小缓存（CE≤60）装载回退致该层错（移植前既有，见 `PR1178_SESSION2_RESULTS.md`） |
 | M2-2 [O] | 流式准入改造 | `ds41_graph_decode_layer` 门（ds4.c:41561 一带）：`tp_world==2 && !streaming` → 增 `tp_world==1 && streaming && v41_gpu_binding`；每层 3 岛（before-attn / attn-out / after-attn+MoE），ids 与 addr 表留 GPU，service 线程 `ids_event/ready_event` 桥**留在岛外**（岛=纯计算段）；Engram step-reader、miss-upload 天然图外不动 | 3–4 天编码 | 编译期不变量评审；失败语义照 I-1：**先 latch 再无条件释放**，run 作废不静默降级 |
 | M2-3 [O] | 动态标量入 param buffer | token id/position/engram 行号等 kernel-arg 标量改为图内读 staging（llama.cpp CUDA-graphs 抄法，BASELINE §17.4-1） | 1–2 天 | 逐 token 更新路径单测（先不加载模型，测试 harness 直接改 buffer 校验读回） |
 | M2-4 [W] | bit-exact 全集 | 一次窗：CLI 贪心 ON/OFF 逐字节；`DS4_TEST_SSD_STREAMING=1 ds4_test --logprob-vectors`；`--verify-parity-ssd` + `--short-prefill-ssd`（6000B prompt）；`test_metal_ssd_experts` 4/4；slug/223 行 dump | 一窗 | **DRIFT=0**；任一破防→按准入三雷排查，两次未愈即停线归因（不许连改连跑） |
